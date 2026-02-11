@@ -16,7 +16,3 @@ updates:
     directory: "/" # Location of Python package manifests
     schedule:
       interval: "weekly"
-  - package-ecosystem: "devcontainers"
-    directory: "/.devcontainer"
-    schedule:
-      interval: "weekly"
