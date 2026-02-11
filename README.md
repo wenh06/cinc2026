@@ -38,7 +38,7 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
   requirements files for different purposes.
 - [evaluate_model.py](evaluate_model.py), [helper_code.py](helper_code.py), [prepare_code15_data.py](prepare_code15_data.py),
   [run_model.py](run_model.py), [train_model.py](train_model.py): scripts inherited from the
-  [official baseline](https://github.com/physionetchallenges/python-example-2025.git).
+  [official baseline](https://github.com/physionetchallenges/python-example-2026.git).
   Modifications on these files are invalid and are immediately overwritten after being pulled by the organizers (or the submission system).
 - [sync_official.py](sync_official.py): script for synchronizing data from the official baseline and official scoring code.
 - [team_code.py](team_code.py): entry file for the submissions.

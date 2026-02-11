@@ -9,8 +9,8 @@ on:
 env:
   # see the Dockerfile for the definition of some of the following environment variables
   # status: pre  # pre, alpha, beta, final
-  status: alpha
-  CINC2025_REVENGER_TEST: 1
+  status: pre
+  CINC2026_REVENGER_TEST: 1
   download_data_dir: ${{ github.workspace }}/download_data
   mount_data_dir: /challenge/data
   revenger_data_dir: /challenge/cache/revenger_data_dir
@@ -19,7 +19,7 @@ env:
   revenger_output_dir: /challenge/output
   docker_main_filename: Dockerfile
   DOCKER_HUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-  DOCKER_HUB_REPOSITORY: deeppsp-cinc2025-docker-image
+  DOCKER_HUB_REPOSITORY: deeppsp-cinc2026-docker-image
   DOCKER_IMAGE_TAG: latest
 
 jobs:
@@ -67,7 +67,7 @@ jobs:
 
     - name: Download the training_subset data
       if: ${{ env.status != 'pre' }}
-      # TODO: adjust this step for CinC2025 challenge
+      # TODO: adjust this step for CinC2026 challenge
       # this step is done before running the test of challenge entry
       # in the Docker image in the next step since the data directory
       # is mounted as read-only in the challenge settings
@@ -75,7 +75,7 @@ jobs:
         mkdir -p ${{ env.download_data_dir }}
         docker run \
           -e PYTHONUNBUFFERED=1 \
-          -e CINC2025_REVENGER_TEST=${{ env.CINC2025_REVENGER_TEST }} \
+          -e CINC2026_REVENGER_TEST=${{ env.CINC2026_REVENGER_TEST }} \
           -e revenger_data_dir=${{ env.revenger_data_dir }} \
           -e revenger_model_dir=${{ env.revenger_model_dir }} \
           -e revenger_test_dir=${{ env.revenger_test_dir }} \
@@ -88,15 +88,15 @@ jobs:
         docker stop $(docker ps -a -q)
 
     - name: Run the Docker image
-      # TODO: adjust this step for CinC2025 challenge
+      # TODO: adjust this step for CinC2026 challenge
       # NOTE: mount env.download_data_dir to env.mount_data_dir
-      # and set it read-only as in the CinC2025 challenge settings.
+      # and set it read-only as in the CinC2026 challenge settings.
       # Also, the docker image is run without any internet access.
       if: ${{ env.status != 'pre' }}
       run: |
         docker run \
           -e PYTHONUNBUFFERED=1 \
-          -e CINC2025_REVENGER_TEST=${{ env.CINC2025_REVENGER_TEST }} \
+          -e CINC2026_REVENGER_TEST=${{ env.CINC2026_REVENGER_TEST }} \
           -e revenger_data_dir=${{ env.revenger_data_dir }} \
           -e revenger_model_dir=${{ env.revenger_model_dir }} \
           -e revenger_test_dir=${{ env.revenger_test_dir }} \
