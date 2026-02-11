@@ -4,7 +4,7 @@
 [![format-check](https://github.com/wenh06/cinc2026/actions/workflows/check-formatting.yml/badge.svg)](https://github.com/wenh06/cinc2026/actions/workflows/check-formatting.yml)
 
 <p align="left">
-  <img src="images/cinc2026-banner.png" width="40%" />
+  <img src="images/cinc2026-banner.svg" width="40%" />
 </p>
 
 Screening for Cognitive Impairment During Sleep Studies: The George B. Moody PhysioNet Challenge 2026
