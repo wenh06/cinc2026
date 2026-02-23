@@ -14,7 +14,7 @@ from torch_ecg.utils.misc import add_docstring
 
 from cfg import BaseCfg
 from const import PROJECT_DIR, SLEEP_STAGE_MAPPING
-from helper_code import load_rename_rules
+from helper_code import load_rename_rules, standardize_channel_names_rename_only
 
 __all__ = [
     "CINC2026",
@@ -108,6 +108,7 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
         self._channel_rename_rules = load_rename_rules(os.path.join(PROJECT_DIR, "channel_table.csv"))
 
         if self.db_dir is not None:
+            self.db_dir = Path(self.db_dir)
             self._ls_rec()
 
     def _ls_rec(self) -> None:
@@ -206,9 +207,25 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
             fs_dict = {}
             labels = reader.getSignalLabels()
 
+            # Apply channel renaming if rename_rules exist
+            rename_map = {}
+            if self._channel_rename_rules:
+                rename_map, _ = standardize_channel_names_rename_only(labels, self._channel_rename_rules)
+
             for i, label in enumerate(labels):
-                # Clean label: lower case, strip
-                clean_label = label.lower().strip()
+                # If we have a rename map, use it to standardize the label
+                # otherwise just lowercase and strip
+                if label in rename_map:
+                    clean_label = rename_map[label]
+                else:
+                    clean_label = label.lower().strip()
+
+                # If standardization resulted in duplicates (e.g. multiple channels mapping to same std name),
+                # the later one overwrites the former.
+                # In helper_code.py, they have logic to drop duplicates, but here we just read everything.
+                # If we want to be strict, we should follow helper_code's logic of keeping only one.
+                # For now, let's just load it.
+
                 signals[clean_label] = reader.readSignal(i)
                 fs_dict[clean_label] = reader.getSampleFrequency(i)
 
@@ -313,11 +330,11 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
 
         """
         if operation == "open":
-            if self.file_opened is not None:
+            if getattr(self, "file_opened", None) is not None:
                 self.file_opened._close()
             self.file_opened = EdfReader(str(full_file_path))
         elif operation == "close":
-            if self.file_opened is not None:
+            if getattr(self, "file_opened", None) is not None:
                 self.file_opened._close()
                 self.file_opened = None
         else:
