@@ -37,11 +37,24 @@ jobs:
       run: |
         echo "Free space before cleanup:"
         df -h
-        sudo rm -rf /usr/local/lib/android # will release about 10 GB if you don't need Android
-        sudo rm -rf /usr/share/dotnet # will release about 20GB if you don't need .NET
+        # remove large pre-installed toolchains and SDKs
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /usr/share/dotnet
         sudo rm -rf /opt/ghc
         sudo rm -rf /usr/local/share/boost
         sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        # remove large apt packages not needed for our build
+        sudo apt-get remove -y '^aspnetcore-.*' '^dotnet-.*' '^llvm-.*' \
+          'php.*' '^mongodb-.*' '^mysql-.*' \
+          azure-cli google-cloud-cli google-chrome-stable \
+          firefox powershell mono-devel libgl1-mesa-dri --fix-missing || true
+        sudo apt-get autoremove -y || true
+        sudo apt-get clean || true
+        # remove docker images already pulled (we will build our own)
+        docker rmi $(docker images -q) 2>/dev/null || true
+        # remove swap file to reclaim space
+        sudo swapoff -a || true
+        sudo rm -f /mnt/swapfile || true
         echo "Free space after cleanup:"
         df -h
     - name: Set up QEMU
