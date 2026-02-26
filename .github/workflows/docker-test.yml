@@ -14,13 +14,18 @@ env:
   download_data_dir: ${{ github.workspace }}/download_data
   mount_data_dir: /challenge/data
   revenger_data_dir: /challenge/cache/revenger_data_dir
-  revenger_model_dir: /challenge/cache/revenger_model_dir
+  revenger_model_cache_dir: /challenge/cache/revenger_model_dir
+  revenger_model_dir: /challenge/model
   revenger_test_dir: /challenge/test
   revenger_output_dir: /challenge/output
   docker_main_filename: Dockerfile
   DOCKER_HUB_USERNAME: wenh06
   DOCKER_HUB_REPOSITORY: deeppsp-cinc2026-docker-image
   DOCKER_IMAGE_TAG: latest
+  # host-side writable directories to bind-mount into the container
+  host_output_dir: ${{ github.workspace }}/output
+  host_test_dir: ${{ github.workspace }}/test
+  host_model_dir: ${{ github.workspace }}/model
 
 jobs:
 
@@ -127,6 +132,16 @@ jobs:
             --db-dir ${{ env.mount_data_dir }} \
             --files code-15-exams-part17,sami-trop,ptb-xl-subset,labels,chagas-labels \
             --convert --remove
+        echo "=== model dir contents after data download ==="
+        apptainer exec container.sif \
+          tree ${{ env.revenger_model_cache_dir }}
+
+    - name: Create writable host directories for container output
+      if: ${{ env.status != 'pre' }}
+      run: |
+        mkdir -p ${{ env.host_output_dir }}
+        mkdir -p ${{ env.host_test_dir }}
+        mkdir -p ${{ env.host_model_dir }}
 
     # - name: Run the Docker image
     #   # TODO: adjust this step for CinC2026 challenge
@@ -153,6 +168,9 @@ jobs:
     - name: Run the Apptainer container (replicates PhysioNet evaluation)
       if: ${{ env.status != 'pre' }}
       run: |
+        echo "=== model dir contents before run ==="
+        apptainer exec container.sif \
+          tree ${{ env.revenger_model_cache_dir }}
         apptainer exec \
           --env PYTHONUNBUFFERED=1 \
           --env CINC2026_REVENGER_TEST=${{ env.CINC2026_REVENGER_TEST }} \
