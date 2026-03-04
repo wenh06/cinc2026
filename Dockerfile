@@ -1,5 +1,5 @@
 # https://hub.docker.com/r/pytorch/pytorch
-FROM pytorch/pytorch:2.7.1-cuda11.8-cudnn9-devel
+FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
 # NOTE:
 # pytorch/pytorch:1.13.1-cuda11.6-cudnn8-runtime has python version 3.10.8, system version Ubuntu 18.04.6 LTS
 # pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime has python version 3.10.11, system version Ubuntu 20.04.6 LTS
@@ -62,7 +62,8 @@ RUN if [ -x "$(command -v gcc)" ]; then gcc --version; fi
 RUN if [ -d "/usr/local/cuda/include" ]; then ls /usr/local/cuda/include; fi
 
 
-# NOTE: The GPU provided by the Challenge is nvidia Tesla T4
+# NOTE: the following are OUTDATED:
+# The GPU provided by the Challenge is nvidia Tesla T4
 # running on a g4dn.4xlarge instance on AWS,
 # which has 16 vCPUs, 64 GB RAM, 300 GB of local storage.
 # nvidiaDriverVersion: 525.85.12
@@ -73,6 +74,10 @@ RUN if [ -d "/usr/local/cuda/include" ]; then ls /usr/local/cuda/include; fi
 # https://github.com/awsdocs/amazon-ec2-user-guide/blob/master/doc_source/accelerated-computing-instances.md#gpu-instances
 # https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html
 # https://download.pytorch.org/whl/torch_stable.html
+
+# Since 2025, the Challenge uses
+# NVidia Ampere A30 (compute capability 8.0, 24 GB VRAM)
+# NVidia RTX 6000 Ada Generation (compute capability 8.6, 48 GB VRAM)
 
 
 ## The MAINTAINER instruction sets the author field of the generated images.
