@@ -62,5 +62,38 @@ _BASE_MODEL_CONFIG.torch_dtype = BaseCfg.torch_dtype
 
 ModelCfg = deepcopy(_BASE_MODEL_CONFIG)
 
+# Model configuration for ChannelTransformer
+ModelCfg.transformer = CFG()
+ModelCfg.transformer.d_model = 128
+ModelCfg.transformer.nhead = 4
+ModelCfg.transformer.num_layers = 4
+ModelCfg.transformer.dim_feedforward = 512
+ModelCfg.transformer.dropout = 0.1
+ModelCfg.transformer.activation = "relu"
+ModelCfg.transformer.max_channels = 25  # Max unique channels across all recordings
+ModelCfg.transformer.classes = ["Negative", "Positive"]
+ModelCfg.transformer.num_classes = len(ModelCfg.transformer.classes)
+
+# Demographic Encoder configuration
+ModelCfg.transformer.dem_encoder = CFG()
+ModelCfg.transformer.dem_encoder.enable = True
+ModelCfg.transformer.dem_encoder.input_dim = 5  # e.g., Age, Sex, BMI, etc.
+ModelCfg.transformer.dem_encoder.hidden_dim = 64
+ModelCfg.transformer.dem_encoder.mode = "film"  # or "concat"
+
+# Loss configuration
+ModelCfg.transformer.criterion = "CrossEntropyLoss"
+ModelCfg.transformer.criterion_kw = CFG()
+
+# Model configuration for MultiBranchNet
+ModelCfg.multibranch = CFG()
+ModelCfg.multibranch.d_model = 128
+ModelCfg.multibranch.modalities = ["eeg", "eog", "emg", "ecg", "resp"]
+ModelCfg.multibranch.classes = ModelCfg.transformer.classes
+ModelCfg.multibranch.num_classes = len(ModelCfg.multibranch.classes)
+ModelCfg.multibranch.dem_encoder = deepcopy(ModelCfg.transformer.dem_encoder)
+ModelCfg.multibranch.criterion = ModelCfg.transformer.criterion
+ModelCfg.multibranch.criterion_kw = ModelCfg.transformer.criterion_kw.copy()
+
 # adjust filter lengths, > 1 for enlarging, < 1 for shrinking
 cnn_filter_length_ratio = 1.0
