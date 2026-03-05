@@ -18,7 +18,7 @@ env:
   revenger_model_dir: /challenge/model
   revenger_test_dir: /challenge/test
   revenger_output_dir: /challenge/output
-  docker_main_filename: Dockerfile
+  docker_main_filename: ActionTest.Dockerfile  # Dockerfile
   DOCKER_HUB_USERNAME: wenh06
   DOCKER_HUB_REPOSITORY: deeppsp-cinc2026-docker-image
   DOCKER_IMAGE_TAG: latest
