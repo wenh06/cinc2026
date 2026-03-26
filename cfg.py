@@ -8,8 +8,6 @@ from copy import deepcopy
 import numpy as np
 import torch
 from torch_ecg.cfg import CFG
-from torch_ecg.model_configs import ECG_CRNN_CONFIG, linear  # noqa: F401
-from torch_ecg.utils.utils_nn import adjust_cnn_filter_lengths  # noqa: F401
 
 __all__ = [
     "BaseCfg",
@@ -34,9 +32,16 @@ BaseCfg.model_dir = _BASE_DIR / "saved_models"
 BaseCfg.checkpoints = _BASE_DIR / "checkpoints"
 BaseCfg.log_dir.mkdir(exist_ok=True)
 BaseCfg.model_dir.mkdir(exist_ok=True)
+BaseCfg.checkpoints.mkdir(exist_ok=True)
 
 BaseCfg.torch_dtype = torch.float32  # "double"
 BaseCfg.np_dtype = np.float32
+
+# CinC 2026 Specifics
+BaseCfg.fs = 100  # Standardized sampling frequency for processing
+BaseCfg.classes = ["Negative", "Positive"]
+BaseCfg.num_classes = len(BaseCfg.classes)
+BaseCfg.demographic_features = ["Age", "Sex", "BMI"]
 
 
 ###############################################################################
@@ -45,8 +50,35 @@ BaseCfg.np_dtype = np.float32
 
 TrainCfg = deepcopy(BaseCfg)
 
-TrainCfg.checkpoints = BaseCfg.checkpoints
-TrainCfg.checkpoints.mkdir(exist_ok=True)
+# Data Loader Configs
+TrainCfg.batch_size = 32
+TrainCfg.train_ratio = 0.8
+TrainCfg.sig_len = 3000  # 30 seconds at 100Hz
+TrainCfg.model_name = "transformer"  # Default model choice: "transformer" or "multibranch"
+
+# Optimization Configs
+TrainCfg.n_epochs = 50
+TrainCfg.lr = 3e-4
+TrainCfg.optimizer = "adamw_amsgrad"
+TrainCfg.decay = 1e-2
+TrainCfg.lr_scheduler = "one_cycle"
+TrainCfg.max_lr = 1e-3
+TrainCfg.betas = (0.9, 0.999)
+
+# Preprocessing
+TrainCfg.normalize = CFG(
+    method="z-score",
+    mean=0.0,
+    std=1.0,
+)
+
+# Callbacks & Logging
+TrainCfg.log_step = 20
+TrainCfg.keep_checkpoint_max = 5
+TrainCfg.early_stopping = CFG(
+    min_delta=0.001,
+    patience=15,
+)
 
 
 ###############################################################################
@@ -55,45 +87,33 @@ TrainCfg.checkpoints.mkdir(exist_ok=True)
 
 _BASE_MODEL_CONFIG = CFG()
 _BASE_MODEL_CONFIG.torch_dtype = BaseCfg.torch_dtype
-
-# _BASE_MODEL_CONFIG.criterion = TrainCfg.criterion
-# _BASE_MODEL_CONFIG.criterion_kw = TrainCfg.criterion_kw.copy()
-
+_BASE_MODEL_CONFIG.fs = BaseCfg.fs
+_BASE_MODEL_CONFIG.classes = BaseCfg.classes
+_BASE_MODEL_CONFIG.num_classes = BaseCfg.num_classes
 
 ModelCfg = deepcopy(_BASE_MODEL_CONFIG)
 
-# Model configuration for ChannelTransformer
-ModelCfg.transformer = CFG()
+# ChannelTransformer configuration
+ModelCfg.transformer = deepcopy(_BASE_MODEL_CONFIG)
 ModelCfg.transformer.d_model = 128
 ModelCfg.transformer.nhead = 4
 ModelCfg.transformer.num_layers = 4
 ModelCfg.transformer.dim_feedforward = 512
 ModelCfg.transformer.dropout = 0.1
 ModelCfg.transformer.activation = "relu"
-ModelCfg.transformer.max_channels = 25  # Max unique channels across all recordings
-ModelCfg.transformer.classes = ["Negative", "Positive"]
-ModelCfg.transformer.num_classes = len(ModelCfg.transformer.classes)
-
-# Demographic Encoder configuration
-ModelCfg.transformer.dem_encoder = CFG()
-ModelCfg.transformer.dem_encoder.enable = True
-ModelCfg.transformer.dem_encoder.input_dim = 5  # e.g., Age, Sex, BMI, etc.
-ModelCfg.transformer.dem_encoder.hidden_dim = 64
-ModelCfg.transformer.dem_encoder.mode = "film"  # or "concat"
-
-# Loss configuration
+ModelCfg.transformer.max_channels = 25  # Max unique channels expected
 ModelCfg.transformer.criterion = "CrossEntropyLoss"
-ModelCfg.transformer.criterion_kw = CFG()
 
-# Model configuration for MultiBranchNet
-ModelCfg.multibranch = CFG()
+ModelCfg.transformer.dem_encoder = CFG(enable=True, input_dim=len(BaseCfg.demographic_features), hidden_dim=64, mode="film")
+
+# MultiBranchNet configuration
+ModelCfg.multibranch = deepcopy(_BASE_MODEL_CONFIG)
 ModelCfg.multibranch.d_model = 128
 ModelCfg.multibranch.modalities = ["eeg", "eog", "emg", "ecg", "resp"]
-ModelCfg.multibranch.classes = ModelCfg.transformer.classes
-ModelCfg.multibranch.num_classes = len(ModelCfg.multibranch.classes)
+ModelCfg.multibranch.nhead = 4
+ModelCfg.multibranch.dropout = 0.1
+ModelCfg.multibranch.criterion = "CrossEntropyLoss"
 ModelCfg.multibranch.dem_encoder = deepcopy(ModelCfg.transformer.dem_encoder)
-ModelCfg.multibranch.criterion = ModelCfg.transformer.criterion
-ModelCfg.multibranch.criterion_kw = ModelCfg.transformer.criterion_kw.copy()
 
-# adjust filter lengths, > 1 for enlarging, < 1 for shrinking
+# adjust filter lengths if needed
 cnn_filter_length_ratio = 1.0

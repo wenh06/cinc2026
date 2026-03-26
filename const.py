@@ -23,6 +23,37 @@ PROJECT_DIR = str(Path(__file__).resolve().parent)
 CHANNEL_TABLE = pd.read_csv(Path(PROJECT_DIR) / "channel_table.csv")
 
 
+# Standardized channel names and their modality groupings
+# This serves as the 'vocabulary' for ChannelTransformer (IDs)
+# and the branch assignment for MultiBranchNet
+STANDARD_CHANNELS = [
+    "EEG F3-M2",
+    "EEG F4-M1",
+    "EEG C3-M2",
+    "EEG C4-M1",
+    "EEG O1-M2",
+    "EEG O2-M1",
+    "EOG E1-M2",
+    "EOG E2-M1",
+    "EMG CHIN",
+    "ECG",
+    "RESP ABD",
+    "RESP CHEST",
+    "RESP AIRFLOW",
+    "RESP PTAF",
+    "RESP SPO2",
+]
+
+CHANNEL_ID_MAP = {name: i for i, name in enumerate(STANDARD_CHANNELS)}
+
+MODALITY_MAP = {
+    "EEG": ["EEG F3-M2", "EEG F4-M1", "EEG C3-M2", "EEG C4-M1", "EEG O1-M2", "EEG O2-M1"],
+    "EOG": ["EOG E1-M2", "EOG E2-M1"],
+    "EMG": ["EMG CHIN"],
+    "ECG": ["ECG"],
+    "RESP": ["RESP ABD", "RESP CHEST", "RESP AIRFLOW", "RESP PTAF", "RESP SPO2"],
+}
+
 SLEEP_STAGE_MAPPING = {
     "N3": 1,
     "N2": 2,
