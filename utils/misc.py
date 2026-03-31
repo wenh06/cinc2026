@@ -3,9 +3,8 @@ Miscellaneous functions.
 """
 
 from functools import wraps
-from numbers import Real
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Union
 
 import numpy as np
 import pandas as pd
@@ -316,7 +315,7 @@ def to_dtype(data: np.ndarray, dtype: np.dtype = np.float32) -> np.ndarray:
     return data
 
 
-def remove_spikes_naive(sig: np.ndarray, threshold: Real = 20, inplace: bool = True) -> np.ndarray:
+def remove_spikes_naive(sig: np.ndarray, threshold: Union[int, float] = 20, inplace: bool = True) -> np.ndarray:
     """Remove signal spikes using a naive method.
 
     This is a method proposed in entry 0416 of CPSC2019.
@@ -330,7 +329,7 @@ def remove_spikes_naive(sig: np.ndarray, threshold: Real = 20, inplace: bool = T
     sig : numpy.ndarray
         1D or 2D signal with potential spikes.
         If is 2D, it should be of lead-first format.
-    threshold : numbers.Real, optional
+    threshold : int or float, optional
         Values of `sig` that are larger than `threshold` will be removed.
     inplace : bool, optional
         Whether to modify `sig` in place or not.

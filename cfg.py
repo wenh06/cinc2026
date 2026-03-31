@@ -51,10 +51,18 @@ BaseCfg.demographic_features = ["Age", "Sex", "BMI"]
 TrainCfg = deepcopy(BaseCfg)
 
 # Data Loader Configs
-TrainCfg.batch_size = 32
+TrainCfg.batch_size = 16  # each sample is a full-night sequence; keep batch small
 TrainCfg.train_ratio = 0.8
+TrainCfg.model_name = "epoch_transformer"  # primary model for this challenge
+
+# Epoch-sequence settings
+# max_seq_len: maximum number of 30s epochs to use per record during training.
+# None = use the full sequence (up to ~1100 epochs ≈ 9.2 hours).
+# Set an integer (e.g. 512) to randomly crop during training for speed.
+TrainCfg.max_seq_len = None
+
+# sig_len kept for backwards-compat with raw-signal models
 TrainCfg.sig_len = 3000  # 30 seconds at 100Hz
-TrainCfg.model_name = "transformer"  # Default model choice: "transformer" or "multibranch"
 
 # Optimization Configs
 TrainCfg.n_epochs = 50
@@ -93,7 +101,27 @@ _BASE_MODEL_CONFIG.num_classes = BaseCfg.num_classes
 
 ModelCfg = deepcopy(_BASE_MODEL_CONFIG)
 
-# ChannelTransformer configuration
+# EpochTransformer: operates on a sequence of 30s-epoch CAISR feature vectors.
+# Input: (B, T, caisr_feat_dim) + demographics (B, demographic_dim)
+# Output: binary classification (cognitive impairment)
+ModelCfg.epoch_transformer = deepcopy(_BASE_MODEL_CONFIG)
+ModelCfg.epoch_transformer.caisr_feat_dim = 21  # CAISR_EPOCH_DIM from const.py
+ModelCfg.epoch_transformer.demographic_dim = 3  # DEMOGRAPHIC_DIM from const.py
+ModelCfg.epoch_transformer.d_model = 128
+ModelCfg.epoch_transformer.nhead = 4
+ModelCfg.epoch_transformer.num_layers = 4
+ModelCfg.epoch_transformer.dim_feedforward = 512
+ModelCfg.epoch_transformer.dropout = 0.1
+ModelCfg.epoch_transformer.activation = "gelu"
+ModelCfg.epoch_transformer.criterion = "BCEWithLogitsLoss"
+ModelCfg.epoch_transformer.dem_encoder = CFG(
+    enable=True,
+    input_dim=3,  # Age, Sex, BMI
+    hidden_dim=64,
+    mode="film",  # FiLM conditioning on demographics
+)
+
+# ChannelTransformer configuration (raw-signal fallback)
 ModelCfg.transformer = deepcopy(_BASE_MODEL_CONFIG)
 ModelCfg.transformer.d_model = 128
 ModelCfg.transformer.nhead = 4
@@ -103,10 +131,9 @@ ModelCfg.transformer.dropout = 0.1
 ModelCfg.transformer.activation = "relu"
 ModelCfg.transformer.max_channels = 25  # Max unique channels expected
 ModelCfg.transformer.criterion = "CrossEntropyLoss"
-
 ModelCfg.transformer.dem_encoder = CFG(enable=True, input_dim=len(BaseCfg.demographic_features), hidden_dim=64, mode="film")
 
-# MultiBranchNet configuration
+# MultiBranchNet configuration (raw-signal fallback)
 ModelCfg.multibranch = deepcopy(_BASE_MODEL_CONFIG)
 ModelCfg.multibranch.d_model = 128
 ModelCfg.multibranch.modalities = ["eeg", "eog", "emg", "ecg", "resp"]
@@ -114,6 +141,3 @@ ModelCfg.multibranch.nhead = 4
 ModelCfg.multibranch.dropout = 0.1
 ModelCfg.multibranch.criterion = "CrossEntropyLoss"
 ModelCfg.multibranch.dem_encoder = deepcopy(ModelCfg.transformer.dem_encoder)
-
-# adjust filter lengths if needed
-cnn_filter_length_ratio = 1.0
