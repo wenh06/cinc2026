@@ -97,6 +97,7 @@ class CINC2026Dataset(Dataset, ReprMixin):
         if config is not None:
             self.config.update(deepcopy(config))
         self.training = training
+        self.config["training"] = training  # propagate so FastDataReader.training works correctly
         self.lazy = lazy
 
         if self.config.get("db_dir", None) is None:
@@ -234,7 +235,7 @@ class CINC2026Dataset(Dataset, ReprMixin):
 
     @property
     def data_fields(self) -> Set[str]:
-        return {"epoch_features", "demographics", "label", "padding_mask", "n_epochs"}
+        return {"epoch_features", "demographics", "label", "padding_mask", "n_epochs", "record_id", "site_id"}
 
     @property
     def labels(self) -> np.ndarray:
@@ -317,6 +318,8 @@ class FastDataReader(Dataset, ReprMixin):
             "demographics": demographics,  # (DEMOGRAPHIC_DIM,)
             "label": np.int64(label),
             "n_epochs": np.int64(len(epoch_features)),
+            "record_id": rec,
+            "site_id": str(row.get("SiteID", "")),
         }
 
     def _extract_demographics(self, rec: str) -> np.ndarray:
@@ -473,6 +476,8 @@ def collate_fn(
         "label": torch.from_numpy(labels),  # (B,)
         "padding_mask": torch.from_numpy(padding_mask),  # (B, T) bool
         "n_epochs": torch.tensor(n_epochs_list, dtype=torch.int64),
+        "record_id": [item["record_id"] for item in batch],  # list[str]
+        "site_id": [item["site_id"] for item in batch],  # list[str]
     }
 
 
@@ -498,6 +503,8 @@ def _merge_batches(
                     result[k].append(v[i, :n])
             elif k == "n_epochs":
                 result[k].extend(n_list)
+            elif k in ("record_id", "site_id"):
+                result[k].extend(v)  # v is already a list of strings
             else:
                 result[k].append(v)
 
@@ -507,4 +514,6 @@ def _merge_batches(
         "demographics": torch.cat(result["demographics"], dim=0),
         "label": torch.cat(result["label"], dim=0),
         "n_epochs": torch.tensor(result["n_epochs"], dtype=torch.int64),
+        "record_id": result["record_id"],
+        "site_id": result["site_id"],
     }

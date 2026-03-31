@@ -74,13 +74,20 @@ class CINC2026Outputs:
     cognitive_impairment : Sequence[bool] or Sequence[int]
         Predicted cognitive impairment diagnosis (CI).
     ci_logits : Sequence[Sequence[float]]
-        Logits of the CI diagnosis.
+        Logits of the CI diagnosis.  Shape ``(B, 1)`` for
+        ``BCEWithLogitsLoss``-trained models or ``(B, 2)`` for
+        ``CrossEntropyLoss``-trained models.
     ci_prob : Sequence[Sequence[float]]
-        Probabilities of the CI diagnosis.
+        ``[P(CI=0), P(CI=1)]`` probabilities, shape ``(B, 2)``.
+        ``ci_prob[:, 1]`` is the positive-class probability used for
+        thresholding.
     ci_loss : Sequence[float]
         Loss for the CI diagnosis.
     ci_threshold : float, default 0.5
-        Threshold for the CI diagnosis.
+        Threshold applied to ``ci_prob[:, 1]`` to obtain binary predictions.
+    record_ids : Sequence[str], optional
+        Record identifiers (BidsFolder strings) corresponding to each sample,
+        used for per-site evaluation.
 
     """
 
@@ -89,6 +96,7 @@ class CINC2026Outputs:
     ci_prob: Optional[Sequence[Sequence[float]]] = None
     ci_loss: Optional[Sequence[float]] = None
     ci_threshold: float = 0.5
+    record_ids: Optional[Sequence[str]] = None
 
     def __post_init__(self) -> None:
         assert any(
@@ -107,17 +115,26 @@ class CINC2026Outputs:
                 self.ci_logits = np.asarray(self.ci_logits)
 
             if self.ci_prob is None:
-                # assuming binary classification, use softmax
-                self.ci_prob = torch.softmax(torch.tensor(self.ci_logits), dim=-1).cpu().detach().numpy()
+                logits_t = torch.tensor(self.ci_logits)
+                if logits_t.shape[-1] == 1:
+                    # BCEWithLogitsLoss scalar logit: sigmoid → [P(0), P(1)]
+                    p = torch.sigmoid(logits_t)
+                    self.ci_prob = torch.cat([1.0 - p, p], dim=-1).cpu().detach().numpy()
+                else:
+                    # CrossEntropyLoss 2-class logits: softmax → [P(0), P(1)]
+                    self.ci_prob = torch.softmax(logits_t, dim=-1).cpu().detach().numpy()
 
         if self.ci_prob is not None:
             if isinstance(self.ci_prob, torch.Tensor):
                 self.ci_prob = self.ci_prob.cpu().detach().numpy()
             else:
                 self.ci_prob = np.asarray(self.ci_prob)
+            assert (
+                self.ci_prob.ndim == 2 and self.ci_prob.shape[1] == 2
+            ), f"ci_prob must have shape (B, 2), got {self.ci_prob.shape}"
 
             if self.cognitive_impairment is None:
-                # Use threshold on the positive class (index 1)
+                # threshold on the positive class (index 1)
                 self.cognitive_impairment = (self.ci_prob[:, 1] > self.ci_threshold).astype(bool).tolist()
 
         if self.cognitive_impairment is not None:
@@ -132,6 +149,9 @@ class CINC2026Outputs:
                 self.ci_loss = self.ci_loss.cpu().detach().numpy()
             else:
                 self.ci_loss = np.asarray(self.ci_loss)
+
+        if self.record_ids is not None:
+            self.record_ids = list(self.record_ids)
 
     def append(self, values: Union["CINC2026Outputs", Sequence["CINC2026Outputs"]]) -> None:
         """Append other :class:`CINC2026Outputs` to `self`
@@ -157,6 +177,9 @@ class CINC2026Outputs:
                     continue
                 if k.name in ["ci_threshold"]:
                     assert v_ == self_, f"the field `{k.name}` must be identical"
+                    continue
+                if k.name == "record_ids":
+                    setattr(self, k.name, list(self_) + list(v_))
                     continue
                 if isinstance(v_, np.ndarray):
                     setattr(self, k.name, np.concatenate((self_, v_)))

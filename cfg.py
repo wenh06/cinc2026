@@ -55,6 +55,20 @@ TrainCfg.batch_size = 16  # each sample is a full-night sequence; keep batch sma
 TrainCfg.train_ratio = 0.8
 TrainCfg.model_name = "epoch_transformer"  # primary model for this challenge
 
+# learning_rate is the canonical name used by BaseTrainer; lr is kept as an alias
+TrainCfg.lr = 3e-4
+TrainCfg.learning_rate = TrainCfg.lr
+
+# db_dir must be set at training time (e.g. via command-line argument)
+TrainCfg.db_dir = None
+
+# Monitor metric for model selection and early stopping
+TrainCfg.monitor = "auroc"
+
+# Misc training flags
+TrainCfg.debug = False
+TrainCfg.flooding_level = 0  # no flooding regularisation by default
+
 # Epoch-sequence settings
 # max_seq_len: maximum number of 30s epochs to use per record during training.
 # None = use the full sequence (up to ~1100 epochs ≈ 9.2 hours).
@@ -66,12 +80,12 @@ TrainCfg.sig_len = 3000  # 30 seconds at 100Hz
 
 # Optimization Configs
 TrainCfg.n_epochs = 50
-TrainCfg.lr = 3e-4
 TrainCfg.optimizer = "adamw_amsgrad"
 TrainCfg.decay = 1e-2
 TrainCfg.lr_scheduler = "one_cycle"
 TrainCfg.max_lr = 1e-3
 TrainCfg.betas = (0.9, 0.999)
+TrainCfg.grad_clip = 1.0  # gradient clipping max norm for Transformer stability
 
 # Preprocessing
 TrainCfg.normalize = CFG(
