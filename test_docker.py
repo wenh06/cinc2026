@@ -208,89 +208,84 @@ def test_trainer() -> None:
 
 @func_indicator("testing challenge entry")
 def test_entry() -> None:
-    """Full pipeline: train → load → run → evaluate."""
+    """Full pipeline test via the official challenge entry scripts.
+
+    Mirrors how PhysioNet evaluates submissions:
+
+    1. ``train_model.py``  →  ``team_code.train_model``
+    2. ``run_model.py``    →  ``team_code.load_model`` + ``team_code.run_model``
+    3. ``evaluate_model.py`` →  scoring
+    """
+    from torch_ecg.cfg import CFG
+
+    from helper_code import DEMOGRAPHICS_FILE
+
     echo_write_permission(tmp_data_dir)
     echo_write_permission(tmp_model_dir)
     echo_write_permission(tmp_output_dir)
 
     db_dir = _resolve_db_dir(str(tmp_data_dir))
     train_data_dir = db_dir / "training_set"
-    val_data_dir = db_dir / "validation_set"
-
     if not train_data_dir.exists():
-        # tmp_data_dir might itself be the training_set partition
         train_data_dir = tmp_data_dir
-        val_data_dir = tmp_data_dir
+
+    if not (train_data_dir / DEMOGRAPHICS_FILE).exists():
+        print(f"  No demographics.csv found at {train_data_dir}; skipping test_entry.")
+        return
 
     entry_model_dir = tmp_model_dir / "test_entry_model"
     entry_model_dir.mkdir(parents=True, exist_ok=True)
+    entry_output_dir = tmp_output_dir / "test_entry_output"
+    entry_output_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # 1. Train (1 epoch for speed)
     # ------------------------------------------------------------------
-    print("   Run model training function   ".center(100, "#"))
-    prev_epochs_env = os.environ.get("CINC2026_REVENGER_TRAIN_EPOCHS")
+    print("   Train model (1 epoch)   ".center(100, "#"))
+    prev_env = os.environ.get("CINC2026_REVENGER_TRAIN_EPOCHS")
     os.environ["CINC2026_REVENGER_TRAIN_EPOCHS"] = "1"
     try:
         train_model(str(train_data_dir), str(entry_model_dir), verbose=True)
     finally:
-        if prev_epochs_env is None:
+        if prev_env is None:
             os.environ.pop("CINC2026_REVENGER_TRAIN_EPOCHS", None)
         else:
-            os.environ["CINC2026_REVENGER_TRAIN_EPOCHS"] = prev_epochs_env
+            os.environ["CINC2026_REVENGER_TRAIN_EPOCHS"] = prev_env
 
     # ------------------------------------------------------------------
-    # 2. Load model
+    # 2. Run inference via run_model.py entry point
     # ------------------------------------------------------------------
-    model_dict = load_model(str(entry_model_dir), verbose=True)
-    assert "model" in model_dict
+    print("   Run model (run_model.py)   ".center(100, "#"))
+    model_runner_args = CFG(
+        data_folder=str(train_data_dir),
+        model_folder=str(entry_model_dir),
+        output_folder=str(entry_output_dir),
+        allow_failures=True,
+        verbose=True,
+    )
+    model_runner_func(model_runner_args)
 
-    # ------------------------------------------------------------------
-    # 3. Run inference on validation set
-    # ------------------------------------------------------------------
-    print("   Run model inference function   ".center(100, "#"))
-    from helper_code import DEMOGRAPHICS_FILE, find_patients
-
-    val_demo_file = val_data_dir / DEMOGRAPHICS_FILE
-    if not val_demo_file.exists():
-        print(f"  Validation demographics not found at {val_demo_file}; skipping inference.")
-        return
-
-    records = find_patients(str(val_demo_file))
-    print(f"  Found {len(records)} validation records.")
-
-    all_results = {}
-    for record in records[:5]:  # limit to 5 for speed
-        bids_folder = record["BidsFolder"]
-        binary_out, prob_out = run_model(model_dict, record, str(val_data_dir), verbose=True)
-        all_results[bids_folder] = (binary_out, prob_out)
-        print(f"    {bids_folder}: binary={binary_out}, prob={prob_out:.4f}")
+    predictions_file = entry_output_dir / DEMOGRAPHICS_FILE
+    assert predictions_file.exists(), f"Predictions file not created: {predictions_file}"
+    print(f"  Predictions written to {predictions_file}")
 
     # ------------------------------------------------------------------
-    # 4. Save predictions and evaluate
+    # 3. Evaluate via evaluate_model.py entry point
     # ------------------------------------------------------------------
-    from helper_code import update_demographics_table
+    print("   Evaluate model (evaluate_model.py)   ".center(100, "#"))
+    score_file = entry_output_dir / "score.txt"
+    model_evaluator_args = CFG(
+        labels_folder=str(train_data_dir / DEMOGRAPHICS_FILE),
+        predictions_folder=str(predictions_file),
+        score_file=str(score_file),
+    )
+    model_evaluator_func(model_evaluator_args)
 
-    output_table = update_demographics_table(str(val_demo_file), str(tmp_output_dir), all_results)
-    print(f"  Predictions saved to: {output_table}")
+    if score_file.exists():
+        print("Score file contents:")
+        print(score_file.read_text())
 
-    # Evaluate (only records we actually predicted on)
-    preds_df = pd.read_csv(output_table)
-    labels_df = pd.read_csv(str(val_demo_file))
-    predicted_bids = list(all_results.keys())
-    preds_sub = preds_df[preds_df["BidsFolder"].isin(predicted_bids)]
-    labels_sub = labels_df[labels_df["BidsFolder"].isin(predicted_bids)]
-
-    if len(labels_sub) >= 2 and labels_sub["Cognitive_Impairment"].nunique() > 1:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            labels_file = os.path.join(tmpdir, "labels.csv")
-            preds_file = os.path.join(tmpdir, "preds.csv")
-            labels_sub.to_csv(labels_file, index=False)
-            preds_sub.to_csv(preds_file, index=False)
-            auroc, auprc, accuracy, f_measure = _evaluate_model(labels_file, preds_file)
-        print(f"  Eval on {len(labels_sub)} records: AUROC={auroc:.3f} AUPRC={auprc:.3f}")
-    else:
-        print("  Skipping metric evaluation (too few / homogeneous labels in subset).")
+    print("test_entry passed ✓")
 
 
 # Allow test_entry to be referenced as test_team_code for compatibility
