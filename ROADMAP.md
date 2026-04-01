@@ -26,7 +26,7 @@ For the 1.8 % of training records that lack CAISR annotations (all due to missin
 - [x] Document site heterogeneity (S0001 / I0002 / I0006 signal differences) in `data_reader.py`.
 - [x] Discover and fix the `caisr_prob_*` EDF scale bug (divide by 9.0, re-normalise).
 - [x] Define constants in `const.py`: `CAISR_EPOCH_DIM=21`, `CAISR_PROB_EDF_SCALE=9.0`, `STAGE_LABEL_TO_IDX`, `STAGE_ONEHOT_DIM=6`, `DEMOGRAPHIC_DIM=3`, annotation samples-per-epoch.
-- [x] Update `cfg.py`: add `ModelCfg.epoch_transformer` config block; set `TrainCfg.batch_size=16`, `TrainCfg.max_seq_len=None`.
+- [x] Update `cfg.py`: add `ModelCfg.epoch_transformer` config block; set `TrainCfg.batch_size=16`, `TrainCfg.n_epochs=100`, `TrainCfg.max_seq_len=768`.
 - [x] Rewrite `dataset.py`:
   - `build_epoch_features()`: CAISR annotation dict → `(N, 21)` float32 array.
   - `CINC2026Dataset`: stratified 80/20 train/val split (stratified by SiteID × label), split cached to `cache/cinc2026-data-split.json`.
@@ -146,20 +146,21 @@ The model receives the extended feature vector transparently; only `CAISR_EPOCH_
 - [x] `team_code.py`: `train_model`, `load_model`, `run_model` wrappers using `EpochTransformer` + CAISR pipeline.
 - [x] `test_docker.py`: all `test_*` functions implemented (`test_dataset`, `test_models`, `test_challenge_metrics`, `test_trainer`, `test_entry`); `test_entry` uses the official `run_model.py` / `evaluate_model.py` entry points.
 - [x] `post_docker_build.py`: no pretrained models to cache; minimal environment check.
-- [x] Mini training-set subset (`create_mini_dataset.py`) for CI: ≈ 24 records, ~10 MB, stored as `cinc2026-mini-training-set.zip`.
-- [ ] Upload mini dataset to GitHub Releases and set `status: alpha` in `.github/workflows/docker-test.yml` to activate the full CI pipeline.
+- [x] Mini training-set subset (`create_mini_dataset.py`): 171 records, ~28 MB (CAISR EDFs only), uploaded to Google Drive; CI workflow downloads via `gdown`.
+- [x] `status: alpha` set in `.github/workflows/docker-test.yml` — full CI pipeline active.
+- [ ] CI pipeline passes end-to-end (Docker build → Apptainer SIF → mini-dataset download → container run → test\_entry score printed).
 - [ ] Build and smoke-test Docker image locally:
   ```bash
   docker build -f Dockerfile -t cinc2026 . && bash test_run_challenge.sh
   ```
-- [ ] Full training run (50 epochs) and submit to the official evaluation system.
+- [ ] Full training run (100 epochs, monitor val AUROC, save best checkpoint).
+- [ ] Submit to the official evaluation system.
 
 ---
 
 ## Immediate Next Steps
 
-1. **Upload mini dataset** (run `create_mini_dataset.py`, upload zip to GitHub Releases, update `MINI_DATASET_URL` in `docker-test.yml`).
-2. **Full training run** (50 epochs, monitor val AUROC, save best checkpoint).
-3. **Phase 4**: Implement ECG-HRV MLP fallback for the 14 CAISR-missing records.
-4. **Phase 5**: Validation analysis — ROC curves, per-site AUROC, attention maps.
-5. **Docker submission**: Set `status: final`, run CI, submit.
+1. **Full training run** (100 epochs, monitor val AUROC per site, save best checkpoint).
+2. **Phase 4**: Implement ECG-HRV MLP fallback for the 14 CAISR-missing records.
+3. **Phase 5**: Validation analysis — ROC curves, per-site AUROC, attention maps.
+4. **Docker submission**: Set `status: final`, ensure CI passes, submit.

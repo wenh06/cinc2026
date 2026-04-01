@@ -96,10 +96,23 @@ jobs:
 
     - name: Convert Docker image to Apptainer SIF
       run: |
+        # Prune BuildKit layer cache — keeps the final image but frees the
+        # intermediate layer cache that accumulated during the build (~10–15 GB).
+        docker builder prune --all --force || true
+        echo "Free space before Apptainer conversion:"
+        df -h /
         docker image inspect ${{ env.DOCKER_HUB_USERNAME }}/${{ env.DOCKER_HUB_REPOSITORY }}:${{ env.DOCKER_IMAGE_TAG }} \
           --format='{{.Size}}'
-        apptainer build container.sif \
-          docker-daemon://${{ env.DOCKER_HUB_USERNAME }}/${{ env.DOCKER_HUB_REPOSITORY }}:${{ env.DOCKER_IMAGE_TAG }}
+        # APPTAINER_TMPDIR: point at the workspace disk (avoids any small /tmp tmpfs).
+        mkdir -p ${{ github.workspace }}/_apptainer_tmp
+        APPTAINER_TMPDIR=${{ github.workspace }}/_apptainer_tmp \
+          apptainer build container.sif \
+            docker-daemon://${{ env.DOCKER_HUB_USERNAME }}/${{ env.DOCKER_HUB_REPOSITORY }}:${{ env.DOCKER_IMAGE_TAG }}
+        # Remove the Docker image now that the SIF is built (reclaim ~8.5 GB).
+        docker rmi ${{ env.DOCKER_HUB_USERNAME }}/${{ env.DOCKER_HUB_REPOSITORY }}:${{ env.DOCKER_IMAGE_TAG }} || true
+        rm -rf ${{ github.workspace }}/_apptainer_tmp
+        echo "Free space after SIF build:"
+        df -h /
 
     - name: Download mini training subset (CAISR annotations only, ~28 MB)
       if: ${{ env.status != 'pre' }}
