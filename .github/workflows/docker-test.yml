@@ -8,8 +8,12 @@ on:
 
 env:
   # see the Dockerfile for the definition of some of the following environment variables
-  # status: pre  # pre, alpha, beta, final
+  # Lifecycle: pre → alpha → beta → final
+  # Set to 'alpha' once MINI_DATASET_URL is uploaded and publicly accessible.
   status: pre
+  # TODO: set to the public URL of the mini dataset zip once uploaded
+  # (e.g., a Google Drive direct-download link or GitHub Releases URL)
+  MINI_DATASET_URL: ""
   CINC2026_REVENGER_TEST: 1
   download_data_dir: ${{ github.workspace }}/download_data
   mount_data_dir: /challenge/data
@@ -97,46 +101,18 @@ jobs:
         apptainer build container.sif \
           docker-daemon://${{ env.DOCKER_HUB_USERNAME }}/${{ env.DOCKER_HUB_REPOSITORY }}:${{ env.DOCKER_IMAGE_TAG }}
 
-    - name: Download the training_subset data
+    - name: Download mini training subset (CAISR annotations only, ~3 MB)
       if: ${{ env.status != 'pre' }}
-      # TODO: adjust this step for CinC2026 challenge
-      # this step is done before running the test of challenge entry
-      # in the Docker image in the next step since the data directory
-      # is mounted as read-only in the challenge settings
-      # run: |
-      #   mkdir -p ${{ env.download_data_dir }}
-      #   docker run \
-      #     -e PYTHONUNBUFFERED=1 \
-      #     -e CINC2026_REVENGER_TEST=${{ env.CINC2026_REVENGER_TEST }} \
-      #     -e revenger_data_dir=${{ env.revenger_data_dir }} \
-      #     -e revenger_model_dir=${{ env.revenger_model_dir }} \
-      #     -e revenger_test_dir=${{ env.revenger_test_dir }} \
-      #     -e revenger_output_dir=${{ env.revenger_output_dir }} \
-      #     -e mount_data_dir=${{ env.mount_data_dir }} \
-      #     -v ${{ env.download_data_dir }}:${{ env.mount_data_dir }} \
-      #     ${{ env.DOCKER_HUB_USERNAME }}/${{ env.DOCKER_HUB_REPOSITORY }}:${{ env.DOCKER_IMAGE_TAG }} \
-      #     bash -c "python data_reader.py download --db-dir ${{ env.mount_data_dir }} --files code-15-exams-part17,sami-trop,ptb-xl-subset,labels,chagas-labels --convert --remove"
-      #   docker ps -a
-      #   docker stop $(docker ps -a -q)
+      # Downloads the mini dataset zip (18 records, 3 per site×CI stratum) created by
+      # create_mini_dataset.py and uploaded to a public URL (see MINI_DATASET_URL above).
+      # The data directory is mounted read-only into the container in the next step,
+      # matching the challenge evaluation environment.
       run: |
         mkdir -p ${{ env.download_data_dir }}
-        apptainer exec \
-          --env PYTHONUNBUFFERED=1 \
-          --env CINC2026_REVENGER_TEST=${{ env.CINC2026_REVENGER_TEST }} \
-          --env revenger_data_dir=${{ env.revenger_data_dir }} \
-          --env revenger_model_dir=${{ env.revenger_model_dir }} \
-          --env revenger_test_dir=${{ env.revenger_test_dir }} \
-          --env revenger_output_dir=${{ env.revenger_output_dir }} \
-          --env mount_data_dir=${{ env.mount_data_dir }} \
-          --bind ${{ env.download_data_dir }}:${{ env.mount_data_dir }} \
-          container.sif \
-          python data_reader.py download \
-            --db-dir ${{ env.mount_data_dir }} \
-            --files code-15-exams-part17,sami-trop,ptb-xl-subset,labels,chagas-labels \
-            --convert --remove
-        echo "=== model dir contents after data download ==="
-        apptainer exec container.sif \
-          tree ${{ env.revenger_model_cache_dir }}
+        wget -q -O /tmp/cinc2026-mini-training-set.zip "${{ env.MINI_DATASET_URL }}"
+        unzip -q /tmp/cinc2026-mini-training-set.zip -d ${{ env.download_data_dir }}
+        echo "=== mini dataset contents ==="
+        find ${{ env.download_data_dir }} -type f | sort
 
     - name: Create writable host directories for container output
       if: ${{ env.status != 'pre' }}
@@ -170,9 +146,6 @@ jobs:
     - name: Run the Apptainer container (replicates PhysioNet evaluation)
       if: ${{ env.status != 'pre' }}
       run: |
-        echo "=== model dir contents before run ==="
-        apptainer exec container.sif \
-          tree ${{ env.revenger_model_cache_dir }}
         apptainer exec \
           --env PYTHONUNBUFFERED=1 \
           --env CINC2026_REVENGER_TEST=${{ env.CINC2026_REVENGER_TEST }} \
