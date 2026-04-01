@@ -9,8 +9,22 @@ from typing import Any, Callable, Union
 import numpy as np
 import pandas as pd
 import yaml
-from numpy._core.multiarray import normalize_axis_index
-from numpy.lib._function_base_impl import array_function_dispatch
+
+try:
+    from numpy._core.multiarray import normalize_axis_index
+except ImportError:
+    from numpy.core.multiarray import normalize_axis_index  # numpy < 2.0
+
+try:
+    from numpy.lib._function_base_impl import array_function_dispatch
+except ImportError:
+    # numpy < 2.0: provide a no-op decorator fallback
+    def array_function_dispatch(dispatcher):  # type: ignore[misc]
+        def _dec(func):
+            return func
+
+        return _dec
+
 
 __all__ = [
     "func_indicator",

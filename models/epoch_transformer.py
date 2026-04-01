@@ -157,7 +157,7 @@ class EpochTransformer(nn.Module, SizeMixin, CkptMixin):
 
     # ─── Forward pass ────────────────────────────────────────────────────────
 
-    def forward(self, input_tensors: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def forward(self, input_tensors: Dict[str, torch.Tensor]) -> Dict[str, Union[torch.Tensor, None]]:
         epoch_features = input_tensors["epoch_features"].to(self.device).to(self.dtype)
         demographics = input_tensors["demographics"].to(self.device).to(self.dtype)
 

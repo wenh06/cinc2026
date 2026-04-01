@@ -265,7 +265,7 @@ class CINC2026Trainer(BaseTrainer):
 
                 pbar.update(batch["epoch_features"].shape[self.batch_dim])
 
-        probs_arr = np.array(all_probs)
+        probs_arr = np.clip(np.nan_to_num(np.array(all_probs), nan=0.5), 0.0, 1.0)
         labels_arr = np.array(all_labels)
 
         auroc = float(roc_auc_score(labels_arr, probs_arr))
