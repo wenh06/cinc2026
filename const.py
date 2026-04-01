@@ -11,6 +11,7 @@ __all__ = [
     "DATA_CACHE_DIR",
     "LABEL_CACHE_DIR",
     "TEST_DATA_CACHE_DIR",
+    "FIXED_DATA_SPLIT_FILE",
     "REMOTE_MODELS",
     "CHANNEL_TABLE",
     "SLEEP_STAGE_MAPPING",
@@ -124,6 +125,10 @@ Path(DATA_CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
 LABEL_CACHE_DIR = str(Path(PROJECT_DIR) / "cache")
 Path(LABEL_CACHE_DIR).mkdir(parents=True, exist_ok=True)
+
+# Canonical (fixed) train/val split shipped with the repo.  Used by default
+# so that training runs are reproducible without regenerating the split.
+FIXED_DATA_SPLIT_FILE = str(Path(PROJECT_DIR) / "utils" / "cinc2026-data-split.json")
 
 TEST_DATA_CACHE_DIR = str(Path(DATA_CACHE_DIR).parent / "revenger_action_test_data_dir")
 Path(TEST_DATA_CACHE_DIR).mkdir(parents=True, exist_ok=True)

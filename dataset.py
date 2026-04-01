@@ -44,6 +44,7 @@ from const import (  # noqa: F401
     CAISR_EPOCH_DIM,
     CAISR_PROB_EDF_SCALE,
     DEMOGRAPHIC_DIM,
+    FIXED_DATA_SPLIT_FILE,
     LABEL_CACHE_DIR,
     LIMB_SAMPLES_PER_EPOCH,
     RESP_SAMPLES_PER_EPOCH,
@@ -79,6 +80,13 @@ class CINC2026Dataset(Dataset, ReprMixin):
         Whether this instance represents the training or validation split.
     lazy : bool, default True
         If ``False``, all records are loaded into memory at construction time.
+    override_data_split : bool, default False
+        If ``False`` (default), the fixed canonical split shipped at
+        ``utils/cinc2026-data-split.json`` is used, ensuring fully
+        reproducible train/val assignments across runs and machines.
+        If ``True``, the legacy dynamic flow is used: read
+        ``LABEL_CACHE_DIR/cinc2026-data-split.json`` when it exists,
+        otherwise generate a fresh stratified split and save it there.
     reader_kwargs : dict, optional
         Extra keyword arguments forwarded to :class:`CINC2026`.
     """
@@ -90,6 +98,7 @@ class CINC2026Dataset(Dataset, ReprMixin):
         config: CFG,
         training: bool = True,
         lazy: bool = True,
+        override_data_split: bool = False,
         **reader_kwargs,
     ) -> None:
         super().__init__()
@@ -99,6 +108,7 @@ class CINC2026Dataset(Dataset, ReprMixin):
         self.training = training
         self.config["training"] = training  # propagate so FastDataReader.training works correctly
         self.lazy = lazy
+        self.override_data_split = override_data_split
 
         if self.config.get("db_dir", None) is None:
             self.config.db_dir = reader_kwargs.pop("db_dir", None)
@@ -142,24 +152,58 @@ class CINC2026Dataset(Dataset, ReprMixin):
     # ------------------------------------------------------------------
 
     def _train_test_split(self) -> List[str]:
-        """Stratified split by SiteID x label, saved for reproducibility.
+        """Return the record list for this split.
 
-        The split is written to ``LABEL_CACHE_DIR/cinc2026-data-split.json``
-        on first creation and re-used on subsequent calls.
+        Two modes controlled by ``self.override_data_split``:
+
+        * ``False`` (default) — load the fixed canonical split from
+          ``utils/cinc2026-data-split.json``.  Falls back to the dynamic
+          flow only when the file is absent (should not happen in a normal
+          installation).
+        * ``True`` — dynamic flow: read
+          ``LABEL_CACHE_DIR/cinc2026-data-split.json`` when present, else
+          generate a fresh stratified split and persist it there.
         """
-        split_file = Path(LABEL_CACHE_DIR) / "cinc2026-data-split.json"
         part = "train" if self.training else "val"
+        available = set(self._labelled_df.index)
+
+        if not self.override_data_split:
+            # ----------------------------------------------------------
+            # Default path: use the repo-shipped canonical split
+            # ----------------------------------------------------------
+            fixed_file = Path(FIXED_DATA_SPLIT_FILE)
+            if fixed_file.exists():
+                with open(fixed_file) as f:
+                    split = json.load(f)
+                records = [r for r in split.get(part, []) if r in available]
+                if records:
+                    if self.training:
+                        DEFAULTS.RNG.shuffle(records)
+                    return records
+            # Canonical file missing — warn and fall through to dynamic path
+            import warnings
+
+            warnings.warn(
+                f"Fixed data-split file not found at {FIXED_DATA_SPLIT_FILE}. " "Falling back to dynamic split generation.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+
+        # ------------------------------------------------------------------
+        # Dynamic path (override_data_split=True, or fallback from above)
+        # ------------------------------------------------------------------
+        split_file = Path(LABEL_CACHE_DIR) / "cinc2026-data-split.json"
 
         if split_file.exists():
             with open(split_file) as f:
                 split = json.load(f)
-            records = [r for r in split.get(part, []) if r in self._labelled_df.index]
+            records = [r for r in split.get(part, []) if r in available]
             if records:
                 if self.training:
                     DEFAULTS.RNG.shuffle(records)
                 return records
 
-        # Build a new split stratified by SiteID x Cognitive_Impairment
+        # Generate a fresh stratified split and cache it
         from sklearn.model_selection import StratifiedShuffleSplit
 
         df = self._labelled_df
