@@ -51,7 +51,10 @@ BaseCfg.demographic_features = ["Age", "Sex", "BMI"]
 TrainCfg = deepcopy(BaseCfg)
 
 # Data Loader Configs
-TrainCfg.batch_size = 16  # each sample is a full-night sequence; keep batch small
+# Each sample is a full-night sequence of ~720–1100 thirty-second epochs.
+# batch_size=16 fits comfortably on the challenge GPUs (A30 24 GB / RTX 6000 Ada 48 GB)
+# and on a local 16 GB GPU.
+TrainCfg.batch_size = 16
 TrainCfg.train_ratio = 0.8
 TrainCfg.model_name = "epoch_transformer"  # primary model for this challenge
 
@@ -69,21 +72,26 @@ TrainCfg.monitor = "auroc"
 TrainCfg.debug = False
 TrainCfg.flooding_level = 0  # no flooding regularisation by default
 
-# Epoch-sequence settings
-# max_seq_len: maximum number of 30s epochs to use per record during training.
-# None = use the full sequence (up to ~1100 epochs ≈ 9.2 hours).
-# Set an integer (e.g. 512) to randomly crop during training for speed.
-TrainCfg.max_seq_len = None
+# Epoch-sequence settings.
+# max_seq_len: cap the number of 30s epochs per record.  768 epochs ≈ 6.4 h,
+# covering the majority of recording lengths while keeping training step time
+# uniform.  During training a random crop is applied; during validation the
+# centre crop is used (see FastDataReader).  Set to None to always process the
+# full sequence.
+TrainCfg.max_seq_len = 768
 
 # sig_len kept for backwards-compat with raw-signal models
 TrainCfg.sig_len = 3000  # 30 seconds at 100Hz
 
-# Optimization Configs
-TrainCfg.n_epochs = 50
+# Optimization Configs.
+# 624 training records / batch_size=16 ≈ 39 steps/epoch.
+# 100 epochs × 39 steps ≈ 3 900 total gradient steps — sufficient for an
+# 825K-parameter Transformer trained from scratch on this dataset size.
+TrainCfg.n_epochs = 100
 TrainCfg.optimizer = "adamw_amsgrad"
-TrainCfg.decay = 1e-2
+TrainCfg.decay = 1e-2  # AdamW weight decay (standard Transformer practice)
 TrainCfg.lr_scheduler = "one_cycle"
-TrainCfg.max_lr = 1e-3
+TrainCfg.max_lr = 1e-3  # OneCycleLR peak ≈ 3× base lr
 TrainCfg.betas = (0.9, 0.999)
 TrainCfg.grad_clip = 1.0  # gradient clipping max norm for Transformer stability
 
@@ -99,7 +107,7 @@ TrainCfg.log_step = 20
 TrainCfg.keep_checkpoint_max = 5
 TrainCfg.early_stopping = CFG(
     min_delta=0.001,
-    patience=15,
+    patience=20,  # with 100 epochs; stops ~20 epochs after last improvement
 )
 
 

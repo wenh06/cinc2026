@@ -9,11 +9,11 @@ on:
 env:
   # see the Dockerfile for the definition of some of the following environment variables
   # Lifecycle: pre → alpha → beta → final
-  # Set to 'alpha' once MINI_DATASET_URL is uploaded and publicly accessible.
-  status: pre
-  # TODO: set to the public URL of the mini dataset zip once uploaded
-  # (e.g., a Google Drive direct-download link or GitHub Releases URL)
-  MINI_DATASET_URL: ""
+  status: alpha
+  # Google Drive file ID for the mini training subset (171 records, ~28 MB CAISR EDFs only).
+  # Created by create_mini_dataset.py and shared at:
+  # https://drive.google.com/file/d/1KUf1c63fK0YTFwsi3irrBSaR069OYdFB/view?usp=sharing
+  MINI_DATASET_GDRIVE_ID: "1KUf1c63fK0YTFwsi3irrBSaR069OYdFB"
   CINC2026_REVENGER_TEST: 1
   download_data_dir: ${{ github.workspace }}/download_data
   mount_data_dir: /challenge/data
@@ -101,15 +101,16 @@ jobs:
         apptainer build container.sif \
           docker-daemon://${{ env.DOCKER_HUB_USERNAME }}/${{ env.DOCKER_HUB_REPOSITORY }}:${{ env.DOCKER_IMAGE_TAG }}
 
-    - name: Download mini training subset (CAISR annotations only, ~3 MB)
+    - name: Download mini training subset (CAISR annotations only, ~28 MB)
       if: ${{ env.status != 'pre' }}
-      # Downloads the mini dataset zip (18 records, 3 per site×CI stratum) created by
-      # create_mini_dataset.py and uploaded to a public URL (see MINI_DATASET_URL above).
+      # Downloads 171-record mini dataset (3×n per site×CI stratum, proportionally split
+      # from canonical train/val) via gdown (already in requirements.txt).
       # The data directory is mounted read-only into the container in the next step,
       # matching the challenge evaluation environment.
       run: |
+        pip install -q gdown
         mkdir -p ${{ env.download_data_dir }}
-        wget -q -O /tmp/cinc2026-mini-training-set.zip "${{ env.MINI_DATASET_URL }}"
+        gdown "${{ env.MINI_DATASET_GDRIVE_ID }}" -O /tmp/cinc2026-mini-training-set.zip
         unzip -q /tmp/cinc2026-mini-training-set.zip -d ${{ env.download_data_dir }}
         echo "=== mini dataset contents ==="
         find ${{ env.download_data_dir }} -type f | sort
