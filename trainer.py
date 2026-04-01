@@ -18,8 +18,11 @@ Key design decisions vs the generic BaseTrainer
 """
 
 import argparse
+import logging
 import os
 import sys
+import textwrap
+from collections import OrderedDict
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
@@ -31,7 +34,7 @@ from torch.nn.parallel import DataParallel as DP
 from torch.utils.data import DataLoader, Dataset
 from torch_ecg.cfg import CFG
 from torch_ecg.components.trainer import BaseTrainer
-from torch_ecg.utils.misc import str2bool
+from torch_ecg.utils.misc import get_date_str, str2bool
 from tqdm.auto import tqdm
 
 from cfg import ModelCfg, TrainCfg
@@ -69,6 +72,7 @@ class CINC2026Trainer(BaseTrainer):
     """
 
     __name__ = "CINC2026Trainer"
+    __DEBUG__ = True
 
     def __init__(
         self,
@@ -154,9 +158,172 @@ class CINC2026Trainer(BaseTrainer):
             drop_last=False,
             collate_fn=collate_fn,
         )
-        # No train-set validation loader; the balanced training set would give
-        # an overly optimistic AUROC estimate.
-        self.val_train_loader = None
+        # val_train_loader is enabled only in debug mode to monitor training-set
+        # metrics.  Keeping it None in normal training avoids an overly optimistic
+        # AUROC estimate from the (possibly imbalanced) training distribution.
+        if self.train_config.get("debug", False):
+            self.val_train_loader = DataLoader(
+                dataset=train_dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=num_workers,
+                pin_memory=True,
+                drop_last=False,
+                collate_fn=collate_fn,
+            )
+        else:
+            self.val_train_loader = None
+
+    # ── Training loop ────────────────────────────────────────────────────
+
+    def train(self) -> OrderedDict:
+        """Train the model.
+
+        Overrides :meth:`BaseTrainer.train` to guard the optional
+        ``val_train_loader`` (active only when ``train_config.debug`` is
+        ``True``) before calling :meth:`evaluate` — the base-class
+        implementation does not perform this check.
+
+        Returns
+        -------
+        OrderedDict
+            State dict of the best model.
+        """
+        self._setup_optimizer()
+        self._setup_scheduler()
+        self._setup_criterion()
+
+        # Fallback: if monitor is set but no validation loader exists at all,
+        # use the training loader so model selection does not silently break.
+        if self.train_config.monitor is not None:
+            if self.val_loader is None and self.val_train_loader is None:
+                self.val_train_loader = self.train_loader
+                self.log_manager.log_message(
+                    "No separate validation set provided while monitor is set; "
+                    "falling back to training set for model selection.",
+                    level=logging.WARNING,
+                )
+
+        self.log_manager.log_message(textwrap.dedent(f"""
+                Starting training:
+                ------------------
+                Epochs:          {self.n_epochs}
+                Batch size:      {self.batch_size}
+                Learning rate:   {self.lr}
+                Training size:   {self.n_train}
+                Validation size: {self.n_val}
+                Device:          {self.device.type}
+                Optimizer:       {self.train_config.optimizer}
+                Dataset classes: {self.train_config.classes}
+                -----------------------------------------
+            """))
+
+        start_epoch = self.epoch
+        for _ in range(start_epoch, self.n_epochs):
+            self.model.train()
+            self.epoch_loss = 0
+            with tqdm(
+                total=self.n_train,
+                desc=f"Epoch {self.epoch}/{self.n_epochs}",
+                unit="signals",
+                dynamic_ncols=True,
+                mininterval=1.0,
+            ) as pbar:
+                self.log_manager.epoch_start(self.epoch)
+                self.train_one_epoch(pbar)
+
+                # evaluate on train set only in debug mode
+                if self.val_train_loader is not None:
+                    eval_train_res = self.evaluate(self.val_train_loader)
+                    self.log_manager.log_metrics(
+                        metrics=eval_train_res,
+                        step=self.global_step,
+                        epoch=self.epoch,
+                        part="train",
+                    )
+                else:
+                    eval_train_res = {}
+
+                # evaluate on validation set
+                if self.val_loader is not None:
+                    eval_res = self.evaluate(self.val_loader)
+                    self.log_manager.log_metrics(
+                        metrics=eval_res,
+                        step=self.global_step,
+                        epoch=self.epoch,
+                        part="val",
+                    )
+                elif self.val_train_loader is not None:
+                    eval_res = eval_train_res
+                else:
+                    eval_res = {}
+
+                # model selection and early stopping
+                if self.train_config.monitor is not None:
+                    monitor_val = eval_res.get(self.train_config.monitor, -np.inf)
+                    if monitor_val > self.best_metric:
+                        self.best_metric = monitor_val
+                        self.best_state_dict = self._model.state_dict()
+                        self.best_eval_res = deepcopy(eval_res)
+                        self.best_epoch = self.epoch
+                        self.pseudo_best_epoch = self.epoch
+                    elif self.train_config.early_stopping:
+                        if monitor_val >= self.best_metric - self.train_config.early_stopping.min_delta:
+                            self.pseudo_best_epoch = self.epoch
+                        elif self.epoch - self.pseudo_best_epoch >= self.train_config.early_stopping.patience:
+                            self.log_manager.log_message(f"early stopping triggered at epoch {self.epoch}")
+                            break
+                    self.log_manager.log_message(f"best metric = {self.best_metric:.4f},  obtained at epoch {self.best_epoch}")
+                    save_suffix = f"epochloss_{self.epoch_loss:.5f}_metric_{monitor_val:.2f}"
+                else:
+                    save_suffix = f"epochloss_{self.epoch_loss:.5f}"
+
+                save_filename = f"{self.save_prefix}_epoch{self.epoch}_{get_date_str()}_{save_suffix}.pth.tar"
+                save_path = self.train_config.checkpoints / save_filename
+                if self.train_config.keep_checkpoint_max != 0:
+                    self.save_checkpoint(str(save_path))
+                    self.saved_models.append(save_path)
+                if len(self.saved_models) > self.train_config.keep_checkpoint_max > 0:
+                    model_to_remove = self.saved_models.popleft()
+                    try:
+                        os.remove(model_to_remove)
+                    except Exception:
+                        self.log_manager.log_message(f"failed to remove {model_to_remove}")
+
+                if self.train_config.lr_scheduler.lower() == "plateau":
+                    self._update_lr(eval_res)
+
+                self.log_manager.epoch_end(self.epoch)
+
+            self.epoch += 1
+
+        # save best model to model_dir
+        if self.best_metric > -np.inf:
+            if self.train_config.get("final_model_name"):
+                save_filename = self.train_config.final_model_name
+            else:
+                monitor_val = self.best_eval_res.get(self.train_config.monitor, 0) if self.train_config.monitor else 0
+                save_filename = (
+                    f"BestModel_{self.save_prefix}{self.best_epoch}_{get_date_str()}_metric_{monitor_val:.2f}.pth.tar"
+                )
+            save_path = self.train_config.model_dir / save_filename
+            self.save_checkpoint(str(save_path))
+            self.log_manager.log_message(f"best model saved at {save_path}")
+        elif self.train_config.monitor is None:
+            self.log_manager.log_message("no monitor set; saving last model as best model")
+            self.best_state_dict = self._model.state_dict()
+            save_filename = f"BestModel_{self.save_prefix}{self.epoch}_{get_date_str()}.pth.tar"
+            save_path = self.train_config.model_dir / save_filename
+            self.save_checkpoint(str(save_path))
+        else:
+            raise ValueError("No best model found!")
+
+        self.log_manager.close()
+
+        if not self.best_state_dict:
+            self.best_state_dict = self._model.state_dict()
+
+        return self.best_state_dict
 
     # ── Training step ────────────────────────────────────────────────────
 
@@ -268,8 +435,16 @@ class CINC2026Trainer(BaseTrainer):
         probs_arr = np.clip(np.nan_to_num(np.array(all_probs), nan=0.5), 0.0, 1.0)
         labels_arr = np.array(all_labels)
 
-        auroc = float(roc_auc_score(labels_arr, probs_arr))
-        auprc = float(average_precision_score(labels_arr, probs_arr))
+        if len(np.unique(labels_arr)) < 2:
+            self.log_manager.log_message(
+                "Only one class present in evaluation split; AUROC/AUPRC set to chance level.",
+                level=logging.WARNING,
+            )
+            auroc = 0.5
+            auprc = float(np.mean(labels_arr)) if len(labels_arr) > 0 else 0.5
+        else:
+            auroc = float(roc_auc_score(labels_arr, probs_arr))
+            auprc = float(average_precision_score(labels_arr, probs_arr))
         metrics: Dict[str, float] = {"auroc": auroc, "auprc": auprc}
 
         # Per-site AUROC — requires at least two classes present per site

@@ -118,6 +118,7 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
     train_config.model_dir.mkdir(parents=True, exist_ok=True)
     train_config.log_dir = working_dir / "log"
     train_config.log_dir.mkdir(parents=True, exist_ok=True)
+    train_config.debug = False
 
     model_config = deepcopy(ModelCfg.epoch_transformer)
     model = EpochTransformer(config=model_config)
