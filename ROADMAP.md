@@ -35,7 +35,7 @@ For the 1.8 % of training records that lack CAISR annotations (all due to missin
 
 ---
 
-## Phase 2 — Model Implementation
+## Phase 2 — Model Implementation ✅
 
 ### 2.1 `EpochTransformer` (`models/epoch_transformer.py`)
 
@@ -65,11 +65,12 @@ Key design choices:
 
 ### 2.2 Register model in `models/__init__.py`
 
-Add `EpochTransformer` to the module's `__all__` and import map so that `TrainCfg.model_name = "epoch_transformer"` resolves correctly.
+- [x] Add `EpochTransformer` to `__all__` and import map.
+- [x] Smoke tests: forward pass (B=2, T=50, D=21), backward pass, `CINC2026Outputs` wrapping, single-sample inference.
 
 ---
 
-## Phase 3 — Training Loop (`trainer.py`)
+## Phase 3 — Training Loop (`trainer.py`) ✅
 
 Implement `CINC2026Trainer` (can subclass `torch_ecg`'s base `Trainer` if it fits, otherwise write from scratch):
 
@@ -81,14 +82,20 @@ Implement `CINC2026Trainer` (can subclass `torch_ecg`'s base `Trainer` if it fit
 - **Checkpointing**: save best val AUROC checkpoint to `checkpoints/`.
 - **Logging**: log to `log/` via the existing logger infrastructure; optionally add W&B / TensorBoard.
 
-Training run command (target):
+- [x] `BCEWithLogitsLoss` embedded in model; `_setup_criterion` is a no-op.
+- [x] AUROC primary metric; NaN-safe evaluation (`nan_to_num` + `clip` before `roc_auc_score`).
+- [x] Per-site AUROC (S0001 / I0002 / I0006) logged every epoch for domain-shift monitoring.
+- [x] Gradient clipping (`max_norm=1.0`).
+- [x] Smoke test: 1 epoch over 624 training records, loss decreases, best-model checkpoint saved.
+
+Training run command:
 ```bash
-python train_model.py --model epoch_transformer --epochs 50 --batch_size 16
+python train_model.py -d /path/to/training_set -m saved_models/run1
 ```
 
 ---
 
-## Phase 4 — Fallback for CAISR-Missing Records
+## Phase 4 — Fallback for CAISR-Missing Records ⏳
 
 14/780 training records (1.8 %) have no CAISR annotations because the underlying recording contains no EEG/EOG/EMG (equipment failure). Strategy:
 
@@ -98,9 +105,11 @@ python train_model.py --model epoch_transformer --epochs 50 --batch_size 16
 
 The main `EpochTransformer` forward pass is never called for these records.
 
+> **Current fallback**: `team_code.run_model` returns `(0, 0.5)` when the CAISR EDF is missing (covers all 1.8 % of affected records).  The full ECG-HRV MLP branch remains to be implemented.
+
 ---
 
-## Phase 5 — Validation & Analysis
+## Phase 5 — Validation & Analysis ⏳
 
 After training converges:
 
@@ -111,7 +120,7 @@ After training converges:
 
 ---
 
-## Phase 6 — Optional: Raw EEG Spectral Features
+## Phase 6 — Optional: Raw EEG Spectral Features ⏳
 
 If time permits and Phase 5 reveals headroom, augment each epoch's feature vector with spectral band powers computed from raw EEG, expanding the 21-dim vector to ~30 dims:
 
@@ -132,24 +141,25 @@ The model receives the extended feature vector transparently; only `CAISR_EPOCH_
 
 ---
 
-## Phase 7 — Challenge Submission Pipeline
+## Phase 7 — Challenge Submission Pipeline 🔄
 
-- [ ] Update `train_model.py` to use `CINC2026Dataset` + `CINC2026Trainer`.
-- [ ] Update `run_model.py` to load the best checkpoint and produce `outputs.csv` in the required format.
-- [ ] Update `team_code.py` wrappers.
-- [ ] Build and test Docker image locally:
+- [x] `team_code.py`: `train_model`, `load_model`, `run_model` wrappers using `EpochTransformer` + CAISR pipeline.
+- [x] `test_docker.py`: all `test_*` functions implemented (`test_dataset`, `test_models`, `test_challenge_metrics`, `test_trainer`, `test_entry`); `test_entry` uses the official `run_model.py` / `evaluate_model.py` entry points.
+- [x] `post_docker_build.py`: no pretrained models to cache; minimal environment check.
+- [x] Mini training-set subset (`create_mini_dataset.py`) for CI: ≈ 24 records, ~10 MB, stored as `cinc2026-mini-training-set.zip`.
+- [ ] Upload mini dataset to GitHub Releases and set `status: alpha` in `.github/workflows/docker-test.yml` to activate the full CI pipeline.
+- [ ] Build and smoke-test Docker image locally:
   ```bash
   docker build -f Dockerfile -t cinc2026 . && bash test_run_challenge.sh
   ```
-- [ ] Run `python test_docker.py` (the local CI script).
-- [ ] Submit to the official evaluation system.
+- [ ] Full training run (50 epochs) and submit to the official evaluation system.
 
 ---
 
-## Immediate Next Steps (Phases 2 & 3)
+## Immediate Next Steps
 
-1. **Implement `EpochTransformer`** in `models/epoch_transformer.py`.
-2. **Register it** in `models/__init__.py`.
-3. **Implement `CINC2026Trainer`** in `trainer.py`.
-4. **Smoke-test training**: 2 epochs, small subset, confirm loss decreases.
-5. **Full training run**: 50 epochs, monitor val AUROC.
+1. **Upload mini dataset** (run `create_mini_dataset.py`, upload zip to GitHub Releases, update `MINI_DATASET_URL` in `docker-test.yml`).
+2. **Full training run** (50 epochs, monitor val AUROC, save best checkpoint).
+3. **Phase 4**: Implement ECG-HRV MLP fallback for the 14 CAISR-missing records.
+4. **Phase 5**: Validation analysis — ROC curves, per-site AUROC, attention maps.
+5. **Docker submission**: Set `status: final`, run CI, submit.
