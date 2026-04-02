@@ -180,7 +180,7 @@ def test_trainer() -> None:
 
     train_config = deepcopy(TrainCfg)
     train_config.db_dir = _resolve_db_dir(str(tmp_data_dir))
-    train_config.n_epochs = 10
+    train_config.n_epochs = 3
     train_config.debug = True
     train_config.working_dir = tmp_model_dir / "test_trainer_working_dir"
     train_config.working_dir.mkdir(parents=True, exist_ok=True)
@@ -243,7 +243,7 @@ def test_entry() -> None:
     # ------------------------------------------------------------------
     print("   Train model (1 epoch)   ".center(100, "#"))
     prev_env = os.environ.get("CINC2026_REVENGER_TRAIN_EPOCHS")
-    os.environ["CINC2026_REVENGER_TRAIN_EPOCHS"] = "1"
+    os.environ["CINC2026_REVENGER_TRAIN_EPOCHS"] = "3"
     try:
         train_model(str(train_data_dir), str(entry_model_dir), verbose=True)
     finally:
@@ -304,6 +304,10 @@ if __name__ == "__main__":
         print("    CINC2026_REVENGER_TEST=1 mount_data_dir=/path/to/data python test_docker.py")
         exit(0)
 
+    # Enable strict-test mode so all try/except blocks in team_code re-raise
+    # instead of silently swallowing errors.  This surfaces hidden bugs during CI.
+    os.environ["CINC2026_REVENGER_STRICT_TEST"] = "1"
+
     print("#" * 100)
     print("testing team code")
     print("#" * 100)
@@ -315,5 +319,5 @@ if __name__ == "__main__":
     test_dataset()
     test_models()
     test_challenge_metrics()
-    test_trainer()
+    # test_trainer()  # passed, and overriden by test_entry
     test_entry()
