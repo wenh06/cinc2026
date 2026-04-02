@@ -120,24 +120,134 @@ After training converges:
 
 ---
 
-## Phase 6 — Optional: Raw EEG Spectral Features ⏳
+## Phase 6 — Alternative Models & Raw-Signal Pathway ⏳
 
-If time permits and Phase 5 reveals headroom, augment each epoch's feature vector with spectral band powers computed from raw EEG, expanding the 21-dim vector to ~30 dims:
+### 6.1 EpochCRNN as an Alternative Sequence Encoder
 
-| Feature | Band | Notes |
-|---------|------|-------|
-| Slow-wave activity (SWA) | delta 0.5–4 Hz | Strongest known predictor of cognitive trajectory |
-| Sleep spindle density | sigma 12–15 Hz | Thalamo-cortical integrity marker |
-| Theta power | 4–8 Hz | Hippocampal dysfunction indicator |
-| Alpha power | 8–12 Hz | Cortical arousal index |
+A natural alternative to `EpochTransformer` for the same CAISR-feature input is a **Bidirectional GRU (BiGRU)** operating directly on the epoch sequence. This is the model family we used in cinc2025 (and prior years), where it performed well.
 
-Implementation notes:
-- Apply 0.5 Hz high-pass + 40 Hz low-pass Butterworth filter before FFT (DC removal, muscle artefact rejection).
-- For I0002 records with 500 Hz EEG: downsample to 200 Hz first with anti-aliasing.
-- For I0006 records: compute `f3 - m2` (or `f4 - m1`) bipolar derivation from unipolar channels before spectral analysis.
-- Spectral features are cached to `cache/spectral_features/` as `.npy` files to avoid repeated computation.
+**Architecture sketch:**
+```
+epoch_features (B, T, 21)
+       │
+       ├─ Linear projection → (B, T, 64)
+       │
+       ├─ 2-layer BiGRU (hidden=128, dropout=0.2)
+       │   └─ final hidden states cat'd → (B, 256)
+       │
+       ├─ FiLM demographic modulation (same as EpochTransformer)
+       │
+       └─ Linear → scalar logit
+```
 
-The model receives the extended feature vector transparently; only `CAISR_EPOCH_DIM` in `const.py` changes (21 → 29 or similar).
+**Pros vs. EpochTransformer:**
+- ~3× fewer parameters (~270K vs. ~825K) → less overfitting on 624 samples.
+- Naturally handles variable-length sequences without padding masks.
+- Inductive bias: temporal ordering is built in (no positional encoding needed).
+
+**Cons:**
+- GRU gradient flow weakens over 800-step sequences → hard to capture sleep-stage transitions at the start/end of the night.
+- Parallelism within a sequence is limited.
+
+**Verdict:** Worth implementing as a competitive baseline. If EpochTransformer overfits, EpochCRNN may be more robust. Both use the same `CINC2026Dataset` and `CINC2026Trainer` — only the model changes.
+
+**Implementation:** add `EpochCRNN` to `models/epoch_crnn.py`, register in `models/__init__.py`, add `ModelCfg.epoch_crnn` config block.
+
+### 6.2 Time-Series Foundation Models (TimesFM etc.)
+
+Foundation models (TimesFM, Chronos, Moirai, MOMENT) are **not recommended** for this task:
+
+| Model | Designed for | Parameters | Multivariate | Classification |
+|-------|-------------|------------|--------------|----------------|
+| TimesFM 2.5 (Google) | Univariate forecasting | 200 M | ✗ | Forecasting only |
+| Chronos (Amazon) | Univariate forecasting | 710 M | ✗ | Forecasting only |
+| Moirai (Salesforce) | Multivariate forecasting | 310 M | ✓ | Forecasting only |
+| MOMENT-small (CMU) | Multiple tasks incl. classification | ~40 M | ✓ | ✓ (native head, ECG-tested) |
+| MOMENT-large (CMU) | Multiple tasks incl. classification | 125 M | ✓ | ✓ |
+
+Key reasons why they don't fit for the **CAISR-feature pathway**:
+1. **Scale mismatch**: TimesFM (200M), Chronos (710M), Moirai (310M) — 250k+ params per training sample → catastrophic overfitting.
+2. **Forecasting-first design**: TimesFM, Chronos, Moirai have no native classification head and require architectural surgery.
+3. **Univariate bias**: TimesFM and Chronos are univariate only; multivariate XReg support in TimesFM 2.5 is brand-new and unproven on medical data.
+4. **Our input is already features, not raw waveforms**: the pretrained representations don't transfer.
+
+**Exception — MOMENT-Small**: At ~25M params (vs. 200M+ for others), the param/sample ratio (~31k:1) is borderline acceptable for fine-tuning with a frozen backbone. It has a native multi-channel classification task, is proven on ECG data (PTB-XL tutorial), and is as simple as `pip install momentfm`. However, MOMENT expects raw time series patches (512 samples each), so it operates more naturally on raw signals than on CAISR epoch feature vectors. **For the raw-signal pathway (§6.3)**, MOMENT-Small is the most promising foundation-model option.
+
+**Verdict: For CAISR-feature pathway, use EpochTransformer + EpochCRNN. For raw-signal pathway, MOMENT-Small is worth evaluating alongside a custom EpochCNN.**
+
+### 6.3 Raw Physiological Data Pathway
+
+> **Scale reality check:** physiological EDFs are ~160 GB for 780 records. A single 7-hour recording at 200 Hz with 18 channels contains ≈ 91 M samples. This pathway requires a fundamentally different data pipeline.
+
+#### Why it's hard
+
+| Challenge | Detail |
+|-----------|--------|
+| Channel heterogeneity | S0001: `E1-M2`, I0002: `E1` (unipolar), I0006: `E1` unipolar + `M1` separate |
+| Sampling rate heterogeneity | SpO2: 10–25 Hz; EEG/EOG/EMG: 200 Hz; airflow: 20–200 Hz |
+| Memory | Even a single EEG channel for 7 h at 200 Hz = 5.04 M floats per record |
+| Dataset size | 160 GB total; cannot be held in RAM or even SSD cache |
+
+#### Recommended strategy — 30-second epoch CNN encoder
+
+Instead of end-to-end raw-signal processing, **augment the CAISR feature vector** by adding per-epoch spectral and statistical features computed from the raw signals. This is an incremental upgrade that preserves the CAISR pipeline:
+
+```
+Per-epoch raw signals (30 s × 200 Hz = 6000 samples per channel)
+       │
+       ├─ Select "universal" channels present in all sites:
+       │   EEG (C3-M2 or C3-M2 equivalent), ECG, SpO2/SaO2
+       │
+       ├─ Channel-level pre-processing (per site):
+       │   - Resample to 200 Hz if needed
+       │   - Compute bipolar derivation for I0006 (C3 - M2)
+       │   - Bandpass filter: 0.5–40 Hz (EEG), 0.67–40 Hz (ECG)
+       │
+       ├─ Spectral features per EEG channel (Welch PSD):
+       │   delta (0.5–4 Hz), theta (4–8 Hz), alpha (8–12 Hz),
+       │   sigma (12–15 Hz), beta (15–30 Hz), total power
+       │   → 6 features per channel
+       │
+       ├─ ECG HRV per epoch:
+       │   SDNN, RMSSD, pNN50, LF/HF ratio → 4 features
+       │
+       └─ SpO2 statistics per epoch:
+           mean, std, % time < 90% → 3 features
+```
+
+This adds ~13 features per epoch on top of the 21 CAISR features → **34-dim epoch vector**, same pipeline, same model (just `CAISR_EPOCH_DIM = 34`).
+
+**Caching:** spectral features are expensive. Cache to `cache/spectral_features/<record_id>.npy` on first computation; `CINC2026Dataset.__getitem__` checks the cache first.
+
+#### Full end-to-end raw-signal model (longer term)
+
+If the augmented-feature approach shows headroom, a full end-to-end model can be built:
+
+```
+Per-epoch raw signals (30 s, 3 selected channels)
+       │
+       ├─ Shared EpochCNN (ResNet1d / EEGNet / STFT encoder)
+       │   → (B × T, cnn_dim) per-epoch embedding
+       │
+       ├─ Reshape → (B, T, cnn_dim) sequence
+       │
+       ├─ Transformer or BiGRU → (B, d_model) night summary
+       │
+       └─ Classification head (+ FiLM demographics)
+```
+
+Key implementation decisions:
+- **Channel selection**: use only EEG (C3-M2), ECG, and SpO2 — available in all three sites with a site-specific preprocessing layer to unify names/montage.
+- **Epoch CNN**: EEGNet (compact, 4-layer depthwise separable CNN, works well with <1000 samples) or a small ResNet1d. Input: `(B × T, C, L)` where `C=3` channels, `L=6000` samples.
+- **Memory management**: load one epoch at a time (30 s), compute CNN features, accumulate, then run the sequence model. Alternatively, cache CNN features to disk.
+- **Training**: freeze epoch CNN for the first N epochs; fine-tune jointly after.
+
+**Data pipeline additions needed:**
+- `PhysioDataReader`: loads physiological EDFs, normalises channel names, resamples.
+- `RawEpochDataset`: replaces `CINC2026Dataset`; reads 30-s windows from disk on the fly.
+- Site-specific channel-mapping config (in `const.py` or `cfg.py`).
+
+**Verdict:** Phase 6.3a (spectral augmentation of CAISR features) is the next practical step and should be tried before the full end-to-end approach. It reuses all existing infrastructure and is likely to improve AUROC without requiring a new data pipeline.
 
 ---
 
@@ -147,12 +257,10 @@ The model receives the extended feature vector transparently; only `CAISR_EPOCH_
 - [x] `test_docker.py`: all `test_*` functions implemented (`test_dataset`, `test_models`, `test_challenge_metrics`, `test_trainer`, `test_entry`); `test_entry` uses the official `run_model.py` / `evaluate_model.py` entry points.
 - [x] `post_docker_build.py`: no pretrained models to cache; minimal environment check.
 - [x] Mini training-set subset (`create_mini_dataset.py`): 171 records, ~28 MB (CAISR EDFs only), uploaded to Google Drive; CI workflow downloads via `gdown`.
+- [x] Reduced training-set subset (`create_reduced_dataset.py`): 766 records, ~125 MB (CAISR EDFs only); upload to Google Drive and set `REDUCED_DATASET_GDRIVE_ID` in workflow.
 - [x] `status: alpha` set in `.github/workflows/docker-test.yml` — full CI pipeline active.
-- [ ] CI pipeline passes end-to-end (Docker build → Apptainer SIF → mini-dataset download → container run → test\_entry score printed).
-- [ ] Build and smoke-test Docker image locally:
-  ```bash
-  docker build -f Dockerfile -t cinc2026 . && bash test_run_challenge.sh
-  ```
+- [x] Strict-test env var (`CINC2026_REVENGER_STRICT_TEST=1`) active in `test_docker.py`; `run_model` has production fallback `(0, 0.5)`.
+- [ ] CI pipeline passes end-to-end (Docker build → dataset download → `docker run` → `test_entry` score printed).
 - [ ] Full training run (100 epochs, monitor val AUROC, save best checkpoint).
 - [ ] Submit to the official evaluation system.
 
@@ -160,7 +268,10 @@ The model receives the extended feature vector transparently; only `CAISR_EPOCH_
 
 ## Immediate Next Steps
 
-1. **Full training run** (100 epochs, monitor val AUROC per site, save best checkpoint).
-2. **Phase 4**: Implement ECG-HRV MLP fallback for the 14 CAISR-missing records.
-3. **Phase 5**: Validation analysis — ROC curves, per-site AUROC, attention maps.
-4. **Docker submission**: Set `status: final`, ensure CI passes, submit.
+1. **Upload reduced dataset** (`/Data1/wenh06/cinc2026-reduced-training-set.zip`, 125 MB) to Google Drive; set `REDUCED_DATASET_GDRIVE_ID` in `.github/workflows/docker-test.yml`.
+2. **Full training run** (100 epochs, monitor val AUROC per site, save best checkpoint to `saved_models/run1/`).
+3. **Phase 6.1**: Implement `EpochCRNN` as an alternative to `EpochTransformer`; compare val AUROC after 100 epochs each.
+4. **Phase 6.3a**: Add per-epoch spectral features (EEG delta/theta/alpha/sigma, ECG HRV, SpO2 stats) to extend the 21-dim CAISR vector to ~34-dim; cache to `cache/spectral_features/`.
+5. **Phase 4**: Implement ECG-HRV MLP fallback for the 14 CAISR-missing records (replace current `(0, 0.5)` constant).
+6. **Phase 5**: Validation analysis — ROC curves, per-site AUROC, attention maps.
+7. **Docker submission**: Set `status: final`, ensure CI passes, submit.
