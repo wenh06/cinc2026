@@ -28,7 +28,7 @@ def compute_challenge_metrics(
         The outputs produced by the model.
     """
     if not outputs or not all(hasattr(o, "ci_prob") and o.ci_prob is not None for o in outputs):
-        return {m: np.nan for m in ["challenge_score", "auroc", "auprc", "accuracy", "f_measure"]}
+        return {m: np.nan for m in ["challenge_score", "auroc", "auprc", "accuracy", "f_measure", "tpr"]}
 
     # 1. Extract and concatenate Ground Truth labels
     all_labels = []
