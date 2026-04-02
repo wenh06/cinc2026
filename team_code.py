@@ -229,6 +229,6 @@ def run_model(
         demographics=demographics,
     )
 
-    binary_output = int(outputs.cognitive_impairment[0].item())
-    probability_output = float(outputs.ci_prob[0, 1].item())
+    binary_output = int(outputs.cognitive_impairment[0])
+    probability_output = float(outputs.ci_prob[0, 1])
     return binary_output, probability_output

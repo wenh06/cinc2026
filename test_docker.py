@@ -14,9 +14,9 @@ from torch_ecg.utils.misc import str2bool
 from cfg import _BASE_DIR, ModelCfg, TrainCfg
 from dataset import CINC2026Dataset, collate_fn
 from evaluate_model import evaluate_model as _evaluate_model
-from evaluate_model import run as model_evaluator_func  # noqa: F401
+from evaluate_model import run as model_evaluator_func
 from models import EpochTransformer
-from run_model import run as model_runner_func  # noqa: F401
+from run_model import run as model_runner_func
 from team_code import _resolve_db_dir, load_model, run_model, train_model  # noqa: F401
 from utils.misc import func_indicator
 
@@ -180,7 +180,7 @@ def test_trainer() -> None:
 
     train_config = deepcopy(TrainCfg)
     train_config.db_dir = _resolve_db_dir(str(tmp_data_dir))
-    train_config.n_epochs = 1
+    train_config.n_epochs = 10
     train_config.debug = True
     train_config.working_dir = tmp_model_dir / "test_trainer_working_dir"
     train_config.working_dir.mkdir(parents=True, exist_ok=True)
@@ -260,7 +260,7 @@ def test_entry() -> None:
         data_folder=str(train_data_dir),
         model_folder=str(entry_model_dir),
         output_folder=str(entry_output_dir),
-        allow_failures=True,
+        allow_failures=False,
         verbose=True,
     )
     model_runner_func(model_runner_args)
