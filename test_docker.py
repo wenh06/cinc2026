@@ -15,9 +15,9 @@ from cfg import _BASE_DIR, ModelCfg, TrainCfg
 from dataset import CINC2026Dataset, collate_fn
 from evaluate_model import evaluate_model as _evaluate_model
 from evaluate_model import run as model_evaluator_func
-from models import EpochTransformer
+from models import EpochCRNN, EpochTransformer
 from run_model import run as model_runner_func
-from team_code import _resolve_db_dir, load_model, run_model, train_model  # noqa: F401
+from team_code import _MODEL_CLASS_MAP, _resolve_db_dir, load_model, run_model, train_model  # noqa: F401
 from utils.misc import func_indicator
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -90,45 +90,50 @@ def test_dataset() -> None:
 
 @func_indicator("testing models")
 def test_models() -> None:
-    """Test EpochTransformer forward pass and inference."""
+    """Test EpochTransformer and EpochCRNN forward pass and inference.
+
+    Always tests both model families (each at M-size).  The default model
+    is determined by ``TrainCfg.model_name``; we also run a quick sanity check
+    on the other family so that regressions in either are caught in CI.
+    """
     echo_write_permission(tmp_data_dir)
     echo_write_permission(tmp_model_dir)
 
-    model_config = deepcopy(ModelCfg.epoch_transformer)
-    model = EpochTransformer(config=model_config).to(DEVICE)
-    model.eval()
-
     B, T, D = 2, 50, 21
-    epoch_features = torch.randn(B, T, D, device=DEVICE)
-    demographics = torch.randn(B, 3, device=DEVICE)
-    padding_mask = torch.zeros(B, T, dtype=torch.bool, device=DEVICE)
-    padding_mask[0, 40:] = True  # simulate a shorter record in slot 0
 
-    # Forward pass
-    input_dict = {
-        "epoch_features": epoch_features,
-        "demographics": demographics,
-        "padding_mask": padding_mask,
-    }
-    with torch.no_grad():
-        out = model(input_dict)
+    for model_name, cfg_attr, model_cls in [
+        ("epoch_transformer_M", ModelCfg.epoch_transformer_M, EpochTransformer),
+        ("epoch_crnn_M", ModelCfg.epoch_crnn_M, EpochCRNN),
+    ]:
+        model = model_cls(config=deepcopy(cfg_attr)).to(DEVICE)
+        model.eval()
 
-    assert "ci_logits" in out, "ci_logits missing from output"
-    assert out["ci_logits"].shape == (B, 1), f"Expected ci_logits (B,1), got {out['ci_logits'].shape}"
-    print(f"  Forward pass OK: ci_logits shape = {out['ci_logits'].shape}")
+        epoch_features = torch.randn(B, T, D, device=DEVICE)
+        demographics = torch.randn(B, 3, device=DEVICE)
+        padding_mask = torch.zeros(B, T, dtype=torch.bool, device=DEVICE)
+        padding_mask[0, 40:] = True  # simulate a shorter record in slot 0
 
-    # Inference (single sample, no padding)
-    feat_np = np.random.randn(100, D).astype(np.float32)
-    demo_np = np.array([0.65, 1.0, 0.5], dtype=np.float32)
-    outputs = model.inference(epoch_features=feat_np, demographics=demo_np)
-    assert outputs.ci_prob.shape == (1, 2), f"Expected ci_prob (1,2), got {outputs.ci_prob.shape}"
-    prob = outputs.ci_prob[0, 1].item()
-    assert 0.0 <= prob <= 1.0, f"Probability out of [0,1]: {prob}"
-    print(f"  Inference OK: CI probability = {prob:.4f}")
+        input_dict = {
+            "epoch_features": epoch_features,
+            "demographics": demographics,
+            "padding_mask": padding_mask,
+        }
+        with torch.no_grad():
+            out = model(input_dict)
 
-    # Parameter count
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"  EpochTransformer parameters: {n_params:,}")
+        assert "ci_logits" in out, f"{model_name}: ci_logits missing from output"
+        assert out["ci_logits"].shape == (B, 1), f"{model_name}: expected ci_logits (B,1), got {out['ci_logits'].shape}"
+
+        # Inference (single sample, numpy)
+        feat_np = np.random.randn(100, D).astype(np.float32)
+        demo_np = np.array([0.65, 1.0, 0.5], dtype=np.float32)
+        outputs = model.inference(epoch_features=feat_np, demographics=demo_np)
+        assert outputs.ci_prob.shape == (1, 2), f"{model_name}: expected ci_prob (1,2), got {outputs.ci_prob.shape}"
+        prob = outputs.ci_prob[0, 1].item()
+        assert 0.0 <= prob <= 1.0, f"{model_name}: probability out of [0,1]: {prob}"
+
+        n_params = sum(p.numel() for p in model.parameters())
+        print(f"  {model_name}: params={n_params:,}  CI prob={prob:.4f}  OK")
 
 
 @func_indicator("testing challenge metrics")
@@ -189,8 +194,9 @@ def test_trainer() -> None:
     train_config.log_dir = train_config.working_dir / "log"
     train_config.log_dir.mkdir(parents=True, exist_ok=True)
 
-    model_config = deepcopy(ModelCfg.epoch_transformer)
-    model = EpochTransformer(config=model_config).to(DEVICE)
+    model_config = deepcopy(getattr(ModelCfg, train_config.model_name))
+    model_cls = _MODEL_CLASS_MAP[train_config.model_name]
+    model = model_cls(config=model_config).to(DEVICE)
 
     trainer = CINC2026Trainer(
         model=model,

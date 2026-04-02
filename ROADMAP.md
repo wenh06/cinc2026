@@ -43,11 +43,11 @@ Architecture:
 ```
 epoch_features (B, T, 21)
        │
-       ├─ Linear projection → (B, T, d_model=128)
+       ├─ Linear projection → (B, T, d_model)
        │
        ├─ Sinusoidal positional encoding (added, not concatenated)
        │
-       ├─ TransformerEncoder (4 layers, nhead=4, dim_feedforward=512, GELU, dropout=0.1)
+       ├─ TransformerEncoder (Pre-LN, GELU, dropout=0.1)
        │   └─ src_key_padding_mask = padding_mask (B, T)
        │
        ├─ Masked mean pooling over valid (non-padding) positions → (B, d_model)
@@ -58,10 +58,18 @@ epoch_features (B, T, 21)
        └─ Linear → scalar logit → BCEWithLogitsLoss
 ```
 
+Size presets (swap via `TrainCfg.model_name`):
+
+| Preset | d\_model | heads | layers | ff | ~params |
+|--------|---------|-------|--------|-----|---------|
+| `epoch_transformer_S` | 64 | 2 | 2 | 256 | ~116 K |
+| `epoch_transformer_M` *(default)* | 128 | 4 | 4 | 512 | ~826 K |
+| `epoch_transformer_L` | 256 | 8 | 6 | 1024 | ~4.8 M |
+
 Key design choices:
-- **FiLM (Feature-wise Linear Modulation)** for demographics instead of simple concatenation, following the `ModelCfg.epoch_transformer.use_film=True` config flag.
+- **FiLM (Feature-wise Linear Modulation)** for demographics instead of simple concatenation.
 - **Masked mean pooling**: average only over the non-padding epochs to avoid length-bias.
-- Model config lives entirely in `cfg.ModelCfg.epoch_transformer`; no magic numbers in the model file.
+- Model config lives entirely in `model_configs/epoch_transformer.py` + `cfg.ModelCfg`; no magic numbers in the model file.
 
 ### 2.2 Register model in `models/__init__.py`
 
@@ -120,38 +128,48 @@ After training converges:
 
 ---
 
-## Phase 6 — Alternative Models & Raw-Signal Pathway ⏳
+## Phase 6 — Alternative Models & Raw-Signal Pathway 🔄
 
-### 6.1 EpochCRNN as an Alternative Sequence Encoder
+### 6.1 EpochCRNN as an Alternative Sequence Encoder ✅
 
-A natural alternative to `EpochTransformer` for the same CAISR-feature input is a **Bidirectional GRU (BiGRU)** operating directly on the epoch sequence. This is the model family we used in cinc2025 (and prior years), where it performed well.
+Implemented in `models/epoch_crnn.py`, config in `model_configs/epoch_crnn.py`.
 
-**Architecture sketch:**
+**Architecture** (ResNet-N + BiLSTM, inheriting `torch_ecg.models.ECG_CRNN`):
 ```
 epoch_features (B, T, 21)
        │
-       ├─ Linear projection → (B, T, 64)
+       ├─ Transpose → (B, 21, T)  [21 CAISR features = "channels", T epochs = "time"]
        │
-       ├─ 2-layer BiGRU (hidden=128, dropout=0.2)
-       │   └─ final hidden states cat'd → (B, 256)
+       ├─ ResNet-N CNN (3 stages, epoch-scale kernels k=5,3,3, stride=2 each → T/8)
+       │   CNN out: (B, C_out, T/8)
+       │
+       ├─ Bidirectional LSTM (retseq=False → last hidden, both directions cat'd)
+       │   LSTM out: (B, 2·hidden)
        │
        ├─ FiLM demographic modulation (same as EpochTransformer)
        │
-       └─ Linear → scalar logit
+       └─ MLP head → scalar logit → BCEWithLogitsLoss
 ```
 
-**Pros vs. EpochTransformer:**
-- ~3× fewer parameters (~270K vs. ~825K) → less overfitting on 624 samples.
-- Naturally handles variable-length sequences without padding masks.
-- Inductive bias: temporal ordering is built in (no positional encoding needed).
+Size presets (swap via `TrainCfg.model_name`):
 
-**Cons:**
-- GRU gradient flow weakens over 800-step sequences → hard to capture sleep-stage transitions at the start/end of the night.
-- Parallelism within a sequence is limited.
+| Preset | CNN channels | LSTM hidden | clf | ~params |
+|--------|-------------|------------|-----|---------|
+| `epoch_crnn_S` | 16→32→64 | [64] | [32] | ~123 K |
+| `epoch_crnn_M` *(default)* | 32→64→128 | [128] | [64] | ~437 K |
+| `epoch_crnn_L` | 64→128→256 | [256] | [128] | ~1.65 M |
 
-**Verdict:** Worth implementing as a competitive baseline. If EpochTransformer overfits, EpochCRNN may be more robust. Both use the same `CINC2026Dataset` and `CINC2026Trainer` — only the model changes.
+Additional backbone variants (change `config.cnn.name`):
+- `resnetNS_M` — separable convolutions (~368 K)
+- `resnetNB_M` — bottleneck residual blocks (~1.08 M)
 
-**Implementation:** add `EpochCRNN` to `models/epoch_crnn.py`, register in `models/__init__.py`, add `ModelCfg.epoch_crnn` config block.
+**Modular config system** (`model_configs/` package):
+- `EPOCH_CRNN_CONFIG` registers all 5 backbone variants; switching backbone is one line.
+- `EPOCH_TRANSFORMER_BASE` holds size-agnostic Transformer params.
+- `cfg.py` helper functions `_make_epoch_crnn` / `_make_epoch_transformer` assemble presets DRY.
+- `team_code.py` is fully config-driven via `_MODEL_CLASS_MAP`; switch model by changing `TrainCfg.model_name` only.
+
+**Verified:** forward pass, inference API, save/load round-trip for all 6 presets.
 
 ### 6.2 Time-Series Foundation Models (TimesFM etc.)
 
@@ -253,8 +271,8 @@ Key implementation decisions:
 
 ## Phase 7 — Challenge Submission Pipeline 🔄
 
-- [x] `team_code.py`: `train_model`, `load_model`, `run_model` wrappers using `EpochTransformer` + CAISR pipeline.
-- [x] `test_docker.py`: all `test_*` functions implemented (`test_dataset`, `test_models`, `test_challenge_metrics`, `test_trainer`, `test_entry`); `test_entry` uses the official `run_model.py` / `evaluate_model.py` entry points.
+- [x] `team_code.py`: `train_model`, `load_model`, `run_model` wrappers; fully config-driven via `_MODEL_CLASS_MAP` — switching model/size requires only changing `TrainCfg.model_name` in `cfg.py`.
+- [x] `test_docker.py`: all `test_*` functions implemented (`test_dataset`, `test_models`, `test_challenge_metrics`, `test_trainer`, `test_entry`); `test_models` covers both `EpochTransformer` and `EpochCRNN`; `test_trainer` uses `_MODEL_CLASS_MAP` (config-driven); `test_entry` uses the official `run_model.py` / `evaluate_model.py` entry points.
 - [x] `post_docker_build.py`: no pretrained models to cache; minimal environment check.
 - [x] Mini training-set subset (`create_mini_dataset.py`): 171 records, ~28 MB (CAISR EDFs only), uploaded to Google Drive; CI workflow downloads via `gdown`.
 - [x] Reduced training-set subset (`create_reduced_dataset.py`): 766 records, ~125 MB (CAISR EDFs only); upload to Google Drive and set `REDUCED_DATASET_GDRIVE_ID` in workflow.
@@ -269,9 +287,10 @@ Key implementation decisions:
 ## Immediate Next Steps
 
 1. **Upload reduced dataset** (`/Data1/wenh06/cinc2026-reduced-training-set.zip`, 125 MB) to Google Drive; set `REDUCED_DATASET_GDRIVE_ID` in `.github/workflows/docker-test.yml`.
-2. **Full training run** (100 epochs, monitor val AUROC per site, save best checkpoint to `saved_models/run1/`).
-3. **Phase 6.1**: Implement `EpochCRNN` as an alternative to `EpochTransformer`; compare val AUROC after 100 epochs each.
+2. **CI pipeline end-to-end**: verify `docker run` passes `test_entry` and score is printed.
+3. **Full training run** (100 epochs, monitor val AUROC per site, save best checkpoint to `saved_models/run1/`).
 4. **Phase 6.3a**: Add per-epoch spectral features (EEG delta/theta/alpha/sigma, ECG HRV, SpO2 stats) to extend the 21-dim CAISR vector to ~34-dim; cache to `cache/spectral_features/`.
-5. **Phase 4**: Implement ECG-HRV MLP fallback for the 14 CAISR-missing records (replace current `(0, 0.5)` constant).
-6. **Phase 5**: Validation analysis — ROC curves, per-site AUROC, attention maps.
-7. **Docker submission**: Set `status: final`, ensure CI passes, submit.
+5. **Compare EpochTransformer vs EpochCRNN**: run both at M-size for 100 epochs; pick the winner (or ensemble).
+6. **Phase 4**: Implement ECG-HRV MLP fallback for the 14 CAISR-missing records (replace current `(0, 0.5)` constant).
+7. **Phase 5**: Validation analysis — ROC curves, per-site AUROC, attention maps.
+8. **Docker submission**: Set `status: final`, ensure CI passes, submit.
