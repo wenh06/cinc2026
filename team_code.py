@@ -42,6 +42,19 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 FINAL_MODEL_NAME = "final_model.pth.tar"
 
 
+def _is_strict_test() -> bool:
+    """Return True when CINC2026_REVENGER_STRICT_TEST is set to a truthy value.
+
+    When strict-test mode is active, all ``except`` blocks in this module
+    re-raise instead of swallowing errors.  This surfaces hidden bugs during
+    CI (``test_docker.py`` sets the flag to ``"1"`` before running tests).
+    In production (flag unset or ``"0"``) errors are caught and replaced with
+    a safe fallback so that the challenge scorer always receives a valid
+    ``(binary_output, probability_output)`` pair.
+    """
+    return os.environ.get("CINC2026_REVENGER_STRICT_TEST", "0") not in ("0", "", "false", "False", "no", "No")
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -75,6 +88,8 @@ def _load_caisr_ann(caisr_path: str) -> Dict[str, np.ndarray]:
         reader._close()
         return annotations
     except Exception:
+        if _is_strict_test():
+            raise
         return {}
 
 
@@ -188,7 +203,33 @@ def run_model(
         ``algorithmic_annotations/`` at its root.
     verbose:
         Print progress messages when ``True``.
+
+    Returns
+    -------
+    binary_output : int
+        ``1`` if cognitive impairment is predicted, ``0`` otherwise.
+        Falls back to ``0`` on any unhandled error (unless strict-test mode is
+        active — see :func:`_is_strict_test`).
+    probability_output : float
+        Positive-class probability in ``[0, 1]``.  Falls back to ``0.5``.
     """
+    try:
+        return _run_model_impl(model_dict, record, data_folder, verbose)
+    except Exception as exc:
+        if _is_strict_test():
+            raise
+        if verbose:
+            print(f"  [run_model] ERROR for record {record}: {exc!r}; returning fallback (0, 0.5).")
+        return 0, 0.5
+
+
+def _run_model_impl(
+    model_dict: Dict[str, Any],
+    record: Dict[str, str],
+    data_folder: str,
+    verbose: bool,
+) -> Tuple[int, float]:
+    """Inner implementation of :func:`run_model` (may raise)."""
     model: EpochTransformer = model_dict["model"]
 
     bids_folder = str(record[HEADERS["bids_folder"]])
