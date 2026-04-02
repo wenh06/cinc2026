@@ -1,24 +1,63 @@
-""" """
+"""Dataset for the CinC 2026 Challenge.
 
+Each sample is one patient's full-night PSG, represented as a sequence of
+30-second epochs.  Each epoch is encoded as a fixed-size CAISR feature vector
+(channel-agnostic, identical across all recording sites) so the dataset is
+robust to the signal heterogeneity described in _CINC2026_INFO.
+
+Feature layout per epoch (CAISR_EPOCH_DIM = 21):
+  [0:6]   stage one-hot          (N3, N2, N1, REM, W, Unknown)
+  [6:11]  stage softmax probs    (n3, n2, n1, r, w; normalised to [0,1])
+  [11]    arousal fraction       mean of arousal_caisr over the 30 s window
+  [12:17] resp event fractions   fraction of each of OA/CA/MA/HY/RERA
+  [17:19] limb event fractions   fraction of isolated / periodic limb movement
+  [19]    sin(2pi x t/T)         periodic time-position encoding
+  [20]    cos(2pi x t/T)
+
+Note on caisr_prob_* scaling: the EDF physical-range header for the
+probability channels was set to [0, 9] instead of [0, 1].  pyedflib
+faithfully returns the physical values, so we divide by CAISR_PROB_EDF_SCALE
+(= 9) and then re-normalise each row so the five probabilities sum to 1.
+"""
+
+import json
+import os
+import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Set, Union
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.multiprocessing as mp
+from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Dataset
-from torch_ecg._preprocessors import PreprocManager
-from torch_ecg.cfg import CFG
+from torch_ecg.cfg import CFG, DEFAULTS
 from torch_ecg.utils.misc import ReprMixin
-from torch_ecg.utils.utils_data import one_hot_encode  # noqa: F401
-from torch_ecg.utils.utils_nn import default_collate_fn  # noqa: F401
+from torch_ecg.utils.utils_nn import default_collate_fn
+from tqdm.auto import tqdm
 
 from cfg import TrainCfg
+from const import (  # noqa: F401
+    AROUSAL_SAMPLES_PER_EPOCH,
+    CAISR_EPOCH_DIM,
+    CAISR_PROB_EDF_SCALE,
+    DEMOGRAPHIC_DIM,
+    FIXED_DATA_SPLIT_FILE,
+    LABEL_CACHE_DIR,
+    LIMB_SAMPLES_PER_EPOCH,
+    RESP_SAMPLES_PER_EPOCH,
+    STAGE_LABEL_TO_IDX,
+    STAGE_ONEHOT_DIM,
+)
 from data_reader import CINC2026
 
 __all__ = [
     "CINC2026Dataset",
+    "FastDataReader",
+    "collate_fn",
+    "build_epoch_features",
 ]
 
 try:
@@ -28,19 +67,28 @@ except RuntimeError:
 
 
 class CINC2026Dataset(Dataset, ReprMixin):
-    """Dataset for the CinC2026 Challenge.
+    """Outer dataset for the CinC 2026 Challenge.
+
+    Manages the train/validation split, optional in-memory caching, and
+    delegates per-record loading to :class:`FastDataReader`.
 
     Parameters
     ----------
     config : CFG
-        configuration for the dataset
+        Training configuration.  ``config.db_dir`` must point to the data root.
     training : bool, default True
-        whether the dataset is for training or validation
+        Whether this instance represents the training or validation split.
     lazy : bool, default True
-        whether to load all data into memory at initialization
+        If ``False``, all records are loaded into memory at construction time.
+    override_data_split : bool, default False
+        If ``False`` (default), the fixed canonical split shipped at
+        ``utils/cinc2026-data-split.json`` is used, ensuring fully
+        reproducible train/val assignments across runs and machines.
+        If ``True``, the legacy dynamic flow is used: read
+        ``LABEL_CACHE_DIR/cinc2026-data-split.json`` when it exists,
+        otherwise generate a fresh stratified split and save it there.
     reader_kwargs : dict, optional
-        keyword arguments for the data reader class.
-
+        Extra keyword arguments forwarded to :class:`CINC2026`.
     """
 
     __name__ = "CINC2026Dataset"
@@ -50,6 +98,7 @@ class CINC2026Dataset(Dataset, ReprMixin):
         config: CFG,
         training: bool = True,
         lazy: bool = True,
+        override_data_split: bool = False,
         **reader_kwargs,
     ) -> None:
         super().__init__()
@@ -57,104 +106,458 @@ class CINC2026Dataset(Dataset, ReprMixin):
         if config is not None:
             self.config.update(deepcopy(config))
         self.training = training
+        self.config["training"] = training  # propagate so FastDataReader.training works correctly
         self.lazy = lazy
+        self.override_data_split = override_data_split
 
         if self.config.get("db_dir", None) is None:
             self.config.db_dir = reader_kwargs.pop("db_dir", None)
-            assert self.config.db_dir is not None, "db_dir must be specified"
         else:
             reader_kwargs.pop("db_dir", None)
-        if self.config.get("use_dbs", None) is not None:
-            reader_kwargs["use_dbs"] = self.config.use_dbs
+        assert self.config.db_dir is not None, "db_dir must be specified"
         self.config.db_dir = Path(self.config.db_dir).expanduser().resolve()
 
-        if self.config.torch_dtype == torch.float64:
-            self.dtype = np.float64
-        else:
-            self.dtype = np.float32
+        self.dtype = np.float32 if self.config.torch_dtype != torch.float64 else np.float64
 
-        self.__cache = None
         self.reader = CINC2026(db_dir=self.config.db_dir, **reader_kwargs)
-        self.records = self._train_test_split()
 
-        raise NotImplementedError
+        # Only use the labelled training_set for the train/val split.
+        # The supplementary_set (I0004, I0007 examples) has no labels and
+        # is kept aside for inspection / domain-adaptation experiments.
+        self._labelled_df = self.reader._df_records[self.reader._df_records["partition"] == "training_set"].copy()
+
+        self.records = self._train_test_split()
+        self.fdr = FastDataReader(self.reader, self.records, self.config)
+
+        self.__cache: Optional[Dict] = None
+        if not self.lazy:
+            self._load_all_data()
+
+    # ------------------------------------------------------------------
+    # Dataset interface
+    # ------------------------------------------------------------------
 
     def __len__(self) -> int:
-        return len(self.records)
+        if self.__cache is None:
+            return len(self.fdr)
+        return len(self.__cache["label"])
 
-    def __getitem__(self, index: Union[int, slice]) -> Dict[str, np.ndarray]:
-        raise NotImplementedError
+    def __getitem__(self, index: Union[int, slice]) -> Dict[str, Union[torch.Tensor, np.ndarray]]:
+        if self.__cache is None:
+            return self.fdr[index]
+        return {k: v[index] for k, v in self.__cache.items()}
 
-    def _load_all_data(self, batch_size: int = 256, num_workers: Optional[int] = None) -> None:
-        """Load all data into memory using DataLoader for multi-process acceleration.
+    # ------------------------------------------------------------------
+    # Train / validation split
+    # ------------------------------------------------------------------
 
-        Parameters
-        ----------
-        batch_size : int, default 256
-            Number of samples to load in each batch.
-        num_workers : int, optional
-            Number of worker processes for data loading.
-            Set to 0 to disable multiprocessing (useful for debugging).
+    def _train_test_split(self) -> List[str]:
+        """Return the record list for this split.
+
+        Two modes controlled by ``self.override_data_split``:
+
+        * ``False`` (default) — load the fixed canonical split from
+          ``utils/cinc2026-data-split.json``.  Falls back to the dynamic
+          flow only when the file is absent (should not happen in a normal
+          installation).
+        * ``True`` — dynamic flow: read
+          ``LABEL_CACHE_DIR/cinc2026-data-split.json`` when present, else
+          generate a fresh stratified split and persist it there.
+        """
+        part = "train" if self.training else "val"
+        available = set(self._labelled_df.index)
+
+        if not self.override_data_split:
+            # ----------------------------------------------------------
+            # Default path: use the repo-shipped canonical split
+            # ----------------------------------------------------------
+            fixed_file = Path(FIXED_DATA_SPLIT_FILE)
+            if fixed_file.exists():
+                with open(fixed_file) as f:
+                    split = json.load(f)
+                records = [r for r in split.get(part, []) if r in available]
+                if records:
+                    if self.training:
+                        DEFAULTS.RNG.shuffle(records)
+                    return records
+            # Canonical file missing — warn and fall through to dynamic path
+            import warnings
+
+            warnings.warn(
+                f"Fixed data-split file not found at {FIXED_DATA_SPLIT_FILE}. " "Falling back to dynamic split generation.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+
+        # ------------------------------------------------------------------
+        # Dynamic path (override_data_split=True, or fallback from above)
+        # ------------------------------------------------------------------
+        split_file = Path(LABEL_CACHE_DIR) / "cinc2026-data-split.json"
+
+        if split_file.exists():
+            with open(split_file) as f:
+                split = json.load(f)
+            records = [r for r in split.get(part, []) if r in available]
+            if records:
+                if self.training:
+                    DEFAULTS.RNG.shuffle(records)
+                return records
+
+        # Generate a fresh stratified split and cache it
+        from sklearn.model_selection import StratifiedShuffleSplit
+
+        df = self._labelled_df
+        strat_key = df["SiteID"].astype(str) + "_" + df["Cognitive_Impairment"].astype(str)
+        train_ratio = self.config.get("train_ratio", 0.8)
+        sss = StratifiedShuffleSplit(n_splits=1, train_size=train_ratio, random_state=42)
+        train_idx, val_idx = next(sss.split(df.index, strat_key))
+
+        train_records = df.index[train_idx].tolist()
+        val_records = df.index[val_idx].tolist()
+
+        with open(split_file, "w") as f:
+            json.dump({"train": train_records, "val": val_records}, f, indent=2)
+
+        records = train_records if self.training else val_records
+        if self.training:
+            DEFAULTS.RNG.shuffle(records)
+        return records
+
+    # ------------------------------------------------------------------
+    # Optional in-memory cache
+    # ------------------------------------------------------------------
+
+    def _load_all_data(self, batch_size: int = 16, num_workers: Optional[int] = None) -> None:
+        """Load all records into RAM using a DataLoader for parallelism.
 
         .. warning::
-
-            Caching all data into memory is not recommended, which would certainly cause OOM error.
-            The RAM of the Challenge is only 64GB.
-
+            The cache stores a Python list of per-record tensors because
+            variable-length sequences cannot be stacked into a single tensor.
+            Use ``lazy=True`` (the default) during normal training.
         """
-        raise NotImplementedError
+        if num_workers is None:
+            cpu_count = os.cpu_count() or 4
+            num_workers = min(max(2, int(cpu_count * 0.5)), 8)
 
-    def _train_test_split(self, train_ratio: float = 0.8, part: Optional[Literal["train", "val", "test"]] = None) -> List[str]:
-        """Split the dataset into training and validation sets
-        in a stratified manner.
+        loader = DataLoader(
+            self.fdr,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            persistent_workers=False,
+            prefetch_factor=2 if num_workers > 0 else None,
+            multiprocessing_context="spawn" if num_workers > 0 else None,
+        )
 
-        Parameters
-        ----------
-        train_ratio : float, default 0.8
-            The ratio of the training set.
-        part : {"train", "val", "test"}, optional
-            The part of the dataset to return.
-            If None, it will be determined based on the training flag.
+        all_batches = []
+        start = time.time()
+        for batch in tqdm(loader, desc="Caching data", dynamic_ncols=True):
+            all_batches.append(batch)
 
-        Returns
-        -------
-        list
-            List of record names.
+        self.__cache = _merge_batches(all_batches)
+        elapsed = time.time() - start
+        print(f"Cached {len(self)} records in {elapsed:.1f}s")
 
-        """
-        _train_ratio = int(train_ratio * 100)
-        _test_ratio = 100 - _train_ratio
-        assert _train_ratio * _test_ratio > 0, "train_ratio and test_ratio must be positive"
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
-        raise NotImplementedError
+    def _reset_records(self, new_records: List[str], reload: bool = False) -> None:
+        """Replace the active record list (e.g. for cross-validation folds)."""
+        all_available = set(self._labelled_df.index)
+        self.records = [r for r in new_records if r in all_available]
+        del self.fdr
+        self.fdr = FastDataReader(self.reader, self.records, self.config)
+        self.__cache = None
+        if reload:
+            self._load_all_data()
 
     @property
-    def cache(self) -> Union[None, Dict[str, torch.Tensor]]:
+    def cache(self) -> Optional[Dict]:
         return self.__cache
+
+    @property
+    def data_fields(self) -> Set[str]:
+        return {"epoch_features", "demographics", "label", "padding_mask", "n_epochs", "record_id", "site_id"}
+
+    @property
+    def labels(self) -> np.ndarray:
+        """Binary labels for all records in this split (for class-weight computation)."""
+        return self._labelled_df.loc[self.records, "Cognitive_Impairment"].astype(int).values
 
     def extra_repr_keys(self) -> List[str]:
         return ["reader", "training"]
 
 
-class FastDataReader(ReprMixin, Dataset):
+# ---------------------------------------------------------------------------
+# FastDataReader — inner per-record loader
+# ---------------------------------------------------------------------------
+
+
+class FastDataReader(Dataset, ReprMixin):
+    """Per-record data loader used internally by :class:`CINC2026Dataset`.
+
+    :meth:`__getitem__` loads CAISR annotations for one record and builds the
+    epoch-feature matrix.  Raw physiological signals are NOT loaded here;
+    all features are derived exclusively from the CAISR annotations so the
+    representation is site-agnostic.
+
+    Returns
+    -------
+    dict with keys:
+
+    ``epoch_features`` : np.ndarray, shape ``(N_epochs, CAISR_EPOCH_DIM)``
+    ``demographics``   : np.ndarray, shape ``(DEMOGRAPHIC_DIM,)``
+    ``label``          : np.int64   (0 = no CI, 1 = CI)
+    ``n_epochs``       : np.int64   actual sequence length before padding
+    """
+
+    __name__ = "FastDataReader"
+
     def __init__(
         self,
         reader: CINC2026,
         records: Sequence[str],
         config: CFG,
-        ppm: Optional[PreprocManager] = None,
     ) -> None:
         self.reader = reader
-        self.records = records
+        self.records = list(records)
         self.config = config
-        self.ppm = ppm
-        if self.config.torch_dtype == torch.float64:
-            self.dtype = np.float64
-        else:
-            self.dtype = np.float32
+        self.dtype = np.float32 if config.torch_dtype != torch.float64 else np.float64
 
     def __len__(self) -> int:
-        raise NotImplementedError
+        return len(self.records)
 
-    def __getitem__(self, index: Union[int, list, slice]) -> Dict[str, np.ndarray]:
-        raise NotImplementedError
+    def __getitem__(self, index: Union[int, List[int], slice]) -> Dict[str, np.ndarray]:
+        if isinstance(index, slice):
+            return default_collate_fn([self[i] for i in range(*index.indices(len(self)))])
+        if isinstance(index, list):
+            return default_collate_fn([self[i] for i in index])
+
+        rec = self.records[index]
+
+        # Load CAISR (algorithmic) annotations — available for all splits
+        ann = self.reader.load_ann(rec, ann_type="algorithmic")
+
+        epoch_features = build_epoch_features(ann, dtype=self.dtype)
+
+        # Optionally crop to max_seq_len
+        max_len = self.config.get("max_seq_len", None)
+        n = len(epoch_features)
+        if max_len and n > max_len:
+            if self.training:
+                start = int(DEFAULTS.RNG.integers(0, n - max_len + 1))
+            else:
+                start = (n - max_len) // 2
+            epoch_features = epoch_features[start : start + max_len]
+
+        demographics = self._extract_demographics(rec)
+
+        row = self.reader._df_records.loc[rec]
+        label = int(bool(row.get("Cognitive_Impairment", False)))
+
+        return {
+            "epoch_features": epoch_features,  # (N, CAISR_EPOCH_DIM)
+            "demographics": demographics,  # (DEMOGRAPHIC_DIM,)
+            "label": np.int64(label),
+            "n_epochs": np.int64(len(epoch_features)),
+            "record_id": rec,
+            "site_id": str(row.get("SiteID", "")),
+        }
+
+    def _extract_demographics(self, rec: str) -> np.ndarray:
+        """Return a normalised [age, sex, bmi] vector."""
+        row = self.reader._df_records.loc[rec]
+
+        age_raw = row.get("Age", 60)
+        age = float(age_raw) / 100.0 if pd.notna(age_raw) else 0.6
+
+        sex_raw = str(row.get("Sex", "")).strip().lower()
+        sex = 1.0 if sex_raw.startswith("m") else 0.0
+
+        bmi_raw = row.get("BMI", 25.0)
+        bmi = float(bmi_raw) / 50.0 if pd.notna(bmi_raw) else 0.5
+
+        return np.array([age, sex, bmi], dtype=self.dtype)
+
+    @property
+    def training(self) -> bool:
+        return self.config.get("training", True)
+
+    def extra_repr_keys(self) -> List[str]:
+        return ["records"]
+
+
+# ---------------------------------------------------------------------------
+# Core feature builder
+# ---------------------------------------------------------------------------
+
+
+def build_epoch_features(
+    ann: Dict[str, np.ndarray],
+    dtype: type = np.float32,
+) -> np.ndarray:
+    """Build a per-epoch feature matrix from CAISR annotations.
+
+    Parameters
+    ----------
+    ann : dict
+        Annotation dict from ``CINC2026.load_ann(rec, ann_type='algorithmic')``.
+    dtype : numpy dtype
+
+    Returns
+    -------
+    np.ndarray, shape ``(N_epochs, CAISR_EPOCH_DIM)``
+        Returns shape ``(0, CAISR_EPOCH_DIM)`` when ``stage_caisr`` is absent.
+    """
+    stage = ann.get("stage_caisr", np.array([]))
+    n_epochs = len(stage)
+
+    if n_epochs == 0:
+        return np.zeros((0, CAISR_EPOCH_DIM), dtype=dtype)
+
+    features = np.zeros((n_epochs, CAISR_EPOCH_DIM), dtype=dtype)
+    stage_int = stage.astype(int)
+
+    # [0:6] Stage one-hot (N3, N2, N1, REM, W, Unknown)
+    for ep_i, s in enumerate(stage_int):
+        features[ep_i, STAGE_LABEL_TO_IDX.get(s, STAGE_ONEHOT_DIM - 1)] = 1.0
+
+    # [6:11] Stage softmax probs — correct for EDF physical-range scaling bug
+    prob_keys = [
+        "caisr_prob_n3",
+        "caisr_prob_n2",
+        "caisr_prob_n1",
+        "caisr_prob_r",
+        "caisr_prob_w",
+    ]
+    any_prob_loaded = False
+    for j, key in enumerate(prob_keys):
+        if key in ann and len(ann[key]) == n_epochs:
+            features[:, 6 + j] = (ann[key] / CAISR_PROB_EDF_SCALE).astype(dtype)
+            any_prob_loaded = True
+
+    if any_prob_loaded:
+        prob_sum = features[:, 6:11].sum(axis=1, keepdims=True)
+        valid = prob_sum[:, 0] > 1e-6
+        features[valid, 6:11] /= prob_sum[valid]
+        # Unavailable epochs (prob_sum≈0): fall back to the one-hot as hard dist
+        features[~valid, 6:11] = features[~valid, :5]
+    else:
+        # No prob channels in this file; use stage one-hot as a hard distribution
+        features[:, 6:11] = features[:, :5]
+
+    # [11] Arousal fraction — mean over the 60 × 0.5 s samples in the epoch
+    arousal = ann.get("arousal_caisr")
+    if arousal is not None and len(arousal) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
+        features[:, 11] = arousal.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).mean(axis=1)
+
+    # [12:17] Resp event fractions (1=OA, 2=CA, 3=MA, 4=HY, 5=RERA)
+    resp = ann.get("resp_caisr")
+    if resp is not None and len(resp) == n_epochs * RESP_SAMPLES_PER_EPOCH:
+        resp_mat = resp.reshape(n_epochs, RESP_SAMPLES_PER_EPOCH)
+        for offset, cls_val in enumerate([1, 2, 3, 4, 5]):
+            features[:, 12 + offset] = (resp_mat == cls_val).mean(axis=1)
+
+    # [17:19] Limb event fractions (1=isolated, 2=periodic)
+    limb = ann.get("limb_caisr")
+    if limb is not None and len(limb) == n_epochs * LIMB_SAMPLES_PER_EPOCH:
+        limb_mat = limb.reshape(n_epochs, LIMB_SAMPLES_PER_EPOCH)
+        features[:, 17] = (limb_mat == 1).mean(axis=1)
+        features[:, 18] = (limb_mat == 2).mean(axis=1)
+
+    # [19:21] Periodic time-position encoding
+    t = np.linspace(0.0, 1.0, n_epochs, dtype=dtype)
+    features[:, 19] = np.sin(2 * np.pi * t)
+    features[:, 20] = np.cos(2 * np.pi * t)
+
+    return features.astype(dtype)
+
+
+# ---------------------------------------------------------------------------
+# Collate function for variable-length sequences
+# ---------------------------------------------------------------------------
+
+
+def collate_fn(
+    batch: List[Dict[str, np.ndarray]],
+) -> Dict[str, torch.Tensor]:
+    """Collate records with variable-length epoch sequences into a padded batch.
+
+    Parameters
+    ----------
+    batch : list of dicts
+        Each dict is the output of :meth:`FastDataReader.__getitem__`.
+
+    Returns
+    -------
+    dict
+    ``epoch_features`` : FloatTensor ``(B, T_max, CAISR_EPOCH_DIM)``  zero-padded
+    ``demographics``   : FloatTensor ``(B, DEMOGRAPHIC_DIM)``
+    ``label``          : LongTensor  ``(B,)``
+    ``padding_mask``   : BoolTensor  ``(B, T_max)``  True = ignored padding position
+    ``n_epochs``       : LongTensor  ``(B,)``        actual (unpadded) lengths
+    """
+    n_epochs_list = [int(item["n_epochs"]) for item in batch]
+    t_max = max(n_epochs_list)
+    feat_dim = batch[0]["epoch_features"].shape[-1]
+    b = len(batch)
+
+    epoch_features = np.zeros((b, t_max, feat_dim), dtype=np.float32)
+    padding_mask = np.ones((b, t_max), dtype=bool)  # True = padding
+
+    for i, (item, n) in enumerate(zip(batch, n_epochs_list)):
+        epoch_features[i, :n] = item["epoch_features"][:n]
+        padding_mask[i, :n] = False  # False = valid position
+
+    demographics = np.stack([item["demographics"] for item in batch]).astype(np.float32)
+    labels = np.array([int(item["label"]) for item in batch], dtype=np.int64)
+
+    return {
+        "epoch_features": torch.from_numpy(epoch_features),  # (B, T, D)
+        "demographics": torch.from_numpy(demographics),  # (B, D_demo)
+        "label": torch.from_numpy(labels),  # (B,)
+        "padding_mask": torch.from_numpy(padding_mask),  # (B, T) bool
+        "n_epochs": torch.tensor(n_epochs_list, dtype=torch.int64),
+        "record_id": [item["record_id"] for item in batch],  # list[str]
+        "site_id": [item["site_id"] for item in batch],  # list[str]
+    }
+
+
+# ---------------------------------------------------------------------------
+# Internal helper: merge pre-collated batches into a flat cache
+# ---------------------------------------------------------------------------
+
+
+def _merge_batches(
+    batches: List[Dict[str, torch.Tensor]],
+) -> Dict:
+    """Concatenate a list of collated batches.
+
+    ``epoch_features`` and ``padding_mask`` are stored as lists of individual
+    (unpadded) per-record tensors because sequence lengths differ.
+    """
+    result: Dict[str, list] = {k: [] for k in batches[0]}
+    for batch in batches:
+        n_list = batch["n_epochs"].tolist()
+        for k, v in batch.items():
+            if k in ("epoch_features", "padding_mask"):
+                for i, n in enumerate(n_list):
+                    result[k].append(v[i, :n])
+            elif k == "n_epochs":
+                result[k].extend(n_list)
+            elif k in ("record_id", "site_id"):
+                result[k].extend(v)  # v is already a list of strings
+            else:
+                result[k].append(v)
+
+    return {
+        "epoch_features": result["epoch_features"],
+        "padding_mask": result["padding_mask"],
+        "demographics": torch.cat(result["demographics"], dim=0),
+        "label": torch.cat(result["label"], dim=0),
+        "n_epochs": torch.tensor(result["n_epochs"], dtype=torch.int64),
+        "record_id": result["record_id"],
+        "site_id": result["site_id"],
+    }
