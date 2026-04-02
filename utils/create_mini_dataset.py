@@ -43,7 +43,7 @@ SITES = ["S0001", "I0002", "I0006"]
 DEMOGRAPHICS_FILE = "demographics.csv"
 ANN_SUBDIR = "algorithmic_annotations"
 _PROJECT_DIR = Path(__file__).resolve().parent
-_CANONICAL_SPLIT_FILE = _PROJECT_DIR / "utils" / "cinc2026-data-split.json"
+_CANONICAL_SPLIT_FILE = _PROJECT_DIR / "cinc2026-data-split.json"
 _TRAIN_RATIO = 0.8  # must match StratifiedShuffleSplit train_size in dataset.py
 
 
