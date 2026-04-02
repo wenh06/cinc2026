@@ -45,9 +45,14 @@ _CINC2026_INFO = DataBaseInfo(
     """,
     issues="""
     1. Signal Heterogeneity: The availability, sampling rates, and filter settings of physiological channels vary significantly between different recording sites and even within the same dataset.
+       - S0001 (572 training records): bipolar EEG derivations (e.g. ``f3-m2``), uniform 200 Hz for EEG/EOG/EMG channels, slow channels (SpO2, airflow) at 25 Hz.
+       - I0002 (54 training records): same bipolar derivation convention as S0001, but EEG sampling rate is inconsistent within the site (200 Hz or 500 Hz per record).
+       - I0006 (154 training records): unipolar EEG electrodes (``f3``, ``c3``, ``m1``, ``m2``, etc.), up to five different sampling rates within a single recording (10/20/50/100/200 Hz), and ``thermistor`` instead of ``airflow`` for oral airflow.
     2. Class Imbalance shift: The training set is artificially balanced (approx. 50% positive), whereas the validation and test sets reflect real-world prevalence (5-15% positive).
     3. Temporal Shift: Sleep study dates were shifted by randomly chosen integers between ±365 days.
     4. Age Capping: Patient ages above 89 are replaced with a single category of "90".
+    5. Incomplete CAISR Annotations: 14 out of 780 training records (1.8%) are missing CAISR annotation EDF files. All 14 stem from recordings that contain no EEG, EOG, or EMG channels (only respiratory and ECG signals are present), which makes sleep staging — and therefore the CAISR pipeline — impossible. These records should be handled via a dedicated fallback strategy (e.g. ECG-HRV features, or the population-level prior) rather than excluded.
+    6. CAISR Probability Scale Bug: The five ``caisr_prob_*`` channels (N3, N2, N1, REM, Wake posterior probabilities) are stored with an EDF ``physical_max`` header of 9 instead of 1. As a result, pyedflib scales the raw integer codes into the range [0, 9] rather than [0, 1]. Callers must divide by 9.0 and re-normalise each row to sum to 1 before use (see ``const.CAISR_PROB_EDF_SCALE``).
     """,
     references=[
         "https://moody-challenge.physionet.org/2026/",
