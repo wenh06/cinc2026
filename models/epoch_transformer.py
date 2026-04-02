@@ -62,7 +62,8 @@ class EpochTransformer(nn.Module, SizeMixin, CkptMixin):
     epoch_features : Tensor, shape ``(B, T, caisr_feat_dim)``
         CAISR epoch feature vectors (output of ``dataset.build_epoch_features``).
     demographics : Tensor, shape ``(B, demographic_dim)``
-        Normalised demographic features [Age (z-scored), Sex (0/1), BMI (z-scored)].
+        Normalised demographic features ``[age/100, sex (0=F/1=M), bmi/50]``.
+        Missing/invalid values default to ``[0.6, 0.0, 0.5]`` (≈ 60 yr, Female, 25 BMI).
     padding_mask : BoolTensor, shape ``(B, T)``, optional
         ``True`` marks padding positions (matches PyTorch
         ``TransformerEncoder.src_key_padding_mask`` convention).

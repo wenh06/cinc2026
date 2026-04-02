@@ -29,10 +29,7 @@ from dataset import build_epoch_features
 from helper_code import (
     DEMOGRAPHICS_FILE,
     HEADERS,
-    load_age,
-    load_bmi,
     load_demographics,
-    load_sex,
 )
 from models import EpochTransformer
 from outputs import CINC2026Outputs
@@ -94,10 +91,34 @@ def _load_caisr_ann(caisr_path: str) -> Dict[str, np.ndarray]:
 
 
 def _extract_demographics(patient_data: Dict) -> np.ndarray:
-    """Return normalised ``[age/100, is_male, bmi/50]`` from a demographics dict."""
-    age = load_age(patient_data) / 100.0
-    sex = 1.0 if load_sex(patient_data) == "Male" else 0.0
-    bmi = load_bmi(patient_data) / 50.0
+    """Return normalised ``[age/100, is_male, bmi/50]`` from a demographics dict.
+
+    Mirrors the logic in :meth:`FastDataReader._extract_demographics` so that
+    training and inference see identical demographic vectors:
+
+    * **age** : ``age_years / 100.0``.  Defaults to ``0.6`` (≈ 60 years) when
+      missing or non-numeric.
+    * **sex** : ``1.0`` if the raw string starts with ``'m'``, ``0.0`` otherwise.
+    * **bmi** : ``bmi_kg_m2 / 50.0``.  Defaults to ``0.5`` (≈ 25 kg/m²) when
+      missing or non-numeric.
+    """
+    age_raw = patient_data.get(HEADERS["age"])
+    try:
+        age_f = float(age_raw)
+        age = age_f / 100.0 if not np.isnan(age_f) else 0.6
+    except (TypeError, ValueError):
+        age = 0.6
+
+    sex_raw = str(patient_data.get(HEADERS["sex"], "")).strip().lower()
+    sex = 1.0 if sex_raw.startswith("m") else 0.0
+
+    bmi_raw = patient_data.get(HEADERS["bmi"])
+    try:
+        bmi_f = float(bmi_raw)
+        bmi = bmi_f / 50.0 if not np.isnan(bmi_f) else 0.5
+    except (TypeError, ValueError):
+        bmi = 0.5
+
     return np.array([age, sex, bmi], dtype=np.float32)
 
 

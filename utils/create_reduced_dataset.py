@@ -85,7 +85,19 @@ def main():
     shutil.copy2(src_demo, out_train / DEMOGRAPHICS_FILE)
     print(f"Copied {DEMOGRAPHICS_FILE}")
 
-    # Copy all CAISR EDFs site by site
+    # Copy all CAISR EDFs site by site; count missing against demographics.csv
+    import pandas as pd
+
+    demo_df = pd.read_csv(src_demo)
+    # Build expected (SiteID, filename) pairs from demographics.csv
+    expected: dict[str, list[str]] = {site: [] for site in SITES}
+    for _, row in demo_df.iterrows():
+        site = str(row.get("SiteID", "")).strip()
+        bids = str(row.get("BidsFolder", "")).strip()
+        sess = str(row.get("SessionID", "")).strip()
+        if site in expected:
+            expected[site].append(f"{bids}_ses-{sess}_caisr_annotations.edf")
+
     src_ann = train_dir / ANN_SUBDIR
     total_copied = 0
     total_missing = 0
@@ -94,16 +106,23 @@ def main():
         dst_site = out_ann / site
         if not src_site.exists():
             print(f"  WARNING: site directory not found: {src_site}")
+            total_missing += len(expected[site])
             continue
         edfs = sorted(src_site.glob("*_caisr_annotations.edf"))
+        present = {f.name for f in edfs}
         for edf in edfs:
             shutil.copy2(edf, dst_site / edf.name)
             total_copied += 1
-        print(f"  {site}: copied {len(edfs)} CAISR EDFs")
+        missing_here = [name for name in expected[site] if name not in present]
+        total_missing += len(missing_here)
+        if missing_here:
+            print(f"  {site}: copied {len(edfs)} CAISR EDFs, {len(missing_here)} expected but missing")
+        else:
+            print(f"  {site}: copied {len(edfs)} CAISR EDFs")
 
     print(f"\nTotal CAISR EDFs copied: {total_copied}")
     if total_missing:
-        print(f"WARNING: {total_missing} EDFs were expected but not found.")
+        print(f"WARNING: {total_missing} EDFs were expected (from demographics.csv) but not found.")
 
     # -----------------------------------------------------------------------
     # Package as zip
