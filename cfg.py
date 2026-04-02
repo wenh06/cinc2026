@@ -9,6 +9,8 @@ import numpy as np
 import torch
 from torch_ecg.cfg import CFG
 
+from model_configs import EPOCH_CRNN_CONFIG, EPOCH_TRANSFORMER_BASE
+
 __all__ = [
     "BaseCfg",
     "TrainCfg",
@@ -123,27 +125,84 @@ _BASE_MODEL_CONFIG.num_classes = BaseCfg.num_classes
 
 ModelCfg = deepcopy(_BASE_MODEL_CONFIG)
 
-# EpochTransformer: operates on a sequence of 30s-epoch CAISR feature vectors.
-# Input: (B, T, caisr_feat_dim) + demographics (B, demographic_dim)
-# Output: binary classification (cognitive impairment)
-ModelCfg.epoch_transformer = deepcopy(_BASE_MODEL_CONFIG)
-ModelCfg.epoch_transformer.caisr_feat_dim = 21  # CAISR_EPOCH_DIM from const.py
-ModelCfg.epoch_transformer.demographic_dim = 3  # DEMOGRAPHIC_DIM from const.py
-ModelCfg.epoch_transformer.d_model = 128
-ModelCfg.epoch_transformer.nhead = 4
-ModelCfg.epoch_transformer.num_layers = 4
-ModelCfg.epoch_transformer.dim_feedforward = 512
-ModelCfg.epoch_transformer.dropout = 0.1
-ModelCfg.epoch_transformer.activation = "gelu"
-ModelCfg.epoch_transformer.criterion = "BCEWithLogitsLoss"
-ModelCfg.epoch_transformer.dem_encoder = CFG(
-    enable=True,
-    input_dim=3,  # Age, Sex, BMI
-    hidden_dim=64,
-    mode="film",  # FiLM conditioning on demographics
-)
 
-# ChannelTransformer configuration (raw-signal fallback)
+# ── Helper: build one EpochTransformer size preset ───────────────────────────
+def _make_epoch_transformer(d_model: int, nhead: int, num_layers: int, dim_feedforward: int) -> CFG:
+    cfg = deepcopy(_BASE_MODEL_CONFIG)
+    cfg.update(deepcopy(EPOCH_TRANSFORMER_BASE))
+    cfg.d_model = d_model
+    cfg.nhead = nhead
+    cfg.num_layers = num_layers
+    cfg.dim_feedforward = dim_feedforward
+    return cfg
+
+
+# EpochTransformer — operates on a sequence of 30-s-epoch CAISR feature vectors.
+# Input:  (B, T, caisr_feat_dim) + demographics (B, demographic_dim)
+# Output: binary classification (cognitive impairment)
+#
+# Three size presets (swap by setting TrainCfg.model_name):
+#   epoch_transformer_S  →  64-dim,  2 heads, 2 layers, ff=256   ~110 K params
+#   epoch_transformer_M  → 128-dim,  4 heads, 4 layers, ff=512   ~825 K params
+#   epoch_transformer_L  → 256-dim,  8 heads, 6 layers, ff=1024  ~5.3 M params
+ModelCfg.epoch_transformer_S = _make_epoch_transformer(
+    d_model=64,
+    nhead=2,
+    num_layers=2,
+    dim_feedforward=256,
+)
+ModelCfg.epoch_transformer_M = _make_epoch_transformer(
+    d_model=128,
+    nhead=4,
+    num_layers=4,
+    dim_feedforward=512,
+)
+ModelCfg.epoch_transformer_L = _make_epoch_transformer(
+    d_model=256,
+    nhead=8,
+    num_layers=6,
+    dim_feedforward=1024,
+)
+# Canonical alias (M is the default)
+ModelCfg.epoch_transformer = ModelCfg.epoch_transformer_M
+
+
+# ── Helper: build one EpochCRNN size preset ───────────────────────────────────
+def _make_epoch_crnn(cnn_name: str, lstm_hidden: list, clf_hidden: list) -> CFG:
+    cfg = deepcopy(_BASE_MODEL_CONFIG)
+    cfg.update(deepcopy(EPOCH_CRNN_CONFIG))
+    cfg.caisr_feat_dim = 21
+    cfg.demographic_dim = 3
+    cfg.criterion = "BCEWithLogitsLoss"
+    cfg.dem_encoder = CFG(enable=True, input_dim=3, hidden_dim=64, mode="film")
+    # Select backbone
+    cfg.cnn.name = cnn_name
+    # Override LSTM hidden sizes for this preset
+    cfg.rnn.lstm.hidden_sizes = list(lstm_hidden)
+    # Override clf intermediate layers for this preset
+    cfg.clf.out_channels = list(clf_hidden)
+    return cfg
+
+
+# EpochCRNN — ResNet-N backbone + BiLSTM for the epoch-feature sequence.
+# Input:  (B, T, caisr_feat_dim) treated as (B, 21, T) for Conv1d
+# Output: binary classification (cognitive impairment)
+#
+# Three size presets (swap by setting TrainCfg.model_name):
+#   epoch_crnn_S  →  CNN [16→32→64],   LSTM hidden=[64],   clf=[32]   ~101 K params
+#   epoch_crnn_M  →  CNN [32→64→128],  LSTM hidden=[128],  clf=[64]   ~437 K params
+#   epoch_crnn_L  →  CNN [64→128→256], LSTM hidden=[256],  clf=[128]  ~1.58 M params
+#
+# Additional backbone swaps (same channel widths as M, different block types):
+#   epoch_crnn_S/M/L with cnn.name = "resnetNS_M"  — separable convolutions
+#   epoch_crnn_S/M/L with cnn.name = "resnetNB_M"  — bottleneck residual blocks
+ModelCfg.epoch_crnn_S = _make_epoch_crnn("resnetN_S", lstm_hidden=[64], clf_hidden=[32])
+ModelCfg.epoch_crnn_M = _make_epoch_crnn("resnetN_M", lstm_hidden=[128], clf_hidden=[64])
+ModelCfg.epoch_crnn_L = _make_epoch_crnn("resnetN_L", lstm_hidden=[256], clf_hidden=[128])
+# Canonical alias (M is the default)
+ModelCfg.epoch_crnn = ModelCfg.epoch_crnn_M
+
+
 ModelCfg.transformer = deepcopy(_BASE_MODEL_CONFIG)
 ModelCfg.transformer.d_model = 128
 ModelCfg.transformer.nhead = 4

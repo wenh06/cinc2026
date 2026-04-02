@@ -2,7 +2,11 @@
 """
 CinC 2026 Challenge entry: train_model, load_model, run_model.
 
-Primary model: EpochTransformer operating on CAISR epoch-feature sequences.
+Primary model: configurable via ``TrainCfg.model_name``.  Defaults to
+``EpochTransformer`` (``epoch_transformer``), but switching to
+``EpochCRNN`` or any size variant (``epoch_crnn_S``, ``epoch_transformer_L``,
+…) requires only changing ``TrainCfg.model_name`` in ``cfg.py``.
+
 All physiological signals are summarised via CAISR (pre-computed by the
 challenge organisers) into a fixed 21-dim feature vector per 30-second epoch,
 so the representation is robust to inter-site signal heterogeneity.
@@ -31,7 +35,20 @@ from helper_code import (
     HEADERS,
     load_demographics,
 )
-from models import EpochTransformer
+from models import EpochCRNN, EpochTransformer
+
+# Map TrainCfg.model_name → model class.  Both plain names ("epoch_transformer")
+# and size-suffixed names ("epoch_transformer_M", "epoch_crnn_L") are handled.
+_MODEL_CLASS_MAP: Dict[str, Any] = {
+    "epoch_transformer": EpochTransformer,
+    "epoch_transformer_S": EpochTransformer,
+    "epoch_transformer_M": EpochTransformer,
+    "epoch_transformer_L": EpochTransformer,
+    "epoch_crnn": EpochCRNN,
+    "epoch_crnn_S": EpochCRNN,
+    "epoch_crnn_M": EpochCRNN,
+    "epoch_crnn_L": EpochCRNN,
+}
 from outputs import CINC2026Outputs
 from trainer import CINC2026Trainer
 
@@ -128,10 +145,12 @@ def _extract_demographics(patient_data: Dict) -> np.ndarray:
 
 
 def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
-    """Train :class:`EpochTransformer` on CAISR features and save the checkpoint.
+    """Train the model selected by ``TrainCfg.model_name`` and save the checkpoint.
 
     Called by ``train_model.py``.  *data_folder* may be a partition subfolder
     (e.g. ``training_set/``) or the data root; both are handled correctly.
+    Change the active model by setting ``TrainCfg.model_name`` in ``cfg.py``
+    (e.g. ``"epoch_crnn_M"`` or ``"epoch_transformer_L"``).
     """
     if verbose:
         print(f"[CinC2026] Training on {DEVICE} — data: {data_folder}")
@@ -156,8 +175,10 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
     train_config.log_dir.mkdir(parents=True, exist_ok=True)
     train_config.debug = False
 
-    model_config = deepcopy(ModelCfg.epoch_transformer)
-    model = EpochTransformer(config=model_config)
+    model_name = train_config.model_name
+    model_config = deepcopy(getattr(ModelCfg, model_name))
+    model_cls = _MODEL_CLASS_MAP[model_name]
+    model = model_cls(config=model_config)
     model.to(DEVICE)
 
     trainer = CINC2026Trainer(
@@ -178,21 +199,25 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
 
 
 def load_model(model_folder: str, verbose: bool) -> Dict[str, Any]:
-    """Load the trained :class:`EpochTransformer` from *model_folder*.
+    """Load the trained model from *model_folder*.
 
+    The model class is inferred from ``TrainCfg.model_name``.
     Called by ``run_model.py``.  Falls back to a randomly initialised model
     if the checkpoint file is not found (useful for dry runs).
     """
     if verbose:
         print("[CinC2026] Loading model ...")
 
+    model_name = TrainCfg.model_name
+    model_cls = _MODEL_CLASS_MAP[model_name]
+
     model_path = Path(model_folder) / FINAL_MODEL_NAME
     if model_path.exists():
-        model, train_config = EpochTransformer.from_checkpoint(str(model_path), weights_only=False)
+        model, train_config = model_cls.from_checkpoint(str(model_path), weights_only=False)
     else:
         if verbose:
             print(f"  Warning: {model_path} not found — using random weights.")
-        model = EpochTransformer(config=ModelCfg.epoch_transformer)
+        model = model_cls(config=getattr(ModelCfg, model_name))
         train_config = TrainCfg
 
     model.to(DEVICE)
@@ -251,7 +276,7 @@ def _run_model_impl(
     verbose: bool,
 ) -> Tuple[int, float]:
     """Inner implementation of :func:`run_model` (may raise)."""
-    model: EpochTransformer = model_dict["model"]
+    model: Any = model_dict["model"]
 
     bids_folder = str(record[HEADERS["bids_folder"]])
     site_id = str(record[HEADERS["site_id"]])

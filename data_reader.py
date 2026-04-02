@@ -201,7 +201,7 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
             raise ValueError(f"Record {rec} not found.")
 
         row = self._df_records.loc[rec]
-        path = row["path"]
+        path = str(row["path"])
 
         if not os.path.exists(path):
             raise FileNotFoundError(f"Physiological data file not found: {path}")
@@ -270,15 +270,15 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
         row = self._df_records.loc[rec]
 
         if ann_type == "human":
-            path = row.get("human_ann_path")
+            path = str(row.get("human_ann_path"))
         elif ann_type == "algorithmic":
-            path = row.get("algo_ann_path")
+            path = str(row.get("algo_ann_path"))
         elif ann_type == "both":
             return self.load_ann(rec, ann_type="algorithmic") | self.load_ann(rec, ann_type="human")
         else:
             raise ValueError(f"ann_type must be 'algorithmic', 'human', or 'both', got {ann_type}")
 
-        if not path or pd.isna(path) or not os.path.exists(str(path)):
+        if not path or pd.isna(path) or not os.path.exists(path):
             if self.verbose >= 1:
                 print(f"Annotation file not found for {rec}, type {ann_type}")
             return {}
@@ -336,16 +336,16 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
         """
         if operation == "open":
             if getattr(self, "file_opened", None) is not None:
-                self.file_opened._close()
+                self.file_opened._close()  # type: ignore
             self.file_opened = EdfReader(str(full_file_path))
         elif operation == "close":
             if getattr(self, "file_opened", None) is not None:
-                self.file_opened._close()
+                self.file_opened._close()  # type: ignore
                 self.file_opened = None
         else:
             raise ValueError("Illegal operation")
 
-    def plot_hypnogram(
+    def plot_hypnogram(  # type: ignore
         self,
         mask: NDArray,
         granularity: int = 30,
@@ -381,7 +381,7 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
 
         """
         if kwargs.pop("class_map", None) is not None:
-            self.logger.warning("CINC2026 has a fixed sleep stage mapping, the provided class_map will be ignored.")
+            self.logger.warning("CINC2026 has a fixed sleep stage mapping, the provided class_map will be ignored.")  # type: ignore
         return super().plot_hypnogram(mask, granularity, class_map=self.__sleep_stage_mapping__, **kwargs)
 
     @property
@@ -415,22 +415,22 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
 
         # priority: pycurl > kagglehub > mlcroissant
         if pycurl is not None:
-            self.logger.info("Downloading dataset using pycurl with resume support...")
+            self.logger.info("Downloading dataset using pycurl with resume support...")  # type: ignore
             output_path = self.db_dir / "physionetchallenge2026data.zip"
             download_with_resume_using_pycurl(self.url["pycurl"], str(output_path))
         elif kagglehub is not None:
-            self.logger.info("Downloading dataset using kagglehub...")
+            self.logger.info("Downloading dataset using kagglehub...")  # type: ignore
             path = kagglehub.dataset_download(
                 "physionet/physionetchallenge2026data",
-                output_path=str(self.db_dir),
+                output_dir=str(self.db_dir),
             )
-            self.logger.info(f"Dataset downloaded to {path}")
+            self.logger.info(f"Dataset downloaded to {path}")  # type: ignore
         elif mlc is not None:
-            self.logger.info("Downloading dataset using mlcroissant...")
+            self.logger.info("Downloading dataset using mlcroissant...")  # type: ignore
             croissant_dataset = mlc.Dataset(self.url["mlcroissant"])
             # Check what record sets are in the dataset
             record_sets = croissant_dataset.metadata.record_sets
-            self.logger.info(f"Totally {len(record_sets)} record sets in the dataset")
+            self.logger.info(f"Totally {len(record_sets)} record sets in the dataset")  # type: ignore
         else:
             raise ImportError("No suitable library found for downloading. Please install pycurl, kagglehub, or mlcroissant.")
 
@@ -445,7 +445,7 @@ def download_with_resume_using_pycurl(url: str, output_path: str, retries: int =
     except ImportError:
         raise ImportError("pycurl is required for this download method.")
 
-    output_path = Path(output_path)
+    output_path = Path(output_path)  # type: ignore
     temp_file = output_path
 
     existing_size = temp_file.stat().st_size if temp_file.exists() else 0

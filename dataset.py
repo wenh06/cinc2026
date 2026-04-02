@@ -144,7 +144,7 @@ class CINC2026Dataset(Dataset, ReprMixin):
 
     def __getitem__(self, index: Union[int, slice]) -> Dict[str, Union[torch.Tensor, np.ndarray]]:
         if self.__cache is None:
-            return self.fdr[index]
+            return self.fdr[index]  # type: ignore
         return {k: v[index] for k, v in self.__cache.items()}
 
     # ------------------------------------------------------------------
@@ -331,9 +331,9 @@ class FastDataReader(Dataset, ReprMixin):
 
     def __getitem__(self, index: Union[int, List[int], slice]) -> Dict[str, np.ndarray]:
         if isinstance(index, slice):
-            return default_collate_fn([self[i] for i in range(*index.indices(len(self)))])
+            return default_collate_fn([self[i] for i in range(*index.indices(len(self)))])  # type: ignore
         if isinstance(index, list):
-            return default_collate_fn([self[i] for i in index])
+            return default_collate_fn([self[i] for i in index])  # type: ignore
 
         rec = self.records[index]
 
@@ -357,7 +357,7 @@ class FastDataReader(Dataset, ReprMixin):
         row = self.reader._df_records.loc[rec]
         label = int(bool(row.get("Cognitive_Impairment", False)))
 
-        return {
+        return {  # type: ignore
             "epoch_features": epoch_features,  # (N, CAISR_EPOCH_DIM)
             "demographics": demographics,  # (DEMOGRAPHIC_DIM,)
             "label": np.int64(label),
@@ -371,13 +371,13 @@ class FastDataReader(Dataset, ReprMixin):
         row = self.reader._df_records.loc[rec]
 
         age_raw = row.get("Age", 60)
-        age = float(age_raw) / 100.0 if pd.notna(age_raw) else 0.6
+        age = float(age_raw) / 100.0 if pd.notna(age_raw) else 0.6  # type: ignore
 
         sex_raw = str(row.get("Sex", "")).strip().lower()
         sex = 1.0 if sex_raw.startswith("m") else 0.0
 
         bmi_raw = row.get("BMI", 25.0)
-        bmi = float(bmi_raw) / 50.0 if pd.notna(bmi_raw) else 0.5
+        bmi = float(bmi_raw) / 50.0 if pd.notna(bmi_raw) else 0.5  # type: ignore
 
         return np.array([age, sex, bmi], dtype=self.dtype)
 
@@ -514,7 +514,7 @@ def collate_fn(
     demographics = np.stack([item["demographics"] for item in batch]).astype(np.float32)
     labels = np.array([int(item["label"]) for item in batch], dtype=np.int64)
 
-    return {
+    return {  # type: ignore
         "epoch_features": torch.from_numpy(epoch_features),  # (B, T, D)
         "demographics": torch.from_numpy(demographics),  # (B, D_demo)
         "label": torch.from_numpy(labels),  # (B,)

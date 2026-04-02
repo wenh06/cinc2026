@@ -1,7 +1,7 @@
 """Epoch-sequence Transformer for CinC 2026.
 
 Each PSG night is represented as a variable-length sequence of N × 30-second
-epochs (typically 730–1100 per night). Each epoch is encoded as a
+epochs (typically 730-1100 per night). Each epoch is encoded as a
 ``CAISR_EPOCH_DIM``-dimensional feature vector derived from the CAISR
 algorithmic annotations (see ``dataset.build_epoch_features``).
 
@@ -170,7 +170,8 @@ class EpochTransformer(nn.Module, SizeMixin, CkptMixin):
 
         # 1. Project + sinusoidal positional encoding
         x = self.input_proj(epoch_features)  # (B, T, d_model)
-        x = x + self.pos_encoding[:T].unsqueeze(0)  # broadcast over batch dim
+        # broadcast over batch dim
+        x = x + self.pos_encoding[:T].unsqueeze(0)  # type: ignore
 
         # 2. Transformer encoder
         x = self.transformer(x, src_key_padding_mask=padding_mask)  # (B, T, d_model)
