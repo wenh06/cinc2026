@@ -1,30 +1,32 @@
 # https://hub.docker.com/r/pytorch/pytorch
+# pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime: Python 3.11.14, Ubuntu 22.04.5 LTS
 FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
-# NOTE:
-# pytorch/pytorch:1.13.1-cuda11.6-cudnn8-runtime has python version 3.10.8, system version Ubuntu 18.04.6 LTS
-# pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime has python version 3.10.11, system version Ubuntu 20.04.6 LTS
-# pytorch/pytorch:2.1.2-cuda11.8-cudnn8-runtime has python version 3.10.13, system version Ubuntu 20.04.6 LTS
-# pytorch/pytorch:2.2.0-cuda11.8-cudnn8-runtime has python version 3.10.13, system version Ubuntu 22.04.3 LTS
-# pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime has python version 3.10.14, system version Ubuntu 22.04.4 LTS
-# pytorch/pytorch:2.5.1-cuda11.8-cudnn9-runtime has python version 3.11.10, system version Ubuntu 22.04.5 LTS
-# pytorch/pytorch:2.7.1-cuda11.8-cudnn9-devel has python version 3.11.13, system version Ubuntu 22.04.3 LTS
-# pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel has python version 3.11.14, system version Ubuntu 22.04.5 LTS
+# NOTE historical base images (for reference):
+# pytorch/pytorch:2.1.2-cuda11.8-cudnn8-runtime  Python 3.10.13  Ubuntu 20.04.6 LTS
+# pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime  Python 3.10.14  Ubuntu 22.04.4 LTS
+# pytorch/pytorch:2.5.1-cuda11.8-cudnn9-runtime  Python 3.11.10  Ubuntu 22.04.5 LTS
+# pytorch/pytorch:2.7.1-cuda11.8-cudnn9-runtime  Python 3.11.13  Ubuntu 22.04.3 LTS
+# pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime  Python 3.11.14  Ubuntu 22.04.5 LTS
+# pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel    Python 3.11.14  Ubuntu 22.04.5 LTS (nvcc + gcc included)
+#
+# runtime images have NO nvcc / gcc; devel images include the full CUDA toolkit.
+# We use runtime because we do not compile custom CUDA extensions.
 
-# runtime versions has no nvcc, gcc installed
-# pytorch/pytorch:2.5.1-cuda11.8-cudnn9-devel gcc version 11.4.0
-# pytorch/pytorch:2.7.1-cuda11.8-cudnn9-devel gcc version 11.4.0
-# pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel gcc version 11.4.0
+# ── Build-time toggle ─────────────────────────────────────────────────────────
+# TORCH_ECG_SOURCE=pypi    (default) → pip install torch-ecg  (latest PyPI release)
+# TORCH_ECG_SOURCE=github            → pip install git+https://…@dev  (dev branch)
+# Usage:
+#   docker build .                                          # use PyPI release
+#   docker build --build-arg TORCH_ECG_SOURCE=github .     # use dev branch
+ARG TORCH_ECG_SOURCE=github
 
-# set the environment variable to avoid interactive installation
-# which might stuck the docker build process
+# Avoid interactive prompts during apt installs
 ENV DEBIAN_FRONTEND=noninteractive
 
-# NOTE: new since 2025:
-# The Challenge uses Apptainer to run the images
-# where the environment variables set in the Dockerfile will NOT be passed to the Apptainer container by default.
-# To make the environment variables available in the Apptainer container, one can either:
-# 1) set the environment variables in the entrypoint script (team_code.py) or some config files
-
+# ── Cache / model directory paths ─────────────────────────────────────────────
+# NOTE: Since CinC 2025 the Challenge runs submissions via Apptainer, which does
+# NOT inherit Dockerfile ENV at runtime.  Runtime paths in team_code.py are
+# resolved programmatically; these ENV vars are kept for local Docker convenience.
 ENV HUGGINGFACE_HUB_CACHE=/challenge/cache/revenger_model_dir
 ENV HF_HUB_CACHE=/challenge/cache/revenger_model_dir
 ENV MODEL_CACHE_DIR=/challenge/cache/revenger_model_dir
@@ -32,63 +34,39 @@ ENV DATA_CACHE_DIR=/challenge/cache/revenger_data_dir
 ENV TEST_DATA_CACHE_DIR=/challenge/cache/revenger_action_test_data_dir
 ENV GIT_CLONE_DIR=/challenge/cache/git_clone_dir
 
-# ENV NO_ALBUMENTATIONS_UPDATE=1
-# ENV ALBUMENTATIONS_DISABLE_VERSION_CHECK=1
-
 ENV TF_CPP_MIN_LOG_LEVEL=2
 
 
-ENV CUDA_HOME=/usr/local/cuda-11.8
-ENV PATH="${CUDA_HOME}/bin:${PATH}"
-ENV LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}"
-ENV CPATH="${CUDA_HOME}/include:${CPATH}"
-ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6+PTX"
-
-
-# check distribution of the base image
-RUN cat /etc/issue
-
-# check detailed system version of the base image
+# ── Diagnostics ───────────────────────────────────────────────────────────────
 RUN cat /etc/os-release
-
-# check python version of the base image
 RUN python --version
+# nvcc / gcc absent in runtime images — these lines are no-ops if not found
+RUN if command -v nvcc >/dev/null 2>&1; then nvcc --version; fi
+RUN if command -v gcc  >/dev/null 2>&1; then gcc  --version; fi
 
-# check CUDA version of the base image if is installed
-RUN if [ -x "$(command -v nvcc)" ]; then nvcc --version; fi
-# check gcc version of the base image if is installed
-RUN if [ -x "$(command -v gcc)" ]; then gcc --version; fi
-# check if CUDA header files are installed
-RUN if [ -d "/usr/local/cuda/include" ]; then ls /usr/local/cuda/include; fi
-
-
-# NOTE: the following are OUTDATED:
-# The GPU provided by the Challenge is nvidia Tesla T4
-# running on a g4dn.4xlarge instance on AWS,
-# which has 16 vCPUs, 64 GB RAM, 300 GB of local storage.
-# nvidiaDriverVersion: 525.85.12
-# CUDA Version: 12.0
-# Check via:
-# https://aws.amazon.com/ec2/instance-types/g4/
-# https://aws.amazon.com/about-aws/whats-new/2021/07/introducing-new-amazon-ec2-g4ad-instance-sizes/
-# https://github.com/awsdocs/amazon-ec2-user-guide/blob/master/doc_source/accelerated-computing-instances.md#gpu-instances
-# https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html
-# https://download.pytorch.org/whl/torch_stable.html
-
-# Since 2025, the Challenge uses
-# NVidia Ampere A30 (compute capability 8.0, 24 GB VRAM)
-# NVidia RTX 6000 Ada Generation (compute capability 8.6, 48 GB VRAM)
+# Since 2025/2026 the Challenge GPU pool includes:
+#   NVidia Ampere A30 (compute capability 8.0, 24 GB VRAM)
+#   NVidia RTX 6000 Ada Generation (compute capability 8.6, 48 GB VRAM)
 
 
 ## The MAINTAINER instruction sets the author field of the generated images.
 LABEL maintainer="wenh06@gmail.com"
 
 
-# latest version of biosppy uses opencv
-# https://stackoverflow.com/questions/55313610/importerror-libgl-so-1-cannot-open-shared-object-file-no-such-file-or-directo
-RUN apt update
-RUN apt install build-essential ninja-build -y
-RUN apt install git ffmpeg libsm6 libxext6 vim libsndfile1 libxrender1 unzip wget curl tree -y
+# ── System packages ───────────────────────────────────────────────────────────
+# build-essential + ninja-build: for C-extension pip packages (pycurl, pyedflib …)
+# libsm6 libxext6 libxrender1: required by opencv-python on headless servers
+# libsndfile1: required by biosppy and other audio libs
+# awscli dependencies (curl, unzip) are already included below
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ninja-build \
+        git \
+        ffmpeg libsm6 libxext6 libxrender1 \
+        libsndfile1 \
+        unzip wget curl \
+        vim tree \
+    && rm -rf /var/lib/apt/lists/*
 
 
 ## DO NOT EDIT the 3 lines.
@@ -97,84 +75,68 @@ COPY ./requirements-docker.txt /challenge
 WORKDIR /challenge
 
 
-RUN mkdir -p $MODEL_CACHE_DIR
-RUN mkdir -p $DATA_CACHE_DIR
-RUN mkdir -p $TEST_DATA_CACHE_DIR
-RUN mkdir -p $GIT_CLONE_DIR
+RUN mkdir -p $MODEL_CACHE_DIR \
+    && mkdir -p $DATA_CACHE_DIR \
+    && mkdir -p $TEST_DATA_CACHE_DIR \
+    && mkdir -p $GIT_CLONE_DIR
 
 
-# RUN ln -s /usr/bin/python3 /usr/bin/python && ln -s /usr/bin/pip3 /usr/bin/pip
 RUN which python
 
-# list packages installed in the base image
+# list packages pre-installed in the base image
 RUN pip list
 
-# torch and related packages (torchvision, torchaudio, etc.) are already installed in the base image
-
-# change PyPI source to Tsinghua mirror if the system time zone is in China (+08:00 CST)
-# TODO: seems NOT working, one has to pass the host time zone as environment variables
-# RUN if [ $(date +'%:z %Z') == "+08:00 CST" ]; \
-#     then pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && date +'%:z %Z'; \
-#     else echo "System time zone is not in China, skip changing PyPI source." && date +'%:z %Z'; \
-#     fi
-
-
-# alternative pypi sources
-# http://mirrors.aliyun.com/pypi/simple/
-# http://pypi.douban.com/simple/
-# RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+# torch and related packages (torchvision, torchaudio, etc.) are already in the base image
 
 RUN python -m pip install --upgrade pip setuptools wheel
 
-# RUN pip install torchsort
+# ── Install torch-ecg ─────────────────────────────────────────────────────────
+RUN if [ "$TORCH_ECG_SOURCE" = "github" ]; then \
+        echo "Installing torch-ecg from GitHub (dev branch) …" \
+        && pip install git+https://github.com/DeepPSP/torch_ecg.git@dev; \
+    else \
+        echo "Installing torch-ecg from PyPI …" \
+        && pip install torch-ecg; \
+    fi
 
-# RUN pip install torch-ecg
-RUN pip install torch-ecg
-# install the dev branch of torch-ecg
-# RUN pip install git+https://github.com/DeepPSP/torch_ecg.git@dev
-
-# install dependencies other than torch-related packages
+# ── Other dependencies ────────────────────────────────────────────────────────
 RUN pip install -r requirements-docker.txt
 
-# list packages after installing requirements
+# list packages after installing all requirements
 RUN pip list
 
-# install AWS CLI v2 (not installed in the base image)
+# ── AWS CLI v2 ────────────────────────────────────────────────────────────────
 # https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2-linux.html
-RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
-    && unzip awscliv2.zip \
+RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
+    && unzip -q awscliv2.zip \
     && ./aws/install \
     && rm -rf awscliv2.zip aws
-# verify the installation
 RUN aws --version && which aws
 
 
-# copy the whole project to the docker container
+# ── Copy project ──────────────────────────────────────────────────────────────
 COPY ./ /challenge
 
 
-# Download synthetic image data and pretrained models
+# ── Post-build environment check ─────────────────────────────────────────────
 RUN python post_docker_build.py
-# check if the data and model are downloaded
-# TODO: pass the path as environment variables
-RUN du -sh $DATA_CACHE_DIR
-RUN du -sh $TEST_DATA_CACHE_DIR
-RUN du -sh $MODEL_CACHE_DIR
+RUN du -sh $DATA_CACHE_DIR $TEST_DATA_CACHE_DIR $MODEL_CACHE_DIR
 RUN tree $MODEL_CACHE_DIR
 
 
-# NOTE: also run test_local.py to test locally
-# since GitHub Actions does not have GPU,
-# one need to run test_local.py to avoid errors related to devices
-# RUN python test_docker.py
-
-
-# commands to run test with docker container:
-
-# sudo docker build -t image .
-# sudo docker run -it --shm-size=10240m --gpus all -v ~/Jupyter/temp/cinc2025_docker_test/model:/challenge/model -v ~/Jupyter/temp/cinc2025_docker_test/test_data:/challenge/test_data -v ~/Jupyter/temp/cinc2025_docker_test/test_outputs:/challenge/test_outputs -v ~/Jupyter/temp/cinc2025_docker_test/data:/challenge/training_data image bash
-
-
-# python train_model.py training_data model
-# python run_model.py model test_data test_outputs
-# python evaluate_model.py labels outputs scores.csv
+# ─────────────────────────────────────────────────────────────────────────────
+# Local test / run commands (not executed during image build):
+#
+#   docker build -t cinc2026 .
+#   docker build --build-arg TORCH_ECG_SOURCE=github -t cinc2026 .
+#
+#   docker run -it --shm-size=10240m --gpus all \
+#     -v /path/to/model:/challenge/model \
+#     -v /path/to/data:/challenge/data:ro \
+#     -v /path/to/output:/challenge/output \
+#     cinc2026 bash
+#
+#   python train_model.py /challenge/data /challenge/model
+#   python run_model.py   /challenge/model /challenge/data /challenge/output
+#   python evaluate_model.py labels outputs scores.csv
+# ─────────────────────────────────────────────────────────────────────────────

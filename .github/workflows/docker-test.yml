@@ -28,7 +28,8 @@ env:
   revenger_model_dir: /challenge/model
   revenger_test_dir: /challenge/test
   revenger_output_dir: /challenge/output
-  docker_main_filename: ActionTest.Dockerfile  # Dockerfile
+  docker_main_filename: Dockerfile
+  TORCH_ECG_SOURCE: github  # set to "pypi" once the dev features are published
   DOCKER_HUB_USERNAME: wenh06
   DOCKER_HUB_REPOSITORY: deeppsp-cinc2026-docker-image
   DOCKER_IMAGE_TAG: latest
@@ -90,6 +91,8 @@ jobs:
         file: ${{ env.docker_main_filename }}
         push: false
         # load: true
+        build-args: |
+          TORCH_ECG_SOURCE=${{ env.TORCH_ECG_SOURCE }}
         tags: |
           ${{ env.DOCKER_HUB_USERNAME }}/${{ env.DOCKER_HUB_REPOSITORY }}:${{ env.DOCKER_IMAGE_TAG }}
 
