@@ -48,6 +48,14 @@ _MODEL_CLASS_MAP: Dict[str, Any] = {
     "epoch_crnn_S": EpochCRNN,
     "epoch_crnn_M": EpochCRNN,
     "epoch_crnn_L": EpochCRNN,
+    # resnetNC_BNse backbone (4-stage bottleneck + SE)
+    "epoch_crnn_resnetNC_BNse_S": EpochCRNN,
+    "epoch_crnn_resnetNC_BNse_M": EpochCRNN,
+    "epoch_crnn_resnetNC_BNse_L": EpochCRNN,
+    # tresnetE backbone (4-stage mixed basic+bottleneck+SE, TResNet-style)
+    "epoch_crnn_tresnetE_S": EpochCRNN,
+    "epoch_crnn_tresnetE_M": EpochCRNN,
+    "epoch_crnn_tresnetE_L": EpochCRNN,
 }
 from outputs import CINC2026Outputs
 from trainer import CINC2026Trainer

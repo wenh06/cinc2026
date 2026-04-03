@@ -202,6 +202,22 @@ ModelCfg.epoch_crnn_L = _make_epoch_crnn("resnetN_L", lstm_hidden=[256], clf_hid
 # Canonical alias (M is the default)
 ModelCfg.epoch_crnn = ModelCfg.epoch_crnn_M
 
+# resnetNC_BNse presets — 4-stage bottleneck+SE backbone (Nature-Comm style)
+# CNN out channels = num_filters[-1] * 4 (bottleneck expansion):
+#   _BNse_S → 256 ch   _BNse_M → 512 ch   _BNse_L → 1024 ch
+# Total params (CNN + BiLSTM + clf):  ~0.5M / ~1.9M / ~7.3M
+ModelCfg.epoch_crnn_resnetNC_BNse_S = _make_epoch_crnn("resnetNC_BNse_S", lstm_hidden=[64], clf_hidden=[32])
+ModelCfg.epoch_crnn_resnetNC_BNse_M = _make_epoch_crnn("resnetNC_BNse_M", lstm_hidden=[128], clf_hidden=[64])
+ModelCfg.epoch_crnn_resnetNC_BNse_L = _make_epoch_crnn("resnetNC_BNse_L", lstm_hidden=[256], clf_hidden=[128])
+
+# tresnetE presets — 4-stage TResNet-style backbone (mixed basic+bottleneck+SE)
+# CNN out channels = num_filters[-1] * 4 (last two stages are bottleneck):
+#   _S → 512 ch   _M → 1024 ch   _L → 1536 ch
+# Total params (CNN + BiLSTM + clf):  ~0.7M / ~2.5M / ~7.4M
+ModelCfg.epoch_crnn_tresnetE_S = _make_epoch_crnn("tresnetE_S", lstm_hidden=[64], clf_hidden=[32])
+ModelCfg.epoch_crnn_tresnetE_M = _make_epoch_crnn("tresnetE_M", lstm_hidden=[128], clf_hidden=[64])
+ModelCfg.epoch_crnn_tresnetE_L = _make_epoch_crnn("tresnetE_L", lstm_hidden=[256], clf_hidden=[128])
+
 
 ModelCfg.transformer = deepcopy(_BASE_MODEL_CONFIG)
 ModelCfg.transformer.d_model = 128
