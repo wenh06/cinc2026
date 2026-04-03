@@ -117,60 +117,82 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
             self._ls_rec()
 
     def _ls_rec(self) -> None:
-        """Find all records in the database directory and store them in a dataframe."""
-        self._df_records = pd.DataFrame()
+        """Find all records in the database directory and store them in a dataframe.
 
-        partitions = ["training_set", "supplementary_set"]
+        Two data layouts are supported:
+
+        **Standard (nested) layout** — db_dir is the dataset root containing
+        one or more named partition sub-folders::
+
+            db_dir/
+            ├── training_set/
+            │   ├── demographics.csv
+            │   ├── algorithmic_annotations/
+            │   ├── human_annotations/
+            │   └── physiological_data/
+            └── supplementary_set/
+                └── ...
+
+        **Flat layout** — db_dir itself is a single partition directory (as
+        passed by the PhysioNet challenge evaluator at inference / training time)::
+
+            db_dir/
+            ├── demographics.csv
+            ├── algorithmic_annotations/
+            ├── human_annotations/
+            └── physiological_data/
+
+        In the flat layout the partition is assumed to be ``"training_set"``
+        during training and ``"test_set"`` at inference.  :meth:`_resolve_db_dir`
+        is **not** relied upon for path correction here; instead the check is
+        performed locally so the reader always produces a valid ``_df_records``.
+        """
+        self._df_records = pd.DataFrame()
         dfs = []
 
-        for part in partitions:
-            demo_path = self.db_dir / part / "demographics.csv"
-            if not demo_path.exists():
-                continue
-
-            # Read demographics
+        def _build_partition_df(demo_path: Path, data_root: Path, part_name: str) -> pd.DataFrame:
+            """Read demographics.csv and append path columns for one partition."""
             df = pd.read_csv(demo_path)
-            df["partition"] = part
+            df["partition"] = part_name
 
-            # Construct file paths
-            # Physiological data: part/physiological_data/SiteID/filename
-            # Algorithmic annotations: part/algorithmic_annotations/SiteID/filename
-            # Human annotations: part/human_annotations/SiteID/filename
-
-            physio_dir = self.db_dir / part / "physiological_data"
-            algo_dir = self.db_dir / part / "algorithmic_annotations"
-            human_dir = self.db_dir / part / "human_annotations"
+            physio_dir = data_root / "physiological_data"
+            algo_dir = data_root / "algorithmic_annotations"
+            human_dir = data_root / "human_annotations"
 
             def get_paths(row):
-                # File naming convention: {BidsFolder}_ses-{SessionID}.edf
                 base_name = f"{row['BidsFolder']}_ses-{row['SessionID']}"
                 site_id = row["SiteID"]
-
-                # Physiological data path
                 physio_path = physio_dir / site_id / f"{base_name}.edf"
-
-                # Algorithmic annotations path
                 algo_path = algo_dir / site_id / f"{base_name}_caisr_annotations.edf"
-
-                # Human annotations path (only exists for training set usually)
                 human_path_str = None
                 if human_dir.exists():
                     hp = human_dir / site_id / f"{base_name}_expert_annotations.edf"
                     if hp.exists():
                         human_path_str = str(hp)
-
                 return pd.Series(
-                    [str(physio_path), str(algo_path), human_path_str], index=["path", "algo_ann_path", "human_ann_path"]
+                    [str(physio_path), str(algo_path), human_path_str],
+                    index=["path", "algo_ann_path", "human_ann_path"],
                 )
 
             paths = df.apply(get_paths, axis=1)
-            df = pd.concat([df, paths], axis=1)
+            return pd.concat([df, paths], axis=1)
 
-            dfs.append(df)
+        # ── Standard (nested) layout ──────────────────────────────────────────
+        for part in ["training_set", "supplementary_set"]:
+            demo_path = self.db_dir / part / "demographics.csv"
+            if demo_path.exists():
+                dfs.append(_build_partition_df(demo_path, self.db_dir / part, part))
+
+        # ── Flat layout fallback ──────────────────────────────────────────────
+        # If no nested partitions were found, check whether db_dir itself
+        # contains demographics.csv (challenge evaluator flat layout).
+        if not dfs:
+            flat_demo = self.db_dir / "demographics.csv"
+            if flat_demo.exists():
+                dfs.append(_build_partition_df(flat_demo, self.db_dir, "training_set"))
 
         if dfs:
             self._df_records = pd.concat(dfs, ignore_index=True)
-            # Use BidsFolder as the record identifier
             self._df_records.set_index("BidsFolder", inplace=True)
             self._all_records = self._df_records.index.tolist()
         else:

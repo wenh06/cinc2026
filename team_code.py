@@ -75,19 +75,18 @@ def _is_strict_test() -> bool:
 
 
 def _resolve_db_dir(data_folder: str) -> Path:
-    """Return the CinC2026 db_dir (parent of partition subfolders).
+    """Return the resolved db_dir path to pass to :class:`CINC2026`.
 
-    If *data_folder* is itself a partition (contains ``demographics.csv`` at
-    its root), the parent directory is returned.  If it is already the data
-    root (contains ``training_set/`` as a subdirectory), it is returned
-    unchanged.
+    :class:`CINC2026._ls_rec` handles two layouts automatically:
+
+    * **Standard (nested)** — db_dir contains ``training_set/`` subdirectory.
+    * **Flat** — db_dir itself contains ``demographics.csv`` at its root
+      (the layout used by the PhysioNet challenge evaluator).
+
+    This function therefore simply resolves the path without any parent-hopping;
+    the reader discovers the correct layout on its own.
     """
-    p = Path(data_folder).resolve()
-    if (p / DEMOGRAPHICS_FILE).exists():
-        # data_folder is a partition subfolder (e.g. training_set/)
-        return p.parent
-    # data_folder is already the root containing partition subdirectories
-    return p
+    return Path(data_folder).resolve()
 
 
 def _load_caisr_ann(caisr_path: str) -> Dict[str, np.ndarray]:
