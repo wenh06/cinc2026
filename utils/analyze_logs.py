@@ -126,7 +126,7 @@ def best_checkpoints(runs: Dict[str, pd.DataFrame], metric: str = "auroc") -> pd
         rows.append(
             {
                 "run": name,
-                "best_epoch": int(best["epoch"]),
+                "best_epoch": int(best["epoch"]),  # type: ignore
                 "auroc": round(best["auroc"], 4),
                 "auprc": round(best["auprc"], 4),
                 "auroc_I0002": round(best["auroc_I0002"], 4),
@@ -146,7 +146,7 @@ def plot_learning_curves(
     runs: Dict[str, pd.DataFrame],
     smooth: int = 3,
     out_path: Optional[str | Path] = None,
-) -> plt.Figure:
+) -> plt.Figure:  # type: ignore
     """Plot train-loss and val-AUROC/AUPRC learning curves for all runs.
 
     Parameters
@@ -154,7 +154,7 @@ def plot_learning_curves(
     smooth
         Rolling-window half-width for smoothing.  ``0`` = no smoothing.
     out_path
-        If given, save figure here (PNG).
+        If given, save figure here (PDF).
     """
     n_runs = len(runs)
     colors = plt.cm.tab10(np.linspace(0, 0.9, n_runs))
@@ -203,7 +203,7 @@ def plot_site_auroc(
     runs: Dict[str, pd.DataFrame],
     smooth: int = 3,
     out_path: Optional[str | Path] = None,
-) -> plt.Figure:
+) -> plt.Figure:  # type: ignore
     """Per-site AUROC curves — useful for diagnosing site-specific generalisation."""
     n_runs = len(runs)
     n_sites = len(SITE_COLS)
@@ -233,7 +233,7 @@ def plot_site_auroc(
 def plot_lr_schedule(
     runs: Dict[str, pd.DataFrame],
     out_path: Optional[str | Path] = None,
-) -> plt.Figure:
+) -> plt.Figure:  # type: ignore
     """LR schedule for each run."""
     n_runs = len(runs)
     colors = plt.cm.tab10(np.linspace(0, 0.9, n_runs))
@@ -271,7 +271,7 @@ def print_run_summary(runs: Dict[str, pd.DataFrame]) -> None:
         if not v["auroc"].isna().all():
             best_i = v["auroc"].idxmax()
             print(
-                f"    best  val AUROC={v.loc[best_i,'auroc']:.4f} @ epoch {int(v.loc[best_i,'epoch'])}"
+                f"    best  val AUROC={v.loc[best_i,'auroc']:.4f} @ epoch {int(v.loc[best_i,'epoch'])}"  # type: ignore
                 f"  (AUPRC={v.loc[best_i,'auprc']:.4f})"
             )
         print()
@@ -317,9 +317,9 @@ def main() -> None:
     def _savepath(name: str) -> Optional[Path]:
         return out_dir / name if out_dir else None
 
-    plot_learning_curves(runs, smooth=args.smooth, out_path=_savepath("learning_curves.png"))
-    plot_site_auroc(runs, smooth=args.smooth, out_path=_savepath("site_auroc.png"))
-    plot_lr_schedule(runs, out_path=_savepath("lr_schedule.png"))
+    plot_learning_curves(runs, smooth=args.smooth, out_path=_savepath("learning_curves.pdf"))
+    plot_site_auroc(runs, smooth=args.smooth, out_path=_savepath("site_auroc.pdf"))
+    plot_lr_schedule(runs, out_path=_savepath("lr_schedule.pdf"))
 
     if not out_dir:
         plt.show()
