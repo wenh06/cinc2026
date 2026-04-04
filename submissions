@@ -1,5 +1,29 @@
 Unofficial Phase:
   submission 1:
+    submission ID: 1173
+    submission time: 4/3/2026 0:38:53 ET
+    challenge_scores:
+      AUROC: 0.522
+      AUPRC: 0.059
+      Accuracy: 0.201
+      F-measure: 0.065
+    model: EpochTransformer_M
+    loss: WeightedBCE
+    train:
+      n_epochs: 100
+      batch_size: 16
+      optimizer: adamw_amsgrad
+      lr: 0.0003
+      max_lr: 0.001
+      lr_scheduler: one_cycle
+      early_stopping_patience: 20
+      normalize: z-score
+    notes: |
+      First successful submission. Flat data-layout fix (commit 5a77988) was
+      the key fix that allowed the challenge evaluator to find records. Model
+      had not yet converged fully at the submitted checkpoint.
+    hash: 5a77988
+  submission 2:
 
 Official Phase:
   submission 1:

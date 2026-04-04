@@ -58,7 +58,7 @@ TrainCfg = deepcopy(BaseCfg)
 # and on a local 16 GB GPU.
 TrainCfg.batch_size = 16
 TrainCfg.train_ratio = 0.8
-TrainCfg.model_name = "epoch_transformer"  # primary model for this challenge
+TrainCfg.model_name = "epoch_crnn_resnetNC_BNse_M"  # primary model for this challenge
 
 # learning_rate is the canonical name used by BaseTrainer; lr is kept as an alias
 TrainCfg.lr = 3e-4
