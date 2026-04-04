@@ -18,10 +18,6 @@ Unofficial Phase:
       lr_scheduler: one_cycle
       early_stopping_patience: 20
       normalize: z-score
-    notes: |
-      First successful submission. Flat data-layout fix (commit 5a77988) was
-      the key fix that allowed the challenge evaluator to find records. Model
-      had not yet converged fully at the submitted checkpoint.
     hash: 5a77988
   submission 2:
 
