@@ -53,10 +53,7 @@ BaseCfg.demographic_features = ["Age", "Sex", "BMI"]
 TrainCfg = deepcopy(BaseCfg)
 
 # Data Loader Configs
-# Each sample is a full-night sequence of ~720–1100 thirty-second epochs.
-# batch_size=16 fits comfortably on the challenge GPUs (A30 24 GB / RTX 6000 Ada 48 GB)
-# and on a local 16 GB GPU.
-TrainCfg.batch_size = 16
+TrainCfg.batch_size = 64
 TrainCfg.train_ratio = 0.8
 TrainCfg.model_name = "epoch_crnn_resnetNC_BNse_M"  # primary model for this challenge
 
@@ -86,16 +83,13 @@ TrainCfg.max_seq_len = 768
 TrainCfg.sig_len = 3000  # 30 seconds at 100Hz
 
 # Optimization Configs.
-# 624 training records / batch_size=16 ≈ 39 steps/epoch.
-# 100 epochs × 39 steps ≈ 3 900 total gradient steps — sufficient for an
-# 825K-parameter Transformer trained from scratch on this dataset size.
 TrainCfg.n_epochs = 100
 TrainCfg.optimizer = "adamw_amsgrad"
 TrainCfg.decay = 1e-2  # AdamW weight decay (standard Transformer practice)
 TrainCfg.lr_scheduler = "one_cycle"
 TrainCfg.max_lr = 1e-3  # OneCycleLR peak ≈ 3× base lr
 TrainCfg.betas = (0.9, 0.999)
-TrainCfg.grad_clip = 1.0  # gradient clipping max norm for Transformer stability
+TrainCfg.grad_clip = 0.0  # 1.0 # gradient clipping max norm for Transformer stability, 0 to disable
 
 # Preprocessing
 TrainCfg.normalize = CFG(
