@@ -331,12 +331,21 @@ class CINC2026Trainer(BaseTrainer):
         """Forward one batch through the model and return the output dict.
 
         The dataset emits ``"label"`` (singular) but the model expects
-        ``"labels"`` (plural, float).  This method performs the rename and
-        dtype conversion, and strips non-tensor string fields.
+        ``"labels"`` (plural, float).  This method performs the rename,
+        dtype conversion, optional label smoothing, and strips non-tensor
+        string fields.
+
+        Note: We use dict-based batches (not tuples), so torch_ecg's
+        AugmenterManager (which expects positional tuple unpacking) is
+        incompatible; label smoothing is applied here directly.
         """
         tensors: Dict[str, Any] = dict(input_tensors)
         if "label" in tensors and "labels" not in tensors:
-            tensors["labels"] = tensors.pop("label").to(self.dtype)
+            labels = tensors.pop("label").to(self.dtype)
+            eps = float(self.train_config.get("label_smoothing", 0.0))
+            if eps > 0.0 and self.model.training:
+                labels = labels * (1.0 - eps) + eps * 0.5
+            tensors["labels"] = labels
         else:
             tensors.pop("label", None)
         tensors.pop("record_id", None)
@@ -469,6 +478,29 @@ class CINC2026Trainer(BaseTrainer):
     def _setup_criterion(self) -> None:
         # Criterion (BCEWithLogitsLoss) is embedded in the model; nothing to do.
         pass
+
+    def _setup_scheduler(self) -> None:
+        """Override to pass ``pct_start`` to OneCycleLR.
+
+        torch_ecg's base implementation builds OneCycleLR without ``pct_start``,
+        defaulting to 0.3 (30 % warm-up).  For CRNN-style models that converge
+        faster, a shorter warm-up (e.g. 0.1) helps.  We pass the value from
+        ``train_config.pct_start`` if present, otherwise fall back to 0.3.
+        """
+        if self.train_config.get("lr_scheduler", "none").lower() not in ("one_cycle", "onecycle"):
+            super()._setup_scheduler()
+            return
+
+        import torch.optim as optim
+
+        pct_start = float(self.train_config.get("pct_start", 0.3))
+        self.scheduler = optim.lr_scheduler.OneCycleLR(
+            optimizer=self.optimizer,
+            max_lr=self.train_config.max_lr,
+            epochs=self.n_epochs,
+            steps_per_epoch=len(self.train_loader),
+            pct_start=pct_start,
+        )
 
     def _setup_augmenter_manager(self) -> None:
         # CAISR feature inputs require no signal augmentation.

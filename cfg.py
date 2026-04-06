@@ -53,9 +53,14 @@ BaseCfg.demographic_features = ["Age", "Sex", "BMI"]
 TrainCfg = deepcopy(BaseCfg)
 
 # Data Loader Configs
-TrainCfg.batch_size = 64
+# batch_size=16: 624 train records / 16 ≈ 39 steps/epoch — enough gradient noise for
+# regularisation and sufficient steps for OneCycleLR to anneal properly.
+# (batch_size=64 collapses to ~10 steps/epoch which hurt CRNN convergence in run 04-04.)
+TrainCfg.batch_size = 16
+# train_ratio: fallback 80/20 split used by CINC2026Dataset when the canonical
+# JSON split file (utils/cinc2026-data-split.json) is absent.
 TrainCfg.train_ratio = 0.8
-TrainCfg.model_name = "epoch_crnn_resnetNC_BNse_M"  # primary model for this challenge
+TrainCfg.model_name = "epoch_crnn_M"  # current model for submission 3
 
 # learning_rate is the canonical name used by BaseTrainer; lr is kept as an alias
 TrainCfg.lr = 3e-4
@@ -79,24 +84,49 @@ TrainCfg.flooding_level = 0  # no flooding regularisation by default
 # full sequence.
 TrainCfg.max_seq_len = 768
 
-# sig_len kept for backwards-compat with raw-signal models
+# sig_len: raw-signal legacy kept for backwards-compat with models/transformer.py
+# prototype.  Not used in the CAISR epoch-feature pipeline.
 TrainCfg.sig_len = 3000  # 30 seconds at 100Hz
 
 # Optimization Configs.
+# 624 train records / batch_size=16 ≈ 39 steps/epoch.
+# 100 epochs × 39 ≈ 3 900 total gradient steps.
 TrainCfg.n_epochs = 100
 TrainCfg.optimizer = "adamw_amsgrad"
-TrainCfg.decay = 1e-2  # AdamW weight decay (standard Transformer practice)
+# weight_decay: BaseTrainer._setup_optimizer reads get_kwargs(AdamW) which uses the
+# key "weight_decay" — NOT "decay".  Always use "weight_decay" here.
+TrainCfg.weight_decay = 1e-2
 TrainCfg.lr_scheduler = "one_cycle"
-TrainCfg.max_lr = 1e-3  # OneCycleLR peak ≈ 3× base lr
+TrainCfg.max_lr = 1e-3  # OneCycleLR peak
+# pct_start: fraction of total steps used for LR warm-up (OneCycleLR).
+# 0.3 (default) is good for Transformer; use 0.1 for CRNN which converges faster.
+TrainCfg.pct_start = 0.3
 TrainCfg.betas = (0.9, 0.999)
-TrainCfg.grad_clip = 0.0  # 1.0 # gradient clipping max norm for Transformer stability, 0 to disable
+TrainCfg.grad_clip = 1.0  # gradient clipping max norm (0 to disable)
 
-# Preprocessing
-TrainCfg.normalize = CFG(
-    method="z-score",
-    mean=0.0,
-    std=1.0,
-)
+# Augmentation / Regularisation
+# CAISR epoch features are pre-bounded in [0,1] by construction (one-hot stages,
+# softmax probs, event fractions, sin/cos position encoding, scaled demographics).
+# No z-score or amplitude normalisation is needed or appropriate here.
+# PreprocManager (BandPass / ZScoreNormalize / Resample) is designed for raw signals
+# and should only be wired in if a raw-signal model branch is added in the future.
+#
+# label_smoothing: smooths targets {0,1} → {ε/2, 1-ε/2} to discourage over-confident
+# predictions and improve calibration when test prevalence differs from training.
+TrainCfg.label_smoothing = 0.05
+
+# pos_weight: BCEWithLogitsLoss pos_weight.
+# Hidden test set appears to have ~6% positive prevalence vs 50% in training.
+# Set to None to disable (balanced training, currently preferred for stability).
+TrainCfg.pos_weight = None  # e.g. 5.0 to upweight positives
+
+# Preprocessing — commented out: CAISR features need no additional normalisation.
+# Uncomment and wire into a PreprocManager only if raw physiological signals are used.
+# TrainCfg.normalize = CFG(
+#     method="z-score",
+#     mean=0.0,
+#     std=1.0,
+# )
 
 # Callbacks & Logging
 TrainCfg.log_step = 20
@@ -213,6 +243,10 @@ ModelCfg.epoch_crnn_tresnetE_M = _make_epoch_crnn("tresnetE_M", lstm_hidden=[128
 ModelCfg.epoch_crnn_tresnetE_L = _make_epoch_crnn("tresnetE_L", lstm_hidden=[256], clf_hidden=[128])
 
 
+# ── Raw-signal prototype configs (NOT currently used) ────────────────────────
+# These use CrossEntropyLoss (softmax over 2 classes) which is architecturally
+# inconsistent with the BCEWithLogitsLoss used by EpochCRNN and EpochTransformer.
+# They exist as scaffolding for a future raw-signal branch.
 ModelCfg.transformer = deepcopy(_BASE_MODEL_CONFIG)
 ModelCfg.transformer.d_model = 128
 ModelCfg.transformer.nhead = 4
