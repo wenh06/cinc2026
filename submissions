@@ -8,7 +8,7 @@ Unofficial Phase:
       Accuracy: 0.201
       F-measure: 0.065
     model: EpochTransformer_M
-    loss: WeightedBCE
+    loss: BCEWithLogitsLoss
     train:
       n_epochs: 100
       batch_size: 16
@@ -16,10 +16,29 @@ Unofficial Phase:
       lr: 0.0003
       max_lr: 0.001
       lr_scheduler: one_cycle
+      grad_clip: 1.0
       early_stopping_patience: 20
-      normalize: z-score
     hash: 5a77988
   submission 2:
+    submission ID: 1192
+    submission time: 4/4/2026 12:55:57 ET
+    challenge_scores:
+      AUROC: 0.497
+      AUPRC: 0.038
+      Accuracy: 0.080
+      F-measure: 0.075
+    model: EpochCRNN_resnetNC_BNse_M
+    loss: BCEWithLogitsLoss
+    train:
+      n_epochs: 100
+      batch_size: 64
+      optimizer: adamw_amsgrad
+      lr: 0.0003
+      max_lr: 0.001
+      lr_scheduler: one_cycle
+      grad_clip: 0.0
+      early_stopping_patience: 20
+    hash: 400416f
 
 Official Phase:
   submission 1:
