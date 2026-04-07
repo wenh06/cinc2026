@@ -20,6 +20,7 @@ of the partition subfolders.  :func:`_resolve_db_dir` handles this mapping
 transparently so that either convention works.
 """
 
+import json
 import os
 from copy import deepcopy
 from pathlib import Path
@@ -171,6 +172,17 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
     debug_epochs = int(os.environ.get("CINC2026_REVENGER_TRAIN_EPOCHS", "0"))
     if debug_epochs > 0:
         train_config.n_epochs = debug_epochs
+
+    # Search-script overrides: read from JSON file path in env var
+    override_json = os.environ.get("CINC2026_OVERRIDE_JSON", "")
+    if override_json and Path(override_json).exists():
+        with open(override_json) as f:
+            overrides = json.load(f)
+        # Apply scalar training-config overrides (skip path keys handled separately)
+        _skip = {"db_dir", "model_folder"}
+        for k, v in overrides.items():
+            if k not in _skip:
+                setattr(train_config, k, v)
 
     # Route trainer logs and checkpoints inside model_folder
     working_dir = Path(model_folder) / "working_dir"
