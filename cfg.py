@@ -60,7 +60,7 @@ TrainCfg.batch_size = 16
 # train_ratio: fallback 80/20 split used by CINC2026Dataset when the canonical
 # JSON split file (utils/cinc2026-data-split.json) is absent.
 TrainCfg.train_ratio = 0.8
-TrainCfg.model_name = "epoch_crnn_M"  # current model for submission 3
+TrainCfg.model_name = "epoch_transformer_L"  # current model for submission 4
 
 # learning_rate is the canonical name used by BaseTrainer; lr is kept as an alias
 TrainCfg.lr = 3e-4
@@ -113,7 +113,7 @@ TrainCfg.grad_clip = 1.0  # gradient clipping max norm (0 to disable)
 #
 # label_smoothing: smooths targets {0,1} → {ε/2, 1-ε/2} to discourage over-confident
 # predictions and improve calibration when test prevalence differs from training.
-TrainCfg.label_smoothing = 0.05
+TrainCfg.label_smoothing = 0.1
 
 # pos_weight: BCEWithLogitsLoss pos_weight.
 # Hidden test set appears to have ~6% positive prevalence vs 50% in training.
