@@ -30,18 +30,20 @@ This module reads two environment variables:
     ``test_docker.py`` for CI-specific settings (e.g. ``n_epochs``,
     ``batch_size``).  Leave unset for a normal submission run.
 
-``CINC2026_REVENGER_STRICT_TEST``
-    Set to ``"1"`` (or any truthy string) to make all ``except`` blocks
-    re-raise instead of returning a safe fallback.  Used by
-    ``test_docker.py`` so that hidden bugs surface during CI rather than
-    being silently swallowed in production.  Leave unset for submission.
+``CINC2026_REVENGER_TEST``
+    Set to ``"1"`` (or any truthy string) to activate test/CI mode:
+    all ``except`` blocks re-raise instead of returning a safe fallback,
+    and ``test_docker.py`` injects CI-friendly training settings
+    (short run, small batch).  Set automatically by ``test_docker.py``.
+    Leave unset for submission.
 
 Typical usage per mode
 ----------------------
 * **Submission** (PhysioNet evaluator): no env vars — cfg.py drives everything.
 * **Search** (local): ``CINC2026_OVERRIDE_JSON=/path/exp.json python train_model.py …``
-* **CI** (GitHub Actions): ``CINC2026_REVENGER_STRICT_TEST=1`` + ``CINC2026_OVERRIDE_JSON``
-  injected by ``test_docker.py`` with ``{"n_epochs": 3, "batch_size": 4}``.
+* **CI** (GitHub Actions / local test): ``CINC2026_REVENGER_TEST=1`` triggers strict
+  error reporting; ``test_docker.py`` injects ``{"n_epochs": 3, "batch_size": 4}``
+  via ``CINC2026_OVERRIDE_JSON``.
 """
 
 import json
@@ -90,16 +92,14 @@ FINAL_MODEL_NAME = "final_model.pth.tar"
 
 
 def _is_strict_test() -> bool:
-    """Return True when CINC2026_REVENGER_STRICT_TEST is set to a truthy value.
+    """Return True when CINC2026_REVENGER_TEST is set to a truthy value.
 
-    When strict-test mode is active, all ``except`` blocks in this module
-    re-raise instead of swallowing errors.  This surfaces hidden bugs during
-    CI (``test_docker.py`` sets the flag to ``"1"`` before running tests).
-    In production (flag unset or ``"0"``) errors are caught and replaced with
-    a safe fallback so that the challenge scorer always receives a valid
-    ``(binary_output, probability_output)`` pair.
+    When active, all ``except`` blocks re-raise instead of swallowing errors,
+    surfacing hidden bugs during CI.  In production (flag unset) errors are
+    caught and replaced with a safe fallback ``(0, 0.5)`` so the challenge
+    scorer always receives a valid prediction.
     """
-    return os.environ.get("CINC2026_REVENGER_STRICT_TEST", "0") not in ("0", "", "false", "False", "no", "No")
+    return os.environ.get("CINC2026_REVENGER_TEST", "0") not in ("0", "", "false", "False", "no", "No")
 
 
 # ---------------------------------------------------------------------------

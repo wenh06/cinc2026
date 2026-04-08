@@ -193,9 +193,8 @@ def test_trainer() -> None:
     train_config.model_dir.mkdir(parents=True, exist_ok=True)
     train_config.log_dir = train_config.working_dir / "log"
     train_config.log_dir.mkdir(parents=True, exist_ok=True)
-    # On GitHub Actions runners (~7 GB RAM) a large model with the default
-    # batch_size can OOM-kill the process.  Shrink the batch to stay safe.
-    if os.environ.get("GITHUB_ACTIONS"):
+    # In CI (CINC2026_REVENGER_TEST set) the runner has limited RAM; shrink batch.
+    if os.environ.get("CINC2026_REVENGER_TEST"):
         train_config.batch_size = 4
 
     model_config = deepcopy(getattr(ModelCfg, train_config.model_name))
@@ -256,9 +255,9 @@ def test_entry() -> None:
     import tempfile as _tempfile
 
     # Build CI-specific config overrides and inject via CINC2026_OVERRIDE_JSON.
-    # n_epochs=3 keeps the test fast; batch_size=4 prevents OOM on GitHub Actions.
+    # n_epochs=3 keeps the test fast; batch_size=4 prevents OOM in CI.
     _ci_cfg: dict = {"n_epochs": 3}
-    if os.environ.get("GITHUB_ACTIONS"):
+    if os.environ.get("CINC2026_REVENGER_TEST"):
         _ci_cfg["batch_size"] = 4
 
     prev_override = os.environ.get("CINC2026_OVERRIDE_JSON")
@@ -327,9 +326,8 @@ if __name__ == "__main__":
         print("    CINC2026_REVENGER_TEST=1 mount_data_dir=/path/to/data python test_docker.py")
         exit(0)
 
-    # Enable strict-test mode so all try/except blocks in team_code re-raise
-    # instead of silently swallowing errors.  This surfaces hidden bugs during CI.
-    os.environ["CINC2026_REVENGER_STRICT_TEST"] = "1"
+    # CINC2026_REVENGER_TEST being set also activates strict error propagation
+    # in team_code.py (_is_strict_test checks this same variable).
 
     print("#" * 100)
     print("testing team code")
