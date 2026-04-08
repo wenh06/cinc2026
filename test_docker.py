@@ -193,6 +193,10 @@ def test_trainer() -> None:
     train_config.model_dir.mkdir(parents=True, exist_ok=True)
     train_config.log_dir = train_config.working_dir / "log"
     train_config.log_dir.mkdir(parents=True, exist_ok=True)
+    # On GitHub Actions runners (~7 GB RAM) a large model with the default
+    # batch_size can OOM-kill the process.  Shrink the batch to stay safe.
+    if os.environ.get("GITHUB_ACTIONS"):
+        train_config.batch_size = 4
 
     model_config = deepcopy(getattr(ModelCfg, train_config.model_name))
     model_cls = _MODEL_CLASS_MAP[train_config.model_name]
@@ -248,15 +252,27 @@ def test_entry() -> None:
     # 1. Train (1 epoch for speed)
     # ------------------------------------------------------------------
     print("   Train model (1 epoch)   ".center(100, "#"))
-    prev_env = os.environ.get("CINC2026_REVENGER_TRAIN_EPOCHS")
+    prev_epochs = os.environ.get("CINC2026_REVENGER_TRAIN_EPOCHS")
+    prev_override = os.environ.get("CINC2026_OVERRIDE_JSON")
     os.environ["CINC2026_REVENGER_TRAIN_EPOCHS"] = "3"
+    # On GitHub Actions the runner has limited RAM; shrink batch_size to avoid OOM.
+    if os.environ.get("GITHUB_ACTIONS"):
+        import json as _json
+
+        _ci_overrides = _json.loads(prev_override) if prev_override else {}
+        _ci_overrides.setdefault("batch_size", 4)
+        os.environ["CINC2026_OVERRIDE_JSON"] = _json.dumps(_ci_overrides)
     try:
         train_model(str(train_data_dir), str(entry_model_dir), verbose=True)
     finally:
-        if prev_env is None:
+        if prev_epochs is None:
             os.environ.pop("CINC2026_REVENGER_TRAIN_EPOCHS", None)
         else:
-            os.environ["CINC2026_REVENGER_TRAIN_EPOCHS"] = prev_env
+            os.environ["CINC2026_REVENGER_TRAIN_EPOCHS"] = prev_epochs
+        if prev_override is None:
+            os.environ.pop("CINC2026_OVERRIDE_JSON", None)
+        else:
+            os.environ["CINC2026_OVERRIDE_JSON"] = prev_override
 
     # ------------------------------------------------------------------
     # 2. Run inference via run_model.py entry point

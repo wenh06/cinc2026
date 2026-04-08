@@ -406,6 +406,206 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
             self.logger.warning("CINC2026 has a fixed sleep stage mapping, the provided class_map will be ignored.")  # type: ignore
         return super().plot_hypnogram(mask, granularity, class_map=self.__sleep_stage_mapping__, **kwargs)
 
+    def compare_annotations(
+        self,
+        recs: Optional[Union[str, int, list]] = None,
+        verbose: bool = False,
+    ) -> Dict[str, Any]:
+        """Compare CAISR (algorithmic) vs human annotations for one or more records.
+
+        Computes agreement statistics for four annotation types:
+        - **stage**: Sleep stage per 30 s epoch. Cohen's kappa (linear-weighted),
+          overall accuracy, and per-class recall.
+        - **arousal**: Binary event flag per 0.5 s sample. Cohen's kappa,
+          sensitivity (recall for event=1), specificity, and F1.
+        - **resp**: Respiratory events per 2 s sample. Binary (any event vs none)
+          because CAISR and expert use incompatible codebooks.
+          Cohen's kappa and F1 (event=positive class).
+        - **limb**: Limb movement events per 2 s sample. Binary comparison
+          (CAISR merges isolated=1 and periodic=2 into one class; expert uses 0/1).
+          Cohen's kappa and F1.
+
+        Parameters
+        ----------
+        recs : str, int, list, or None
+            Record(s) to analyse. An integer is treated as an index into
+            ``self._all_records``.  ``None`` processes all training records
+            that have human annotations.
+        verbose : bool
+            If True, print per-record progress.
+
+        Returns
+        -------
+        dict with keys:
+            ``"per_record"``  – DataFrame with one row per record.
+            ``"aggregate"``   – dict of aggregate statistics across records.
+            ``"n_records"``   – number of records successfully processed.
+
+        Examples
+        --------
+        >>> dr = CINC2026("/Data1/wenh06/physionetchallenge2026data")
+        >>> result = dr.compare_annotations()
+        >>> print(result["aggregate"])
+        """
+        from sklearn.metrics import (
+            cohen_kappa_score,
+            f1_score,
+        )
+
+        stage_names = {1: "N3", 2: "N2", 3: "N1", 4: "REM", 5: "W", 9: "Unknown"}
+
+        # ------------------------------------------------------------------
+        # Resolve record list
+        # ------------------------------------------------------------------
+        if recs is None:
+            # All records with human annotations (training_set only)
+            mask = self._df_records.get("human_ann_path", pd.Series(dtype=str)).notna()
+            recs_list = self._df_records.index[mask].tolist()
+        elif isinstance(recs, (str, int)):
+            recs_list = [recs]
+        else:
+            recs_list = list(recs)
+
+        rows = []
+        skipped = 0
+
+        for rec in recs_list:
+            if isinstance(rec, int):
+                rec = self._all_records[rec]
+
+            if verbose:
+                print(f"Processing {rec}…")
+
+            ann_algo = self.load_ann(rec, ann_type="algorithmic")
+            ann_human = self.load_ann(rec, ann_type="human")
+
+            if not ann_algo or not ann_human:
+                skipped += 1
+                continue
+
+            row: Dict[str, Any] = {"record": rec}
+
+            # ---- sleep staging ----------------------------------------
+            s_algo = ann_algo.get("stage_caisr")
+            s_human = ann_human.get("stage_expert")
+            if s_algo is not None and s_human is not None:
+                n = min(len(s_algo), len(s_human))
+                a = np.round(s_algo[:n]).astype(int)
+                h = np.round(s_human[:n]).astype(int)
+                # drop epochs where either side is "Unavailable" (9)
+                valid = (a != 9) & (h != 9)
+                a_v, h_v = a[valid], h[valid]
+                try:
+                    kappa = cohen_kappa_score(h_v, a_v, weights="linear")
+                except Exception:
+                    kappa = float("nan")
+                acc = np.mean(a_v == h_v)
+                row["stage_kappa"] = kappa
+                row["stage_acc"] = acc
+                row["stage_n_epochs"] = n
+                # per-class recall
+                all_labels = sorted(set(np.concatenate([a_v, h_v])))
+                for lbl in all_labels:
+                    mask_h = h_v == lbl
+                    if mask_h.sum() > 0:
+                        row[f"stage_recall_{stage_names.get(lbl, lbl)}"] = np.mean(a_v[mask_h] == lbl)
+                    else:
+                        row[f"stage_recall_{stage_names.get(lbl, lbl)}"] = float("nan")
+
+            # ---- arousal -----------------------------------------------
+            ar_algo = ann_algo.get("arousal_caisr")
+            ar_human = ann_human.get("arousal_expert")
+            if ar_algo is not None and ar_human is not None:
+                n = min(len(ar_algo), len(ar_human))
+                a = (np.round(ar_algo[:n]) > 0).astype(int)
+                h = (np.round(ar_human[:n]) > 0).astype(int)
+                try:
+                    kappa = cohen_kappa_score(h, a)
+                except Exception:
+                    kappa = float("nan")
+                # sensitivity = recall for class 1; specificity = recall for class 0
+                pos_mask = h == 1
+                neg_mask = h == 0
+                sens = np.mean(a[pos_mask] == 1) if pos_mask.sum() > 0 else float("nan")
+                spec = np.mean(a[neg_mask] == 0) if neg_mask.sum() > 0 else float("nan")
+                f1 = f1_score(h, a, zero_division=0)
+                row["arousal_kappa"] = kappa
+                row["arousal_sensitivity"] = sens
+                row["arousal_specificity"] = spec
+                row["arousal_f1"] = f1
+                row["arousal_n_samples"] = n
+
+            # ---- respiratory events ------------------------------------
+            re_algo = ann_algo.get("resp_caisr")
+            re_human = ann_human.get("resp_expert")
+            if re_algo is not None and re_human is not None:
+                n = min(len(re_algo), len(re_human))
+                # Binary: any event (>0) vs none (0)
+                a = (np.round(re_algo[:n]) > 0).astype(int)
+                h = (np.round(re_human[:n]) > 0).astype(int)
+                try:
+                    kappa = cohen_kappa_score(h, a)
+                except Exception:
+                    kappa = float("nan")
+                f1 = f1_score(h, a, zero_division=0)
+                pos_mask = h == 1
+                neg_mask = h == 0
+                sens = np.mean(a[pos_mask] == 1) if pos_mask.sum() > 0 else float("nan")
+                spec = np.mean(a[neg_mask] == 0) if neg_mask.sum() > 0 else float("nan")
+                row["resp_kappa"] = kappa
+                row["resp_f1"] = f1
+                row["resp_sensitivity"] = sens
+                row["resp_specificity"] = spec
+                row["resp_n_samples"] = n
+
+            # ---- limb movements ----------------------------------------
+            lm_algo = ann_algo.get("limb_caisr")
+            lm_human = ann_human.get("limb_expert")
+            if lm_algo is not None and lm_human is not None:
+                n = min(len(lm_algo), len(lm_human))
+                # CAISR: 0=none, 1=isolated, 2=periodic → binary
+                a = (np.round(lm_algo[:n]) > 0).astype(int)
+                h = (np.round(lm_human[:n]) > 0).astype(int)
+                try:
+                    kappa = cohen_kappa_score(h, a)
+                except Exception:
+                    kappa = float("nan")
+                f1 = f1_score(h, a, zero_division=0)
+                pos_mask = h == 1
+                neg_mask = h == 0
+                sens = np.mean(a[pos_mask] == 1) if pos_mask.sum() > 0 else float("nan")
+                spec = np.mean(a[neg_mask] == 0) if neg_mask.sum() > 0 else float("nan")
+                row["limb_kappa"] = kappa
+                row["limb_f1"] = f1
+                row["limb_sensitivity"] = sens
+                row["limb_specificity"] = spec
+                row["limb_n_samples"] = n
+
+            rows.append(row)
+
+        if not rows:
+            return {"per_record": pd.DataFrame(), "aggregate": {}, "n_records": 0}
+
+        per_record = pd.DataFrame(rows).set_index("record")
+
+        # ------------------------------------------------------------------
+        # Aggregate: nanmean across records for each metric column
+        # ------------------------------------------------------------------
+        numeric_cols = per_record.select_dtypes(include=[np.number]).columns
+        agg = {col: float(np.nanmean(per_record[col].values)) for col in numeric_cols}
+        agg["n_records"] = len(per_record)
+        agg["n_skipped"] = skipped
+
+        if verbose:
+            print(f"\nProcessed {len(per_record)} records ({skipped} skipped).")
+            for k, v in agg.items():
+                if isinstance(v, float):
+                    print(f"  {k:<30s}: {v:.4f}")
+                else:
+                    print(f"  {k:<30s}: {v}")
+
+        return {"per_record": per_record, "aggregate": agg, "n_records": len(per_record)}
+
     @property
     def url(self) -> Dict[str, str]:  # type: ignore
         return {
