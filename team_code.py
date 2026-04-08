@@ -18,6 +18,30 @@ Both train_model.py and run_model.py pass a *partition* folder (e.g.
 :class:`data_reader.CINC2026` reader expects ``db_dir`` to be the *parent*
 of the partition subfolders.  :func:`_resolve_db_dir` handles this mapping
 transparently so that either convention works.
+
+Environment variables
+---------------------
+This module reads two environment variables:
+
+``CINC2026_OVERRIDE_JSON``
+    Path to a JSON file whose key-value pairs override the corresponding
+    ``TrainCfg`` attributes before training starts.  Used by the
+    hyperparameter search script (``utils/run_search.py``) and by
+    ``test_docker.py`` for CI-specific settings (e.g. ``n_epochs``,
+    ``batch_size``).  Leave unset for a normal submission run.
+
+``CINC2026_REVENGER_STRICT_TEST``
+    Set to ``"1"`` (or any truthy string) to make all ``except`` blocks
+    re-raise instead of returning a safe fallback.  Used by
+    ``test_docker.py`` so that hidden bugs surface during CI rather than
+    being silently swallowed in production.  Leave unset for submission.
+
+Typical usage per mode
+----------------------
+* **Submission** (PhysioNet evaluator): no env vars — cfg.py drives everything.
+* **Search** (local): ``CINC2026_OVERRIDE_JSON=/path/exp.json python train_model.py …``
+* **CI** (GitHub Actions): ``CINC2026_REVENGER_STRICT_TEST=1`` + ``CINC2026_OVERRIDE_JSON``
+  injected by ``test_docker.py`` with ``{"n_epochs": 3, "batch_size": 4}``.
 """
 
 import json
@@ -168,17 +192,13 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
     train_config = deepcopy(TrainCfg)
     train_config.db_dir = _resolve_db_dir(data_folder)
 
-    # Allow fast debug / CI runs via env variable (0 = use TrainCfg default)
-    debug_epochs = int(os.environ.get("CINC2026_REVENGER_TRAIN_EPOCHS", "0"))
-    if debug_epochs > 0:
-        train_config.n_epochs = debug_epochs
-
-    # Search-script overrides: read from JSON file path in env var
+    # Apply config overrides from a JSON file (used by search script and CI).
+    # Key-value pairs override the corresponding TrainCfg attributes.
+    # Example: {"model_name": "epoch_crnn_M", "n_epochs": 3, "batch_size": 4}
     override_json = os.environ.get("CINC2026_OVERRIDE_JSON", "")
     if override_json and Path(override_json).exists():
         with open(override_json) as f:
             overrides = json.load(f)
-        # Apply scalar training-config overrides (skip path keys handled separately)
         _skip = {"db_dir", "model_folder"}
         for k, v in overrides.items():
             if k not in _skip:

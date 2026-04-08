@@ -249,26 +249,27 @@ def test_entry() -> None:
     entry_output_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # 1. Train (1 epoch for speed)
+    # 1. Train (short run for speed; CI shrinks batch to avoid OOM)
     # ------------------------------------------------------------------
-    print("   Train model (1 epoch)   ".center(100, "#"))
-    prev_epochs = os.environ.get("CINC2026_REVENGER_TRAIN_EPOCHS")
-    prev_override = os.environ.get("CINC2026_OVERRIDE_JSON")
-    os.environ["CINC2026_REVENGER_TRAIN_EPOCHS"] = "3"
-    # On GitHub Actions the runner has limited RAM; shrink batch_size to avoid OOM.
-    if os.environ.get("GITHUB_ACTIONS"):
-        import json as _json
+    print("   Train model   ".center(100, "#"))
+    import json as _json
+    import tempfile as _tempfile
 
-        _ci_overrides = _json.loads(prev_override) if prev_override else {}
-        _ci_overrides.setdefault("batch_size", 4)
-        os.environ["CINC2026_OVERRIDE_JSON"] = _json.dumps(_ci_overrides)
+    # Build CI-specific config overrides and inject via CINC2026_OVERRIDE_JSON.
+    # n_epochs=3 keeps the test fast; batch_size=4 prevents OOM on GitHub Actions.
+    _ci_cfg: dict = {"n_epochs": 3}
+    if os.environ.get("GITHUB_ACTIONS"):
+        _ci_cfg["batch_size"] = 4
+
+    prev_override = os.environ.get("CINC2026_OVERRIDE_JSON")
+    _tmp_override = _tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    _json.dump(_ci_cfg, _tmp_override)
+    _tmp_override.close()
+    os.environ["CINC2026_OVERRIDE_JSON"] = _tmp_override.name
     try:
         train_model(str(train_data_dir), str(entry_model_dir), verbose=True)
     finally:
-        if prev_epochs is None:
-            os.environ.pop("CINC2026_REVENGER_TRAIN_EPOCHS", None)
-        else:
-            os.environ["CINC2026_REVENGER_TRAIN_EPOCHS"] = prev_epochs
+        os.unlink(_tmp_override.name)
         if prev_override is None:
             os.environ.pop("CINC2026_OVERRIDE_JSON", None)
         else:
