@@ -294,3 +294,35 @@ Key implementation decisions:
 6. **Phase 4**: Implement ECG-HRV MLP fallback for the 14 CAISR-missing records (replace current `(0, 0.5)` constant).
 7. **Phase 5**: Validation analysis — ROC curves, per-site AUROC, attention maps.
 8. **Docker submission**: Set `status: final`, ensure CI passes, submit.
+
+---
+
+## Feature Enrichment Backlog
+
+Items marked `[quick]` can be done without changing the model architecture (just `CAISR_EPOCH_DIM`).
+
+### Richer CAISR feature extraction  `[quick]`
+
+`build_epoch_features` currently reduces sub-epoch signals to simple scalar means/fractions per 30 s epoch, discarding temporal structure within the epoch:
+
+| Current | What is lost | Better representation |
+|---|---|---|
+| `arousal_fraction` (scalar mean of binary `arousal_caisr`) | Arousal burst pattern within epoch | Use `caisr_prob_arous` (2 Hz, 60 samples/epoch): add mean + std + max of arousal probability → 3 features instead of 1 |
+| `resp_OA/CA/MA/HY` fractions (4 scalars) | Cluster vs spread of events | Add fraction of each class AND count per epoch (absolute burden, not just density) → or add variance of inter-event intervals |
+| `limb_iso/PLM` fractions (2 scalars) | PLM periodicity / clustering | Add run-length features: max consecutive PLM seconds, count of isolated bursts |
+| `stage_caisr` one-hot (6 dims) | Epoch-to-epoch transitions | Add 5-epoch rolling transition entropy (applied at dataset level, not epoch level) |
+
+Currently unused CAISR channels (see `data_reader.py` issue 7):
+- `caisr_prob_no-ar` (idx 1, 2 Hz) and `caisr_prob_arous` (idx 2, 2 Hz) — sub-epoch arousal probability. Richer than binary `arousal_caisr`. A simple addition: replace current 1-dim arousal feature with `[mean, std, max]` of `caisr_prob_arous` across the 60 sub-epoch samples → **+2 dims, total 23**.
+
+### Remove time-position encoding for CRNN  `[quick]`
+
+Cols [19:21] (sin/cos positional encoding) were designed for the Transformer variant (which is permutation-invariant and needs explicit position info). The CRNN's recurrent backbone already tracks sequence position implicitly. Removing these 2 dims reduces `CAISR_EPOCH_DIM` from 21 → 19 and eliminates spurious signal for the CRNN. Requires:
+1. `const.py`: `CAISR_EPOCH_DIM = 19`
+2. `dataset.py` `build_epoch_features`: drop the `features[:, 19:21] = sin/cos` block
+3. `cfg.py` model configs: verify `in_channels=21` is read from `CAISR_EPOCH_DIM` (it is via `BaseCfg.caisr_epoch_dim`)
+4. Re-train and compare AUROC vs 21-dim baseline
+
+### Per-record normalization of CAISR features  ✅ done
+
+`normalize_epoch_features()` added to `dataset.py`; applied in `FastDataReader.__getitem__` and mirrored in `team_code._run_model_impl`. Cols 19-20 (time-position encoding) are skipped. Zero-std columns left unchanged.

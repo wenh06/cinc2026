@@ -56,7 +56,7 @@ import numpy as np
 import torch
 
 from cfg import ModelCfg, TrainCfg
-from dataset import build_epoch_features
+from dataset import build_epoch_features, normalize_epoch_features
 from helper_code import (
     DEMOGRAPHICS_FILE,
     HEADERS,
@@ -340,7 +340,14 @@ def _run_model_impl(
         return 0, 0.5
 
     ann = _load_caisr_ann(str(caisr_path))
-    epoch_features = build_epoch_features(ann)
+    train_config = model_dict.get("train_config", None)
+    include_time = getattr(train_config, "include_time_encoding", True) if train_config is not None else True
+    epoch_features = build_epoch_features(ann, include_time_encoding=include_time)
+
+    # Apply the same per-record normalization used during training
+    norm_cfg = getattr(train_config, "normalize", None) if train_config is not None else None
+    if norm_cfg and getattr(norm_cfg, "method", "") == "per_record_zscore":
+        epoch_features = normalize_epoch_features(epoch_features, norm_cfg)
 
     if len(epoch_features) == 0:
         if verbose:

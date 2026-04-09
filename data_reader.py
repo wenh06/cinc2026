@@ -51,8 +51,37 @@ _CINC2026_INFO = DataBaseInfo(
     2. Class Imbalance shift: The training set is artificially balanced (approx. 50% positive), whereas the validation and test sets reflect real-world prevalence (5-15% positive).
     3. Temporal Shift: Sleep study dates were shifted by randomly chosen integers between ±365 days.
     4. Age Capping: Patient ages above 89 are replaced with a single category of "90".
-    5. Incomplete CAISR Annotations: 14 out of 780 training records (1.8%) are missing CAISR annotation EDF files. All 14 stem from recordings that contain no EEG, EOG, or EMG channels (only respiratory and ECG signals are present), which makes sleep staging — and therefore the CAISR pipeline — impossible. These records should be handled via a dedicated fallback strategy (e.g. ECG-HRV features, or the population-level prior) rather than excluded.
-    6. CAISR Probability Scale Bug: The five ``caisr_prob_*`` channels (N3, N2, N1, REM, Wake posterior probabilities) are stored with an EDF ``physical_max`` header of 9 instead of 1. As a result, pyedflib scales the raw integer codes into the range [0, 9] rather than [0, 1]. Callers must divide by 9.0 and re-normalise each row to sum to 1 before use (see ``const.CAISR_PROB_EDF_SCALE``).
+    5. Incomplete CAISR Annotations: 14 out of 780 training records (1.8%) are missing CAISR annotation EDF files. All 14 stem from recordings that contain no EEG, EOG, or EMG channels (only respiratory and ECG signals are present), which makes sleep staging — and therefore the CAISR pipeline — impossible.
+    6. CAISR Probability Scale Bug: The five ``caisr_prob_*`` channels (N3, N2, N1, REM, Wake posterior probabilities) are stored with an EDF ``physical_max`` header of 9 instead of 1. As a result, pyedflib scales the raw integer codes into the range [0, 9] rather than [0, 1].
+    7. CAISR EDF Channel Layout: Each CAISR annotation EDF contains exactly 11 signals in a fixed order:
+
+       +-----+---------------------+---------+-----------+------------------------------------------------------------+
+       | idx | Signal name         | fs (Hz) | Range     | Description                                                |
+       +=====+=====================+=========+===========+============================================================+
+       |  0  | arousal_caisr       |   2.0   | {0, 1}    | Arousal binary label, 0.5 s resolution (60 samples/epoch)  |
+       +-----+---------------------+---------+-----------+------------------------------------------------------------+
+       |  1  | caisr_prob_no-ar    |   2.0   | [0, 1]    | Probability of no-arousal, 0.5 s resolution                |
+       +-----+---------------------+---------+-----------+------------------------------------------------------------+
+       |  2  | caisr_prob_arous    |   2.0   | [0, 1]    | Probability of arousal, 0.5 s resolution                   |
+       +-----+---------------------+---------+-----------+------------------------------------------------------------+
+       |  3  | limb_caisr          |   1.0   | {0,1,2}   | Limb movement: 0=none, 1=isolated, 2=periodic (30/epoch)   |
+       +-----+---------------------+---------+-----------+------------------------------------------------------------+
+       |  4  | resp_caisr          |   1.0   | {0..4}    | Resp. event: 0=none,1=OA,2=CA,3=MA,4=HY (30/epoch)        |
+       +-----+---------------------+---------+-----------+------------------------------------------------------------+
+       |  5  | stage_caisr         | 1/30    | {1,2,3,4,5,9} | Sleep stage per epoch: 1=N3,2=N2,3=N1,4=REM,5=W,9=Unavail |
+       +-----+---------------------+---------+-----------+------------------------------------------------------------+
+       |  6  | caisr_prob_n3       | 1/30    | [0, 9]*   | N3 posterior probability (EDF scale bug; raw ÷ 9 → [0,1]) |
+       +-----+---------------------+---------+-----------+------------------------------------------------------------+
+       |  7  | caisr_prob_n2       | 1/30    | [0, 9]*   | N2 posterior probability                                   |
+       +-----+---------------------+---------+-----------+------------------------------------------------------------+
+       |  8  | caisr_prob_n1       | 1/30    | [0, 9]*   | N1 posterior probability                                   |
+       +-----+---------------------+---------+-----------+------------------------------------------------------------+
+       |  9  | caisr_prob_r        | 1/30    | [0, 9]*   | REM posterior probability                                  |
+       +-----+---------------------+---------+-----------+------------------------------------------------------------+
+       | 10  | caisr_prob_w        | 1/30    | [0, 9]*   | Wake posterior probability                                 |
+       +-----+---------------------+---------+-----------+------------------------------------------------------------+
+
+       (*) EDF physical_max=9 scale bug — see issue 6.
     """,
     references=[
         "https://moody-challenge.physionet.org/2026/",

@@ -18,6 +18,7 @@ __all__ = [
     "STAGE_LABEL_TO_IDX",
     "STAGE_ONEHOT_DIM",
     "CAISR_EPOCH_DIM",
+    "CAISR_EPOCH_DIM_NO_TIME",
     "CAISR_PROB_EDF_SCALE",
     "DEMOGRAPHIC_DIM",
     "AROUSAL_SAMPLES_PER_EPOCH",
@@ -82,15 +83,23 @@ LIMB_SAMPLES_PER_EPOCH = 30  # limb_caisr at 1Hz
 STAGE_LABEL_TO_IDX = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 9: 5}
 STAGE_ONEHOT_DIM = 6  # N3, N2, N1, REM, W, Unknown
 
-# Per-epoch CAISR feature layout (total = 21 dims):
+# Per-epoch CAISR feature layout — two variants depending on model type:
+#
+# Full layout (23 dims, for EpochTransformer which is permutation-invariant):
 #   [0:6]   stage one-hot          STAGE_ONEHOT_DIM = 6
 #   [6:11]  stage softmax probs    5  (n3, n2, n1, r, w; normalized to [0,1])
-#   [11]    arousal fraction       1
-#   [12:17] resp event fractions   5  (OA, CA, MA, HY, RERA)
-#   [17:19] limb event fractions   2  (isolated, periodic)
-#   [19]    sin(2π*t/T)            1
-#   [20]    cos(2π*t/T)            1
-CAISR_EPOCH_DIM = 21
+#   [11]    arousal_prob_mean      1  mean of caisr_prob_arous over 60 sub-epoch samples
+#   [12]    arousal_prob_std       1  std  of caisr_prob_arous
+#   [13]    arousal_prob_max       1  max  of caisr_prob_arous
+#   [14:19] resp event fractions   5  (OA, CA, MA, HY, RERA)
+#   [19:21] limb event fractions   2  (isolated, periodic)
+#   [21]    sin(2π*t/T)            1  time-position encoding
+#   [22]    cos(2π*t/T)            1  time-position encoding
+CAISR_EPOCH_DIM = 23  # full layout with time-position encoding (EpochTransformer)
+
+# No-time layout (21 dims, for EpochCRNN whose RNN already tracks temporal order):
+#   identical to above except [21:23] sin/cos time-position encoding is omitted.
+CAISR_EPOCH_DIM_NO_TIME = 21
 
 # EDF physical-range scaling bug: the prob channels are stored with
 # physical_max=9 instead of 1, causing pyedflib to scale up by 9×.

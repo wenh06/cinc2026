@@ -5,19 +5,28 @@ Each sample is one patient's full-night PSG, represented as a sequence of
 (channel-agnostic, identical across all recording sites) so the dataset is
 robust to the signal heterogeneity described in _CINC2026_INFO.
 
-Feature layout per epoch (CAISR_EPOCH_DIM = 21):
+Feature layout per epoch — two variants depending on model type:
+
+Full layout (CAISR_EPOCH_DIM = 23, used by EpochTransformer):
   [0:6]   stage one-hot          (N3, N2, N1, REM, W, Unknown)
   [6:11]  stage softmax probs    (n3, n2, n1, r, w; normalised to [0,1])
-  [11]    arousal fraction       mean of arousal_caisr over the 30 s window
-  [12:17] resp event fractions   fraction of each of OA/CA/MA/HY/RERA
-  [17:19] limb event fractions   fraction of isolated / periodic limb movement
-  [19]    sin(2pi x t/T)         periodic time-position encoding
-  [20]    cos(2pi x t/T)
+  [11]    arousal_prob_mean      mean of caisr_prob_arous over 60 sub-epoch samples (2 Hz)
+  [12]    arousal_prob_std       std  of caisr_prob_arous
+  [13]    arousal_prob_max       max  of caisr_prob_arous
+  [14:19] resp event fractions   fraction of each of OA/CA/MA/HY/RERA per epoch
+  [19:21] limb event fractions   fraction of isolated / periodic limb movement
+  [21]    sin(2pi x t/T)         periodic time-position encoding
+  [22]    cos(2pi x t/T)
 
-Note on caisr_prob_* scaling: the EDF physical-range header for the
-probability channels was set to [0, 9] instead of [0, 1].  pyedflib
-faithfully returns the physical values, so we divide by CAISR_PROB_EDF_SCALE
-(= 9) and then re-normalise each row so the five probabilities sum to 1.
+No-time layout (CAISR_EPOCH_DIM_NO_TIME = 21, used by EpochCRNN):
+  [0:21]  identical to the full layout without [21:23] time-position encoding.
+  The CRNN's recurrent backbone implicitly tracks temporal order, making the
+  explicit sin/cos encoding redundant and a potential source of noise.
+
+Note on caisr_prob_* scaling: the EDF physical-range header for the stage
+probability channels was set to [0, 9] instead of [0, 1].  pyedflib faithfully
+returns the physical values, so we divide by CAISR_PROB_EDF_SCALE (= 9) and
+then re-normalise each row so the five probabilities sum to 1.
 """
 
 import json
@@ -42,6 +51,7 @@ from cfg import TrainCfg
 from const import (  # noqa: F401
     AROUSAL_SAMPLES_PER_EPOCH,
     CAISR_EPOCH_DIM,
+    CAISR_EPOCH_DIM_NO_TIME,
     CAISR_PROB_EDF_SCALE,
     DEMOGRAPHIC_DIM,
     FIXED_DATA_SPLIT_FILE,
@@ -58,6 +68,7 @@ __all__ = [
     "FastDataReader",
     "collate_fn",
     "build_epoch_features",
+    "normalize_epoch_features",
 ]
 
 try:
@@ -340,7 +351,15 @@ class FastDataReader(Dataset, ReprMixin):
         # Load CAISR (algorithmic) annotations — available for all splits
         ann = self.reader.load_ann(rec, ann_type="algorithmic")
 
-        epoch_features = build_epoch_features(ann, dtype=self.dtype)
+        epoch_features = build_epoch_features(
+            ann,
+            dtype=self.dtype,
+            include_time_encoding=self.config.get("include_time_encoding", True),
+        )
+
+        norm_cfg = self.config.get("normalize", None)
+        if norm_cfg and getattr(norm_cfg, "method", "") == "per_record_zscore":
+            epoch_features = normalize_epoch_features(epoch_features, norm_cfg)
 
         # Optionally crop to max_seq_len
         max_len = self.config.get("max_seq_len", None)
@@ -397,6 +416,7 @@ class FastDataReader(Dataset, ReprMixin):
 def build_epoch_features(
     ann: Dict[str, np.ndarray],
     dtype: type = np.float32,
+    include_time_encoding: bool = True,
 ) -> np.ndarray:
     """Build a per-epoch feature matrix from CAISR annotations.
 
@@ -405,17 +425,24 @@ def build_epoch_features(
     ann : dict
         Annotation dict from ``CINC2026.load_ann(rec, ann_type='algorithmic')``.
     dtype : numpy dtype
+    include_time_encoding : bool, default True
+        When True, appends sin/cos time-position encoding at cols [21:23]
+        (appropriate for EpochTransformer, which is permutation-invariant).
+        When False, returns 21-dim features without time encoding
+        (appropriate for EpochCRNN, whose RNN already tracks order).
 
     Returns
     -------
-    np.ndarray, shape ``(N_epochs, CAISR_EPOCH_DIM)``
-        Returns shape ``(0, CAISR_EPOCH_DIM)`` when ``stage_caisr`` is absent.
+    np.ndarray, shape ``(N_epochs, CAISR_EPOCH_DIM)`` or
+    ``(N_epochs, CAISR_EPOCH_DIM_NO_TIME)``
+        Returns empty array with matching second dim when ``stage_caisr`` is absent.
     """
+    feat_dim = CAISR_EPOCH_DIM if include_time_encoding else CAISR_EPOCH_DIM_NO_TIME
     stage = ann.get("stage_caisr", np.array([]))
     n_epochs = len(stage)
 
     if n_epochs == 0:
-        return np.zeros((0, CAISR_EPOCH_DIM), dtype=dtype)
+        return np.zeros((0, feat_dim), dtype=dtype)
 
     features = np.zeros((n_epochs, CAISR_EPOCH_DIM), dtype=dtype)
     stage_int = stage.astype(int)
@@ -448,31 +475,91 @@ def build_epoch_features(
         # No prob channels in this file; use stage one-hot as a hard distribution
         features[:, 6:11] = features[:, :5]
 
-    # [11] Arousal fraction — mean over the 60 × 0.5 s samples in the epoch
-    arousal = ann.get("arousal_caisr")
-    if arousal is not None and len(arousal) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
-        features[:, 11] = arousal.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).mean(axis=1)
+    # [11:14] Arousal probability features from caisr_prob_arous (2 Hz, 60 samples/epoch).
+    # Using the continuous probability (vs the binary arousal_caisr) retains finer
+    # information about arousal intensity and uncertainty.
+    # Falls back to stats of binary arousal_caisr if prob channel is absent.
+    prob_arous = ann.get("caisr_prob_arous")
+    arousal_caisr = ann.get("arousal_caisr")
+    if prob_arous is not None and len(prob_arous) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
+        ar_mat = prob_arous.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).astype(np.float64)
+    elif arousal_caisr is not None and len(arousal_caisr) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
+        ar_mat = arousal_caisr.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).astype(np.float64)
+    else:
+        ar_mat = None
 
-    # [12:17] Resp event fractions (1=OA, 2=CA, 3=MA, 4=HY, 5=RERA)
+    if ar_mat is not None:
+        features[:, 11] = ar_mat.mean(axis=1)
+        features[:, 12] = ar_mat.std(axis=1)
+        features[:, 13] = ar_mat.max(axis=1)
+
+    # [14:19] Resp event fractions (1=OA, 2=CA, 3=MA, 4=HY, 5=RERA)
     resp = ann.get("resp_caisr")
     if resp is not None and len(resp) == n_epochs * RESP_SAMPLES_PER_EPOCH:
         resp_mat = resp.reshape(n_epochs, RESP_SAMPLES_PER_EPOCH)
         for offset, cls_val in enumerate([1, 2, 3, 4, 5]):
-            features[:, 12 + offset] = (resp_mat == cls_val).mean(axis=1)
+            features[:, 14 + offset] = (resp_mat == cls_val).mean(axis=1)
 
-    # [17:19] Limb event fractions (1=isolated, 2=periodic)
+    # [19:21] Limb event fractions (1=isolated, 2=periodic)
     limb = ann.get("limb_caisr")
     if limb is not None and len(limb) == n_epochs * LIMB_SAMPLES_PER_EPOCH:
         limb_mat = limb.reshape(n_epochs, LIMB_SAMPLES_PER_EPOCH)
-        features[:, 17] = (limb_mat == 1).mean(axis=1)
-        features[:, 18] = (limb_mat == 2).mean(axis=1)
+        features[:, 19] = (limb_mat == 1).mean(axis=1)
+        features[:, 20] = (limb_mat == 2).mean(axis=1)
 
-    # [19:21] Periodic time-position encoding
-    t = np.linspace(0.0, 1.0, n_epochs, dtype=dtype)
-    features[:, 19] = np.sin(2 * np.pi * t)
-    features[:, 20] = np.cos(2 * np.pi * t)
+    # [21:23] Periodic time-position encoding (Transformer only)
+    if include_time_encoding:
+        t = np.linspace(0.0, 1.0, n_epochs, dtype=dtype)
+        features[:, 21] = np.sin(2 * np.pi * t)
+        features[:, 22] = np.cos(2 * np.pi * t)
+        return features.astype(dtype)
 
-    return features.astype(dtype)
+    return features[:, :CAISR_EPOCH_DIM_NO_TIME].astype(dtype)
+
+
+def normalize_epoch_features(
+    features: np.ndarray,
+    cfg=None,
+) -> np.ndarray:
+    """Per-record z-score normalization of a CAISR epoch feature matrix.
+
+    Each column is independently centered and scaled using the mean and std
+    computed across **all epochs of that record**.  This removes systematic
+    site-level baseline differences without requiring global training-set
+    statistics, which makes it safe to apply identically at both training
+    and inference time.
+
+    Columns 19-20 (sin/cos time-position encoding) carry absolute positional
+    meaning and must **not** be rescaled.  Any other column whose std is
+    below ``eps`` (e.g. an all-zero respiratory event column) is left unchanged
+    to avoid numerical explosion.
+
+    Parameters
+    ----------
+    features : np.ndarray, shape (N_epochs, CAISR_EPOCH_DIM)
+    cfg : CFG or None
+        Optional config object that may supply ``eps`` and ``skip_cols``.
+        Defaults: ``eps=1e-8``, ``skip_cols=[19, 20]``.
+
+    Returns
+    -------
+    np.ndarray, same shape and dtype as *features*
+    """
+    if features.shape[0] < 2:
+        return features
+
+    eps = float(getattr(cfg, "eps", 1e-8)) if cfg is not None else 1e-8
+    skip = set(getattr(cfg, "skip_cols", [21, 22]) if cfg is not None else [21, 22])
+
+    out = features.copy()
+    for j in range(features.shape[1]):
+        if j in skip:
+            continue
+        col = features[:, j]
+        sigma = col.std()
+        if sigma > eps:
+            out[:, j] = (col - col.mean()) / sigma
+    return out
 
 
 # ---------------------------------------------------------------------------

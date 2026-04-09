@@ -60,7 +60,7 @@ TrainCfg.batch_size = 16
 # train_ratio: fallback 80/20 split used by CINC2026Dataset when the canonical
 # JSON split file (utils/cinc2026-data-split.json) is absent.
 TrainCfg.train_ratio = 0.8
-TrainCfg.model_name = "epoch_transformer_L"  # current model for submission 4
+TrainCfg.model_name = "epoch_crnn_M"  # best AUROC so far (sub3: 0.555)
 
 # learning_rate is the canonical name used by BaseTrainer; lr is kept as an alias
 TrainCfg.lr = 3e-4
@@ -120,13 +120,22 @@ TrainCfg.label_smoothing = 0.1
 # Set to None to disable (balanced training, currently preferred for stability).
 TrainCfg.pos_weight = None  # e.g. 5.0 to upweight positives
 
-# Preprocessing — commented out: CAISR features need no additional normalisation.
-# Uncomment and wire into a PreprocManager only if raw physiological signals are used.
-# TrainCfg.normalize = CFG(
-#     method="z-score",
-#     mean=0.0,
-#     std=1.0,
-# )
+# Per-record z-score normalization of CAISR epoch features.
+# Each record's epoch feature matrix is normalized independently (mean=0, std=1
+# per feature column across all epochs of that record), which removes systematic
+# site-level baseline differences in feature magnitudes without requiring global
+# training-set statistics at inference time.
+# Note: this is NOT torch_ecg's PreprocManager (which operates on raw signals).
+# The normalization is applied in FastDataReader.__getitem__ and mirrored in
+# team_code._run_model_impl so train and inference are identical.
+# skip_cols is set at the bottom of this file after model_name is known:
+#   CRNN (21-dim, no time encoding) → skip_cols=[]
+#   Transformer (23-dim, time at [21:22]) → skip_cols=[21, 22]
+TrainCfg.normalize = CFG(
+    method="per_record_zscore",
+    eps=1e-8,
+    skip_cols=[21, 22],  # updated below based on model_name
+)
 
 # Callbacks & Logging
 TrainCfg.log_step = 20
@@ -266,3 +275,11 @@ ModelCfg.multibranch.nhead = 4
 ModelCfg.multibranch.dropout = 0.1
 ModelCfg.multibranch.criterion = "CrossEntropyLoss"
 ModelCfg.multibranch.dem_encoder = deepcopy(ModelCfg.transformer.dem_encoder)
+
+# ── Model-type-dependent feature settings ────────────────────────────────────
+# These must come AFTER all model configs and TrainCfg.model_name is set.
+# CRNN: RNN tracks temporal order internally → no time-position encoding needed.
+# Transformer: permutation-invariant → sin/cos time encoding is necessary.
+_is_crnn = "crnn" in TrainCfg.model_name
+TrainCfg.include_time_encoding = not _is_crnn
+TrainCfg.normalize.skip_cols = [] if _is_crnn else [21, 22]

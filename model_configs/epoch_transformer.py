@@ -22,7 +22,7 @@ __all__ = ["EPOCH_TRANSFORMER_BASE"]
 
 # Shared config (size-independent parameters)
 EPOCH_TRANSFORMER_BASE = CFG()
-EPOCH_TRANSFORMER_BASE.caisr_feat_dim = 21  # CAISR_EPOCH_DIM
+EPOCH_TRANSFORMER_BASE.caisr_feat_dim = 23  # CAISR_EPOCH_DIM (with time-position encoding)
 EPOCH_TRANSFORMER_BASE.demographic_dim = 3  # age/100, sex(0/1), bmi/50
 EPOCH_TRANSFORMER_BASE.dropout = 0.1
 EPOCH_TRANSFORMER_BASE.activation = "gelu"
