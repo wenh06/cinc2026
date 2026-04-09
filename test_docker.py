@@ -12,6 +12,7 @@ import torch
 from torch_ecg.utils.misc import str2bool
 
 from cfg import _BASE_DIR, ModelCfg, TrainCfg
+from const import CAISR_EPOCH_DIM, CAISR_EPOCH_DIM_NO_TIME  # noqa: F401
 from dataset import CINC2026Dataset, collate_fn
 from evaluate_model import evaluate_model as _evaluate_model
 from evaluate_model import run as model_evaluator_func
@@ -73,7 +74,9 @@ def test_dataset() -> None:
 
     ef = sample["epoch_features"]
     assert ef.ndim == 2, f"epoch_features should be 2-D, got shape {ef.shape}"
-    assert ef.shape[1] == 21, f"epoch_features last dim should be 21, got {ef.shape[1]}"
+    assert (
+        ef.shape[1] == CAISR_EPOCH_DIM_NO_TIME
+    ), f"epoch_features last dim should be {CAISR_EPOCH_DIM_NO_TIME}, got {ef.shape[1]}"
 
     demo = sample["demographics"]
     assert demo.shape == (3,), f"demographics should be shape (3,), got {demo.shape}"
@@ -99,12 +102,13 @@ def test_models() -> None:
     echo_write_permission(tmp_data_dir)
     echo_write_permission(tmp_model_dir)
 
-    B, T, D = 2, 50, 21
+    B, T = 2, 50
 
     for model_name, cfg_attr, model_cls in [
         ("epoch_transformer_M", ModelCfg.epoch_transformer_M, EpochTransformer),
         ("epoch_crnn_M", ModelCfg.epoch_crnn_M, EpochCRNN),
     ]:
+        D = cfg_attr.caisr_feat_dim  # 23 for Transformer, 21 for CRNN
         model = model_cls(config=deepcopy(cfg_attr)).to(DEVICE)
         model.eval()
 
