@@ -64,5 +64,29 @@ Unofficial Phase:
       early_stopping_patience: 20
     hash: f308421
 
+  submission 4:
+    submission ID: 1270
+    submission time: 4/8/2026 4:20:03 ET
+    challenge_scores:
+      AUROC: 0.491
+      AUPRC: 0.037
+      Accuracy: 0.124
+      F-measure: 0.071
+    model: EpochTransformer_L
+    loss: BCEWithLogitsLoss
+    train:
+      n_epochs: 100
+      batch_size: 16
+      optimizer: adamw_amsgrad
+      lr: 0.0003
+      max_lr: 0.001
+      lr_scheduler: one_cycle
+      pct_start: 0.3
+      grad_clip: 1.0
+      weight_decay: 0.01
+      label_smoothing: 0.05
+      early_stopping_patience: 20
+    hash: cf0c1cc
+
 Official Phase:
   submission 1:
