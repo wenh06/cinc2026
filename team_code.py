@@ -2,14 +2,15 @@
 """
 CinC 2026 Challenge entry: train_model, load_model, run_model.
 
-Primary model: configurable via ``TrainCfg.model_name``.  Defaults to
-``EpochTransformer`` (``epoch_transformer``), but switching to
-``EpochCRNN`` or any size variant (``epoch_crnn_S``, ``epoch_transformer_L``,
-…) requires only changing ``TrainCfg.model_name`` in ``cfg.py``.
+Primary model and CAISR feature pipeline are configurable via ``TrainCfg``.
+The default reproduces the best unofficial submission
+(``epoch_crnn_M`` + the binary-arousal 21-dim CAISR feature set), while the
+later arousal-probability-statistics pipeline remains available through
+``TrainCfg.feature_set``.
 
 All physiological signals are summarised via CAISR (pre-computed by the
-challenge organisers) into a fixed 21-dim feature vector per 30-second epoch,
-so the representation is robust to inter-site signal heterogeneity.
+challenge organisers) into a compact per-epoch feature vector, so the
+representation is robust to inter-site signal heterogeneity.
 
 Data-folder conventions
 -----------------------
@@ -55,7 +56,8 @@ from typing import Any, Dict, Tuple
 import numpy as np
 import torch
 
-from cfg import ModelCfg, TrainCfg
+from cfg import ModelCfg, TrainCfg, sync_feature_config
+from const import BINARY_AROUSAL_FEATURE_SET, resolve_feature_pipeline
 from dataset import build_epoch_features, normalize_epoch_features
 from helper_code import (
     DEMOGRAPHICS_FILE,
@@ -203,6 +205,7 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
         for k, v in overrides.items():
             if k not in _skip:
                 setattr(train_config, k, v)
+    sync_feature_config(train_config, ModelCfg)
 
     # Route trainer logs and checkpoints inside model_folder
     working_dir = Path(model_folder) / "working_dir"
@@ -341,8 +344,21 @@ def _run_model_impl(
 
     ann = _load_caisr_ann(str(caisr_path))
     train_config = model_dict.get("train_config", None)
-    include_time = getattr(train_config, "include_time_encoding", True) if train_config is not None else True
-    epoch_features = build_epoch_features(ann, include_time_encoding=include_time)
+    if train_config is not None:
+        feature_set = getattr(train_config, "feature_set", BINARY_AROUSAL_FEATURE_SET)
+        include_time = getattr(train_config, "include_time_encoding", None)
+        if include_time is None:
+            include_time = resolve_feature_pipeline(feature_set, getattr(train_config, "model_name", ""))[
+                "include_time_encoding"
+            ]
+    else:
+        feature_set = BINARY_AROUSAL_FEATURE_SET
+        include_time = True
+    epoch_features = build_epoch_features(
+        ann,
+        feature_set=feature_set,
+        include_time_encoding=include_time,
+    )
 
     # Apply the same per-record normalization used during training
     norm_cfg = getattr(train_config, "normalize", None) if train_config is not None else None

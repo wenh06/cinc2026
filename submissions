@@ -18,6 +18,11 @@ Unofficial Phase:
       lr_scheduler: one_cycle
       grad_clip: 1.0
       early_stopping_patience: 20
+    features:
+      version: binary_arousal_v1
+      dim: 21
+      layout: stage_onehot(6) + stage_probs(5) + arousal_fraction(1) + resp_fractions(5) + limb_fractions(2) + time_encoding(2)
+      normalization: none
     hash: 5a77988
   submission 2:
     submission ID: 1192
@@ -38,6 +43,11 @@ Unofficial Phase:
       lr_scheduler: one_cycle
       grad_clip: 0.0
       early_stopping_patience: 20
+    features:
+      version: binary_arousal_v1
+      dim: 21
+      layout: stage_onehot(6) + stage_probs(5) + arousal_fraction(1) + resp_fractions(5) + limb_fractions(2) + time_encoding(2)
+      normalization: none
     hash: 400416f
 
   submission 3:
@@ -62,6 +72,11 @@ Unofficial Phase:
       weight_decay: 0.01
       label_smoothing: 0.05
       early_stopping_patience: 20
+    features:
+      version: binary_arousal_v1
+      dim: 21
+      layout: stage_onehot(6) + stage_probs(5) + arousal_fraction(1) + resp_fractions(5) + limb_fractions(2) + time_encoding(2)
+      normalization: none
     hash: f308421
 
   submission 4:
@@ -84,9 +99,44 @@ Unofficial Phase:
       pct_start: 0.3
       grad_clip: 1.0
       weight_decay: 0.01
-      label_smoothing: 0.05
+      label_smoothing: 0.1
       early_stopping_patience: 20
+    features:
+      version: binary_arousal_v1
+      dim: 21
+      layout: stage_onehot(6) + stage_probs(5) + arousal_fraction(1) + resp_fractions(5) + limb_fractions(2) + time_encoding(2)
+      normalization: none
     hash: cf0c1cc
+
+  submission 5:
+    submission ID: 1348
+    submission time: 4/9/2026 19:32:59 ET
+    challenge_scores:
+      AUROC: 0.448
+      AUPRC: 0.034
+      Accuracy: 0.072
+      F-measure: 0.076
+    model: EpochCRNN_M
+    loss: BCEWithLogitsLoss
+    train:
+      n_epochs: 100
+      batch_size: 16
+      optimizer: adamw_amsgrad
+      lr: 0.0003
+      max_lr: 0.001
+      lr_scheduler: one_cycle
+      pct_start: 0.3
+      grad_clip: 1.0
+      weight_decay: 0.01
+      label_smoothing: 0.1
+      early_stopping_patience: 20
+    features:
+      version: arousal_prob_stats_v2
+      dim: 21
+      layout: stage_onehot(6) + stage_probs(5) + arousal_prob_stats(3) + resp_fractions(5) + limb_fractions(2)
+      time_encoding: disabled_for_crnn
+      normalization: per_record_zscore
+    hash: 919f239
 
 Official Phase:
   submission 1:

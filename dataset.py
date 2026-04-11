@@ -5,23 +5,23 @@ Each sample is one patient's full-night PSG, represented as a sequence of
 (channel-agnostic, identical across all recording sites) so the dataset is
 robust to the signal heterogeneity described in _CINC2026_INFO.
 
-Feature layout per epoch — two variants depending on model type:
+Two feature sets are supported:
 
-Full layout (CAISR_EPOCH_DIM = 23, used by EpochTransformer):
-  [0:6]   stage one-hot          (N3, N2, N1, REM, W, Unknown)
-  [6:11]  stage softmax probs    (n3, n2, n1, r, w; normalised to [0,1])
-  [11]    arousal_prob_mean      mean of caisr_prob_arous over 60 sub-epoch samples (2 Hz)
-  [12]    arousal_prob_std       std  of caisr_prob_arous
-  [13]    arousal_prob_max       max  of caisr_prob_arous
-  [14:19] resp event fractions   fraction of each of OA/CA/MA/HY/RERA per epoch
-  [19:21] limb event fractions   fraction of isolated / periodic limb movement
-  [21]    sin(2pi x t/T)         periodic time-position encoding
-  [22]    cos(2pi x t/T)
+Binary-arousal set (default; used by unofficial submissions 1-4, 21 dims for all models):
+  [0:6]   stage one-hot
+  [6:11]  stage softmax probs
+  [11]    arousal_fraction       mean of binary arousal_caisr over the epoch
+  [12:17] resp event fractions
+  [17:19] limb event fractions
+  [19:21] sin/cos time-position encoding
 
-No-time layout (CAISR_EPOCH_DIM_NO_TIME = 21, used by EpochCRNN):
-  [0:21]  identical to the full layout without [21:23] time-position encoding.
-  The CRNN's recurrent backbone implicitly tracks temporal order, making the
-  explicit sin/cos encoding redundant and a potential source of noise.
+Arousal-probability-statistics set (experimental; used by unofficial submission 5):
+  [0:6]   stage one-hot
+  [6:11]  stage softmax probs
+  [11:14] arousal prob mean/std/max from caisr_prob_arous
+  [14:19] resp event fractions
+  [19:21] limb event fractions
+  [21:23] optional sin/cos time-position encoding (Transformer only)
 
 Note on caisr_prob_* scaling: the EDF physical-range header for the stage
 probability channels was set to [0, 9] instead of [0, 1].  pyedflib faithfully
@@ -49,17 +49,23 @@ from tqdm.auto import tqdm
 
 from cfg import TrainCfg
 from const import (  # noqa: F401
+    AROUSAL_PROB_STATS_FEATURE_SET,
     AROUSAL_SAMPLES_PER_EPOCH,
+    BINARY_AROUSAL_FEATURE_SET,
     CAISR_EPOCH_DIM,
     CAISR_EPOCH_DIM_NO_TIME,
     CAISR_PROB_EDF_SCALE,
     DEMOGRAPHIC_DIM,
+    ENRICHED_CAISR_EPOCH_DIM,
+    ENRICHED_CAISR_EPOCH_DIM_NO_TIME,
     FIXED_DATA_SPLIT_FILE,
     LABEL_CACHE_DIR,
+    LEGACY_CAISR_EPOCH_DIM,
     LIMB_SAMPLES_PER_EPOCH,
     RESP_SAMPLES_PER_EPOCH,
     STAGE_LABEL_TO_IDX,
     STAGE_ONEHOT_DIM,
+    resolve_feature_pipeline,
 )
 from data_reader import CINC2026
 
@@ -350,11 +356,16 @@ class FastDataReader(Dataset, ReprMixin):
 
         # Load CAISR (algorithmic) annotations — available for all splits
         ann = self.reader.load_ann(rec, ann_type="algorithmic")
+        feature_set = self.config.get("feature_set", BINARY_AROUSAL_FEATURE_SET)
+        include_time = self.config.get("include_time_encoding", None)
+        if include_time is None:
+            include_time = resolve_feature_pipeline(feature_set, self.config.get("model_name", ""))["include_time_encoding"]
 
         epoch_features = build_epoch_features(
             ann,
             dtype=self.dtype,
-            include_time_encoding=self.config.get("include_time_encoding", True),
+            feature_set=feature_set,
+            include_time_encoding=include_time,
         )
 
         norm_cfg = self.config.get("normalize", None)
@@ -416,6 +427,7 @@ class FastDataReader(Dataset, ReprMixin):
 def build_epoch_features(
     ann: Dict[str, np.ndarray],
     dtype: type = np.float32,
+    feature_set: str = BINARY_AROUSAL_FEATURE_SET,
     include_time_encoding: bool = True,
 ) -> np.ndarray:
     """Build a per-epoch feature matrix from CAISR annotations.
@@ -425,26 +437,40 @@ def build_epoch_features(
     ann : dict
         Annotation dict from ``CINC2026.load_ann(rec, ann_type='algorithmic')``.
     dtype : numpy dtype
+    feature_set : {"binary_arousal", "arousal_prob_stats"}, default "binary_arousal"
+        ``"binary_arousal"`` reproduces the 21-dim feature layout used by
+        unofficial submissions 1-4.  ``"arousal_prob_stats"`` uses the later
+        arousal-probability statistics and model-dependent time encoding from
+        submission 5.
     include_time_encoding : bool, default True
-        When True, appends sin/cos time-position encoding at cols [21:23]
-        (appropriate for EpochTransformer, which is permutation-invariant).
-        When False, returns 21-dim features without time encoding
-        (appropriate for EpochCRNN, whose RNN already tracks order).
+        For ``feature_set="binary_arousal"``, must be True because this
+        21-dim feature definition always includes sin/cos time-position
+        encoding.  For ``feature_set="arousal_prob_stats"``, controls whether
+        the trailing sin/cos
+        encoding is appended.
 
     Returns
     -------
-    np.ndarray, shape ``(N_epochs, CAISR_EPOCH_DIM)`` or
-    ``(N_epochs, CAISR_EPOCH_DIM_NO_TIME)``
+    np.ndarray
         Returns empty array with matching second dim when ``stage_caisr`` is absent.
     """
-    feat_dim = CAISR_EPOCH_DIM if include_time_encoding else CAISR_EPOCH_DIM_NO_TIME
+    if feature_set == BINARY_AROUSAL_FEATURE_SET:
+        if not include_time_encoding:
+            raise ValueError("The binary-arousal CAISR feature set always includes time-position encoding.")
+        feat_dim = LEGACY_CAISR_EPOCH_DIM
+    elif feature_set == AROUSAL_PROB_STATS_FEATURE_SET:
+        feat_dim = ENRICHED_CAISR_EPOCH_DIM if include_time_encoding else ENRICHED_CAISR_EPOCH_DIM_NO_TIME
+    else:
+        raise ValueError(f"Unsupported feature_set: {feature_set}")
+
     stage = ann.get("stage_caisr", np.array([]))
     n_epochs = len(stage)
 
     if n_epochs == 0:
         return np.zeros((0, feat_dim), dtype=dtype)
 
-    features = np.zeros((n_epochs, CAISR_EPOCH_DIM), dtype=dtype)
+    full_feat_dim = LEGACY_CAISR_EPOCH_DIM if feature_set == BINARY_AROUSAL_FEATURE_SET else ENRICHED_CAISR_EPOCH_DIM
+    features = np.zeros((n_epochs, full_feat_dim), dtype=dtype)
     stage_int = stage.astype(int)
 
     # [0:6] Stage one-hot (N3, N2, N1, REM, W, Unknown)
@@ -475,46 +501,56 @@ def build_epoch_features(
         # No prob channels in this file; use stage one-hot as a hard distribution
         features[:, 6:11] = features[:, :5]
 
-    # [11:14] Arousal probability features from caisr_prob_arous (2 Hz, 60 samples/epoch).
-    # Using the continuous probability (vs the binary arousal_caisr) retains finer
-    # information about arousal intensity and uncertainty.
-    # Falls back to stats of binary arousal_caisr if prob channel is absent.
-    prob_arous = ann.get("caisr_prob_arous")
     arousal_caisr = ann.get("arousal_caisr")
-    if prob_arous is not None and len(prob_arous) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
-        ar_mat = prob_arous.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).astype(np.float64)
-    elif arousal_caisr is not None and len(arousal_caisr) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
-        ar_mat = arousal_caisr.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).astype(np.float64)
+    if feature_set == BINARY_AROUSAL_FEATURE_SET:
+        # [11] Legacy arousal feature: fraction of 0.5 s arousal-positive samples.
+        if arousal_caisr is not None and len(arousal_caisr) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
+            features[:, 11] = arousal_caisr.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).mean(axis=1)
     else:
-        ar_mat = None
+        # [11:14] Enriched arousal features from caisr_prob_arous (2 Hz, 60 samples/epoch).
+        prob_arous = ann.get("caisr_prob_arous")
+        if prob_arous is not None and len(prob_arous) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
+            ar_mat = prob_arous.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).astype(np.float64)
+        elif arousal_caisr is not None and len(arousal_caisr) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
+            ar_mat = arousal_caisr.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).astype(np.float64)
+        else:
+            ar_mat = None
 
-    if ar_mat is not None:
-        features[:, 11] = ar_mat.mean(axis=1)
-        features[:, 12] = ar_mat.std(axis=1)
-        features[:, 13] = ar_mat.max(axis=1)
+        if ar_mat is not None:
+            features[:, 11] = ar_mat.mean(axis=1)
+            features[:, 12] = ar_mat.std(axis=1)
+            features[:, 13] = ar_mat.max(axis=1)
 
-    # [14:19] Resp event fractions (1=OA, 2=CA, 3=MA, 4=HY, 5=RERA)
+    # Respiratory events: [12:17] in binary-arousal, [14:19] in arousal-prob-stats
+    resp_offset = 12 if feature_set == BINARY_AROUSAL_FEATURE_SET else 14
     resp = ann.get("resp_caisr")
     if resp is not None and len(resp) == n_epochs * RESP_SAMPLES_PER_EPOCH:
         resp_mat = resp.reshape(n_epochs, RESP_SAMPLES_PER_EPOCH)
         for offset, cls_val in enumerate([1, 2, 3, 4, 5]):
-            features[:, 14 + offset] = (resp_mat == cls_val).mean(axis=1)
+            features[:, resp_offset + offset] = (resp_mat == cls_val).mean(axis=1)
 
-    # [19:21] Limb event fractions (1=isolated, 2=periodic)
+    # Limb events: [17:19] in binary-arousal, [19:21] in arousal-prob-stats
+    limb_offset = 17 if feature_set == BINARY_AROUSAL_FEATURE_SET else 19
     limb = ann.get("limb_caisr")
     if limb is not None and len(limb) == n_epochs * LIMB_SAMPLES_PER_EPOCH:
         limb_mat = limb.reshape(n_epochs, LIMB_SAMPLES_PER_EPOCH)
-        features[:, 19] = (limb_mat == 1).mean(axis=1)
-        features[:, 20] = (limb_mat == 2).mean(axis=1)
+        features[:, limb_offset] = (limb_mat == 1).mean(axis=1)
+        features[:, limb_offset + 1] = (limb_mat == 2).mean(axis=1)
 
-    # [21:23] Periodic time-position encoding (Transformer only)
+    # Time-position encoding: [19:21] in binary-arousal, [21:23] in arousal-prob-stats
+    if feature_set == BINARY_AROUSAL_FEATURE_SET:
+        t = np.linspace(0.0, 1.0, n_epochs, dtype=dtype)
+        features[:, 19] = np.sin(2 * np.pi * t)
+        features[:, 20] = np.cos(2 * np.pi * t)
+        return features.astype(dtype)
+
     if include_time_encoding:
         t = np.linspace(0.0, 1.0, n_epochs, dtype=dtype)
         features[:, 21] = np.sin(2 * np.pi * t)
         features[:, 22] = np.cos(2 * np.pi * t)
         return features.astype(dtype)
 
-    return features[:, :CAISR_EPOCH_DIM_NO_TIME].astype(dtype)
+    return features[:, :ENRICHED_CAISR_EPOCH_DIM_NO_TIME].astype(dtype)
 
 
 def normalize_epoch_features(

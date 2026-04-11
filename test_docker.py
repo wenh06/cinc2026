@@ -12,13 +12,12 @@ import torch
 from torch_ecg.utils.misc import str2bool
 
 from cfg import _BASE_DIR, ModelCfg, TrainCfg
-from const import CAISR_EPOCH_DIM, CAISR_EPOCH_DIM_NO_TIME  # noqa: F401
 from dataset import CINC2026Dataset, collate_fn
 from evaluate_model import evaluate_model as _evaluate_model
 from evaluate_model import run as model_evaluator_func
 from models import EpochCRNN, EpochTransformer
 from run_model import run as model_runner_func
-from team_code import _MODEL_CLASS_MAP, _resolve_db_dir, load_model, run_model, train_model  # noqa: F401
+from team_code import _MODEL_CLASS_MAP, _resolve_db_dir, train_model
 from utils.misc import func_indicator
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -73,10 +72,9 @@ def test_dataset() -> None:
     assert not missing, f"Missing fields in sample: {missing}"
 
     ef = sample["epoch_features"]
+    expected_dim = getattr(ModelCfg, ds_config.model_name).caisr_feat_dim
     assert ef.ndim == 2, f"epoch_features should be 2-D, got shape {ef.shape}"
-    assert (
-        ef.shape[1] == CAISR_EPOCH_DIM_NO_TIME
-    ), f"epoch_features last dim should be {CAISR_EPOCH_DIM_NO_TIME}, got {ef.shape[1]}"
+    assert ef.shape[1] == expected_dim, f"epoch_features last dim should be {expected_dim}, got {ef.shape[1]}"
 
     demo = sample["demographics"]
     assert demo.shape == (3,), f"demographics should be shape (3,), got {demo.shape}"

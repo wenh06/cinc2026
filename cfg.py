@@ -9,12 +9,14 @@ import numpy as np
 import torch
 from torch_ecg.cfg import CFG
 
+from const import BINARY_AROUSAL_FEATURE_SET, resolve_feature_pipeline
 from model_configs import EPOCH_CRNN_CONFIG, EPOCH_TRANSFORMER_BASE
 
 __all__ = [
     "BaseCfg",
     "TrainCfg",
     "ModelCfg",
+    "sync_feature_config",
 ]
 
 
@@ -61,6 +63,7 @@ TrainCfg.batch_size = 16
 # JSON split file (utils/cinc2026-data-split.json) is absent.
 TrainCfg.train_ratio = 0.8
 TrainCfg.model_name = "epoch_crnn_M"  # best AUROC so far (sub3: 0.555)
+TrainCfg.feature_set = BINARY_AROUSAL_FEATURE_SET  # submission-1~4 feature set; best public run so far
 
 # learning_rate is the canonical name used by BaseTrainer; lr is kept as an alias
 TrainCfg.lr = 3e-4
@@ -113,29 +116,21 @@ TrainCfg.grad_clip = 1.0  # gradient clipping max norm (0 to disable)
 #
 # label_smoothing: smooths targets {0,1} → {ε/2, 1-ε/2} to discourage over-confident
 # predictions and improve calibration when test prevalence differs from training.
-TrainCfg.label_smoothing = 0.1
+TrainCfg.label_smoothing = 0.05
 
 # pos_weight: BCEWithLogitsLoss pos_weight.
 # Hidden test set appears to have ~6% positive prevalence vs 50% in training.
 # Set to None to disable (balanced training, currently preferred for stability).
 TrainCfg.pos_weight = None  # e.g. 5.0 to upweight positives
 
-# Per-record z-score normalization of CAISR epoch features.
-# Each record's epoch feature matrix is normalized independently (mean=0, std=1
-# per feature column across all epochs of that record), which removes systematic
-# site-level baseline differences in feature magnitudes without requiring global
-# training-set statistics at inference time.
-# Note: this is NOT torch_ecg's PreprocManager (which operates on raw signals).
-# The normalization is applied in FastDataReader.__getitem__ and mirrored in
-# team_code._run_model_impl so train and inference are identical.
-# skip_cols is set at the bottom of this file after model_name is known:
-#   CRNN (21-dim, no time encoding) → skip_cols=[]
-#   Transformer (23-dim, time at [21:22]) → skip_cols=[21, 22]
-TrainCfg.normalize = CFG(
-    method="per_record_zscore",
-    eps=1e-8,
-    skip_cols=[21, 22],  # updated below based on model_name
-)
+# The binary-arousal feature set used in unofficial submissions 1-4 did not use
+# per-record normalization, so we
+# keep it disabled by default to match the best public result.  To reproduce the
+# later experimental runs, set e.g.
+#   TrainCfg.feature_set = AROUSAL_PROB_STATS_FEATURE_SET
+#   TrainCfg.normalize = CFG(method="per_record_zscore", eps=1e-8, skip_cols=[])
+# and sync_feature_config(...) will update skip_cols automatically.
+TrainCfg.normalize = None
 
 # Callbacks & Logging
 TrainCfg.log_step = 20
@@ -276,10 +271,35 @@ ModelCfg.multibranch.dropout = 0.1
 ModelCfg.multibranch.criterion = "CrossEntropyLoss"
 ModelCfg.multibranch.dem_encoder = deepcopy(ModelCfg.transformer.dem_encoder)
 
-# ── Model-type-dependent feature settings ────────────────────────────────────
-# These must come AFTER all model configs and TrainCfg.model_name is set.
-# CRNN: RNN tracks temporal order internally → no time-position encoding needed.
-# Transformer: permutation-invariant → sin/cos time encoding is necessary.
-_is_crnn = "crnn" in TrainCfg.model_name
-TrainCfg.include_time_encoding = not _is_crnn
-TrainCfg.normalize.skip_cols = [] if _is_crnn else [21, 22]
+
+def sync_feature_config(train_cfg: CFG = TrainCfg, model_cfg: CFG = ModelCfg) -> None:
+    """Synchronize feature-set-dependent dimensions and flags across configs."""
+    pipeline = resolve_feature_pipeline(train_cfg.feature_set, train_cfg.model_name)
+    train_cfg.include_time_encoding = pipeline["include_time_encoding"]
+    train_cfg.caisr_feat_dim = pipeline["feature_dim"]
+
+    if train_cfg.normalize and getattr(train_cfg.normalize, "method", "") == "per_record_zscore":
+        train_cfg.normalize.skip_cols = pipeline["time_cols"]
+
+    transformer_dim = resolve_feature_pipeline(train_cfg.feature_set, "epoch_transformer")["feature_dim"]
+    crnn_dim = resolve_feature_pipeline(train_cfg.feature_set, "epoch_crnn")["feature_dim"]
+
+    for name in ["epoch_transformer_S", "epoch_transformer_M", "epoch_transformer_L", "epoch_transformer"]:
+        getattr(model_cfg, name).caisr_feat_dim = transformer_dim
+
+    for name in [
+        "epoch_crnn_S",
+        "epoch_crnn_M",
+        "epoch_crnn_L",
+        "epoch_crnn",
+        "epoch_crnn_resnetNC_BNse_S",
+        "epoch_crnn_resnetNC_BNse_M",
+        "epoch_crnn_resnetNC_BNse_L",
+        "epoch_crnn_tresnetE_S",
+        "epoch_crnn_tresnetE_M",
+        "epoch_crnn_tresnetE_L",
+    ]:
+        getattr(model_cfg, name).caisr_feat_dim = crnn_dim
+
+
+sync_feature_config()

@@ -1,15 +1,15 @@
 """EpochCRNN: ResNet-N backbone + Bidirectional LSTM for CinC 2026.
 
 Each PSG night is represented as a variable-length sequence of T × 30-second
-epochs, each encoded as a :data:`~const.CAISR_EPOCH_DIM`-dimensional CAISR
-feature vector.  The model treats this ``(B, T, 21)`` input as a 1-D signal
-with **21 channels** and **T time-steps** (one per epoch), then applies a
+epochs, each encoded as a CAISR feature vector.  The model treats this
+``(B, T, caisr_feat_dim)`` input as a 1-D signal with **caisr_feat_dim**
+channels and **T time-steps** (one per epoch), then applies a
 :class:`torch_ecg.models.ECG_CRNN` backbone.
 
 Architecture
 ------------
-1. **Transpose**: ``(B, T, 21)`` → ``(B, 21, T)`` — 21 CAISR features become
-   the channel dimension.
+1. **Transpose**: ``(B, T, D)`` → ``(B, D, T)`` — CAISR features become the
+   channel dimension.
 
 2. **ResNet-N CNN** (epoch-scale variant, selected via ``config.cnn.name``):
 
@@ -17,7 +17,7 @@ Architecture
 
    .. code-block:: text
 
-       Stem:    Conv1d(21→32, k=5, stride=1) + BN + ReLU
+        Stem:    Conv1d(D→32, k=5, stride=1) + BN + ReLU
        Block 1: BasicBlock(32→ 32, k=5, stride=2)   T   → T/2
        Block 2: BasicBlock(32→ 64, k=3, stride=2)   T/2 → T/4
        Block 3: BasicBlock(64→128, k=3, stride=2)   T/4 → T/8

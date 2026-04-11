@@ -2,7 +2,7 @@
 
 Each PSG night is represented as a variable-length sequence of N × 30-second
 epochs (typically 730-1100 per night). Each epoch is encoded as a
-``CAISR_EPOCH_DIM``-dimensional feature vector derived from the CAISR
+``caisr_feat_dim``-dimensional feature vector derived from the CAISR
 algorithmic annotations (see ``dataset.build_epoch_features``).
 
 A Transformer encoder processes the full-night sequence and produces a single
@@ -100,7 +100,7 @@ class EpochTransformer(nn.Module, SizeMixin, CkptMixin):
         self.classes = self.config.classes
         self.n_classes = len(self.classes)
 
-        caisr_dim = self.config.caisr_feat_dim  # 21
+        caisr_dim = self.config.caisr_feat_dim
         d_model = self.config.d_model  # 128
         nhead = self.config.nhead  # 4
         num_layers = self.config.num_layers  # 4

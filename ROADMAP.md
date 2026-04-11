@@ -6,9 +6,9 @@
 
 ## Approach Overview
 
-We use a **CAISR-annotation-based epoch-sequence Transformer**.
+We use **CAISR-annotation-based epoch-sequence models**.
 
-Each PSG night is decomposed into N × 30-second epochs (≈ 730–1100 epochs per night). Each epoch is represented as a 21-dimensional feature vector derived entirely from the pre-computed CAISR algorithmic annotations (sleep stage one-hot + stage posteriors + arousal density + respiratory event fractions + limb movement fractions + temporal position). A Transformer encoder then models the full-night temporal sequence and outputs a single binary CI prediction.
+The current locked baseline after the unofficial phase is **`EpochCRNN_M` + the binary-arousal 21-dim CAISR feature set** (submission 3, AUROC = 0.555). Each PSG night is decomposed into N × 30-second epochs (≈ 730–1100 epochs per night). Each epoch is represented as a compact CAISR-derived feature vector, and an epoch-sequence model (CRNN or Transformer) then outputs a single binary CI prediction.
 
 **Why CAISR-derived features?**
 
@@ -17,6 +17,15 @@ Each PSG night is decomposed into N × 30-second epochs (≈ 730–1100 epochs p
 - Memory-efficient: 21 floats per epoch vs. ≈ 36 M raw EEG samples per night.
 
 For the 1.8 % of training records that lack CAISR annotations (all due to missing EEG/EOG/EMG — see `_CINC2026_INFO` issue 5), a dedicated fallback branch is provided (see Phase 4).
+
+---
+
+## Unofficial Phase Recap
+
+- **Best result**: submission 3 (`EpochCRNN_M` + binary-arousal CAISR features) reached **AUROC 0.555** on the hidden validation set.
+- **What worked**: compact CAISR features, moderate model size, and keeping the original night-level burden summaries intact.
+- **What did not work**: the last arousal-probability-statistics run (submission 5, AUROC 0.448) bundled too many changes at once: replacing `arousal_fraction`, removing CRNN time encoding, and adding per-record z-score normalization.
+- **Lesson**: future changes should be tested by **single-factor ablation** against the locked binary-arousal baseline rather than by stacked edits.
 
 ---
 
