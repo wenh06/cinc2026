@@ -1,5 +1,5 @@
 # ignore svg, txt, json, html files and the folders final_results
-exclude: '^.*\.(svg|txt|json|html)$|final_results|^build|^dist|official_baseline|helper_code\.py|run_model\.py|train_model\.py|evaluate_model\.py|\.ipynb_checkpoints|fast-test.*\.ipynb'
+exclude: '^.*\.(svg|txt|json|html)$|final_results|^build|^dist|official_baseline|create_labels\.py|helper_code\.py|run_model\.py|train_model\.py|evaluate_model\.py|\.ipynb_checkpoints|fast-test.*\.ipynb'
 fail_fast: false
 
 repos:
@@ -18,7 +18,7 @@ repos:
     hooks:
       - id: flake8
         additional_dependencies: [pycodestyle>=2.11.0]
-        args: [--max-line-length=128, '--exclude=./.*,build,dist,official*,helper_code.py,run_model.py,train_model.py,evaluate_model.py,*.ipynb', '--ignore=E501,W503,E203,F841,E402,E231,E202,E251', --count, --statistics, --show-source]
+        args: [--max-line-length=128, '--exclude=./.*,build,dist,official*,create_labels.py,helper_code.py,run_model.py,train_model.py,evaluate_model.py,*.ipynb', '--ignore=E501,W503,E203,F841,E402,E231,E202,E251', --count, --statistics, --show-source]
   - repo: https://github.com/pycqa/isort
     rev: 8.0.0
     hooks:

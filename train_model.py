@@ -6,8 +6,8 @@
 #
 #   python train_model.py -d data -m model -v
 #
-# where 'data' is a folder containing the Challenge data, 'model' is a folder for saving your model, and , and -v is an optional
-# verbosity flag.
+# where 'data' is a folder containing the Challenge data, 'model' is a folder for saving your model, and -v is an optional verbosity
+# flag.
 
 import argparse
 import sys
