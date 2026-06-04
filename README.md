@@ -36,14 +36,21 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 - [Dockerfile](Dockerfile): docker file for building the docker image for submissions.
 - [requirements.txt](requirements.txt), [requirements-docker.txt](requirements-docker.txt), [requirements-no-torch.txt](requirements-no-torch.txt):
   requirements files for different purposes.
-- [evaluate_model.py](evaluate_model.py), [helper_code.py](helper_code.py), [prepare_code15_data.py](prepare_code15_data.py),
+- [evaluate_model.py](evaluate_model.py), [helper_code.py](helper_code.py),
   [run_model.py](run_model.py), [train_model.py](train_model.py): scripts inherited from the
   [official baseline](https://github.com/physionetchallenges/python-example-2026.git).
   Modifications on these files are invalid and are immediately overwritten after being pulled by the organizers (or the submission system).
 - [sync_official.py](sync_official.py): script for synchronizing data from the official baseline and official scoring code.
 - [team_code.py](team_code.py): entry file for the submissions.
+- [trainer.py](trainer.py): training loop (`CINC2026Trainer`) with AUROC monitoring, per-site evaluation, and early stopping.
+- [dataset.py](dataset.py): dataset classes (`CINC2026Dataset`, `FastDataReader`) and CAISR epoch-feature construction (`build_epoch_features`).
+- [data_reader.py](data_reader.py): database reader (`CINC2026`) for loading PSG recordings, CAISR and human-expert annotations.
+- [outputs.py](outputs.py): model output dataclass (`CINC2026Outputs`) handling logits → probability → binary prediction conversion.
+- [test_docker.py](test_docker.py): tests for the Docker submission pipeline (dataset, models, trainer, entry).
+- [post_docker_build.py](post_docker_build.py): post-Docker-build setup script.
+- [channel_table.csv](channel_table.csv): channel name standardization mapping across recording sites.
 - [submissions](submissions): log file for the submissions, including the key hyperparameters, the scores received,
-  commit hash, etc. The log file is updated after each submission and organized as a YAML file.
+  commit hash, etc. The log file is updated after each submission.
 
 </details>
 
@@ -53,10 +60,12 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 <summary>Click to view the details</summary>
 
 - [official_baseline](official_baseline): the official baseline code, included as a submodule.
-- [models](models): folder for model definitions.
-- [utils](utils): various utility functions, including [custom scoring functions](utils/scoring_metrics.py),
-  and some training-validation split files.
-- [results](results): folder containing some typical experiment log files, for reproducibility.
+- [model_configs](model_configs): modular per-model configurations (separate config files for `EpochTransformer`, `EpochCRNN`).
+- [models](models): model definitions (`EpochTransformer`, `EpochCRNN` with multiple CNN backbone variants, `ChannelTransformer`, `MultiBranchNet`).
+- [utils](utils): utility scripts, including [custom scoring metrics](utils/scoring_metrics.py), [hyperparameter search](utils/run_search.py),
+  [log analysis](utils/analyze_logs.py), [feature shift analysis](utils/analyze_feature_shift.py),
+  and a [fixed train/val split](utils/cinc2026-data-split.json).
+- [results](results): experiment log files and analysis notes.
 
 </details>
 
