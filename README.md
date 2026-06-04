@@ -36,7 +36,7 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 - [Dockerfile](Dockerfile): docker file for building the docker image for submissions.
 - [requirements.txt](requirements.txt), [requirements-docker.txt](requirements-docker.txt), [requirements-no-torch.txt](requirements-no-torch.txt):
   requirements files for different purposes.
-- [evaluate_model.py](evaluate_model.py), [helper_code.py](helper_code.py),
+- [create_labels.py](create_labels.py), [evaluate_model.py](evaluate_model.py), [helper_code.py](helper_code.py),
   [run_model.py](run_model.py), [train_model.py](train_model.py): scripts inherited from the
   [official baseline](https://github.com/physionetchallenges/python-example-2026.git).
   Modifications on these files are invalid and are immediately overwritten after being pulled by the organizers (or the submission system).

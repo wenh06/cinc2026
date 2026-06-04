@@ -140,10 +140,12 @@ def test_models() -> None:
 
 @func_indicator("testing challenge metrics")
 def test_challenge_metrics() -> None:
-    """Test evaluate_model with synthetic predictions."""
+    """Test evaluate_model with synthetic predictions (official phase API)."""
     rng = np.random.default_rng(42)
     n = 20
     patient_ids = [f"sub-{i:04d}" for i in range(n)]
+    site_ids = ["S0001"] * n
+    ages = rng.integers(40, 90, size=n).astype(float)
     labels = rng.integers(0, 2, size=n)
     probs = rng.uniform(0.1, 0.9, size=n)
     binary_preds = (probs >= 0.5).astype(int)
@@ -151,30 +153,48 @@ def test_challenge_metrics() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         labels_file = os.path.join(tmpdir, "labels.csv")
         preds_file = os.path.join(tmpdir, "predictions.csv")
+        # Prevalence file uses the same format as labels; for testing we
+        # reuse the labels file itself.
+        prev_file = labels_file
 
         pd.DataFrame(
             {
+                "SiteID": site_ids,
                 "BDSPPatientID": patient_ids,
                 "Cognitive_Impairment": labels,
+                "Age": ages,
             }
         ).to_csv(labels_file, index=False)
 
         pd.DataFrame(
             {
+                "SiteID": site_ids,
                 "BDSPPatientID": patient_ids,
                 "Cognitive_Impairment": binary_preds,
                 "Cognitive_Impairment_Probability": probs,
             }
         ).to_csv(preds_file, index=False)
 
-        auroc, auprc, accuracy, f_measure = _evaluate_model(labels_file, preds_file)
+        reward, auroc_age, auroc_weighted, auroc, auprc, accuracy, f_measure, table = _evaluate_model(
+            [labels_file], [preds_file], [prev_file]
+        )
 
-    assert isinstance(auroc, float), f"auroc should be float, got {type(auroc)}"
-    assert 0.0 <= auroc <= 1.0, f"auroc out of [0,1]: {auroc}"
-    assert 0.0 <= auprc <= 1.0, f"auprc out of [0,1]: {auprc}"
-    assert 0.0 <= accuracy <= 1.0, f"accuracy out of [0,1]: {accuracy}"
-    assert 0.0 <= f_measure <= 1.0, f"f_measure out of [0,1]: {f_measure}"
-    print(f"  AUROC={auroc:.3f}  AUPRC={auprc:.3f}  Acc={accuracy:.3f}  F1={f_measure:.3f}")
+    for name, val in [
+        ("auroc", auroc),
+        ("auprc", auprc),
+        ("auroc_age", auroc_age),
+        ("auroc_weighted", auroc_weighted),
+        ("accuracy", accuracy),
+        ("f_measure", f_measure),
+        ("reward", reward),
+    ]:
+        assert isinstance(val, float), f"{name} should be float, got {type(val)}"
+        if name != "reward":
+            assert 0.0 <= val <= 1.0, f"{name} out of [0,1]: {val}"
+    assert isinstance(table, list) and len(table) > 0, "table should be non-empty list"
+    print(
+        f"  AUROC={auroc:.3f}  AUROC_age={auroc_age:.3f}  AUROC_weighted={auroc_weighted:.3f}  AUPRC={auprc:.3f}  Reward={reward:.3f}"
+    )
 
 
 @func_indicator("testing trainer")
@@ -298,16 +318,23 @@ def test_entry() -> None:
     # ------------------------------------------------------------------
     print("   Evaluate model (evaluate_model.py)   ".center(100, "#"))
     score_file = entry_output_dir / "score.txt"
+    table_file = entry_output_dir / "table.csv"
+    # Official phase: labels_files, predictions_files, prevalence_files are all
+    # lists; -p defines the population used to compute age-specific prevalence.
     model_evaluator_args = CFG(
-        labels_folder=str(train_data_dir / DEMOGRAPHICS_FILE),
-        predictions_folder=str(predictions_file),
+        labels_files=[str(train_data_dir / DEMOGRAPHICS_FILE)],
+        predictions_files=[str(predictions_file)],
+        prevalence_files=[str(train_data_dir / DEMOGRAPHICS_FILE)],
         score_file=str(score_file),
+        table_file=str(table_file),
     )
     model_evaluator_func(model_evaluator_args)
 
     if score_file.exists():
         print("Score file contents:")
         print(score_file.read_text())
+    if table_file.exists():
+        print(f"Age-breakdown table written to {table_file}")
 
     print("test_entry passed ✓")
 
