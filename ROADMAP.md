@@ -29,6 +29,40 @@ For the 1.8 % of training records that lack CAISR annotations (all due to missin
 
 ---
 
+## Unofficial Phase Feedback
+
+### 1. Richer sub-epoch statistics can *degrade* performance
+
+Submission 5 replaced the 1-dim `arousal_fraction` with 3-dim arousal-probability statistics (mean, std, max from `caisr_prob_arous`), added per-record z-score normalization, and removed time-position encoding for the CRNN — **all in one edit**.  AUROC dropped from 0.555 (submission 3) to 0.448.
+
+Hypothesised reasons:
+- **Arousal probability channels may be noisier** than the binary arousal label.  The `caisr_prob_arous` signal is a soft classifier output, not a calibrated probability — its higher-order moments (std, max) may amplify annotation errors.
+- **Per-record z-score normalization destroys cross-site signal.**  If Site S0001 has higher baseline arousal fractions than I0006 (due to different patient demographics or equipment), z-scoring each record independently removes this potentially informative site-level variation.
+- **Confounded changes.**  Three factors were changed simultaneously; we cannot isolate which one (or which combination) caused the degradation.
+
+**Principle**: Adding features should add *independent* information, not just re-parameterize existing information.  When in doubt, add features *cumulatively* to the working baseline and test each addition with a single-factor ablation.
+
+### 2. The CAISR-to-CI information bottleneck
+
+Current CAISR features summarize one epoch into a 21-dim vector covering sleep stage, arousals, respiratory events, and limb movements.  While this is site-agnostic and practical, it discards several sleep biomarkers with established links to cognitive decline:
+
+| Biomarker | Present in CAISR? | Evidence for CI prediction |
+|-----------|-------------------|---------------------------|
+| NREM delta power (0.5–4 Hz EEG) | ✗ | Strongest sleep biomarker.  Drives glymphatic amyloid-β clearance.  Reduced in MCI/AD. |
+| Sleep spindle density / amplitude (12–15 Hz EEG) | ✗ | Fast spindles linked to memory consolidation.  Reduced in MCI. |
+| Spindle–slow-wave coupling | ✗ | Temporal coordination critical for hippocampal replay. |
+| Heart rate variability (SDNN, RMSSD, LF/HF) | ✗ | Autonomic dysfunction is an early marker of neurodegeneration. |
+| SpO₂ desaturation depth / hypoxic burden | ✗ | CAISR detects events but not the *severity* of oxygen drops. |
+| Sleep architecture summaries (N3%, REM latency, WASO) | Partially | Could be computed from CAISR stages but not currently used. |
+
+**Principle**: The highest-priority additions are features that capture *independent dimensions* of sleep physiology not represented in the current 21-dim vector — not richer re-parameterizations of the same CAISR signals.
+
+### 3. The prevalence-shift calibration gap
+
+Training (50% positive) vs. hidden validation (~6% positive) creates a severe miscalibration.  Local val AUROC ≈ 0.70 but leaderboard AUROC ≈ 0.555 is a ~0.14 gap.  Simple calibration techniques (Platt scaling, temperature scaling, pos_weight tuning) have not yet been systematically evaluated.
+
+---
+
 ## Phase 1 — Data Exploration & Pipeline Foundation ✅
 
 - [x] Explore raw data at `/Data1/wenh06/physionetchallenge2026data`.
@@ -293,45 +327,171 @@ Key implementation decisions:
 
 ---
 
-## Immediate Next Steps
+## Phase 8 — Spectral Feature Augmentation 🔜
 
-1. **Upload reduced dataset** (`/Data1/wenh06/cinc2026-reduced-training-set.zip`, 125 MB) to Google Drive; set `REDUCED_DATASET_GDRIVE_ID` in `.github/workflows/docker-test.yml`.
-2. **CI pipeline end-to-end**: verify `docker run` passes `test_entry` and score is printed.
-3. **Full training run** (100 epochs, monitor val AUROC per site, save best checkpoint to `saved_models/run1/`).
-4. **Phase 6.3a**: Add per-epoch spectral features (EEG delta/theta/alpha/sigma, ECG HRV, SpO2 stats) to extend the 21-dim CAISR vector to ~34-dim; cache to `cache/spectral_features/`.
-5. **Compare EpochTransformer vs EpochCRNN**: run both at M-size for 100 epochs; pick the winner (or ensemble).
-6. **Phase 4**: Implement ECG-HRV MLP fallback for the 14 CAISR-missing records (replace current `(0, 0.5)` constant).
-7. **Phase 5**: Validation analysis — ROC curves, per-site AUROC, attention maps.
-8. **Docker submission**: Set `status: final`, ensure CI passes, submit.
+Extend the per-epoch CAISR feature vector with spectral EEG features computed from raw physiological signals.  These features capture *independent* physiological dimensions not represented in CAISR.
+
+### Why this should work when submission 5 did not
+
+Submission 5 re-parameterized *existing* CAISR arousal information (mean/std/max of probability).  Spectral features capture *new* physiological dimensions — EEG power in specific frequency bands — that are not derivable from CAISR annotations at all.  NREM delta power is arguably the most replicated sleep biomarker of cognitive decline in the literature.
+
+### Features to add
+
+Per-epoch (30 s), using one "universal" EEG channel (C3-M2 or site-equivalent bipolar derivation):
+
+```
+Per-epoch raw EEG (30 s × 200 Hz = 6000 samples)
+       │
+       ├─ Bandpass filter 0.5–40 Hz
+       │
+       ├─ Welch PSD → spectral band powers:
+       │   delta (0.5–4 Hz)     → 1 feature
+       │   theta (4–8 Hz)       → 1 feature
+       │   alpha (8–12 Hz)      → 1 feature
+       │   sigma (12–15 Hz)     → 1 feature  (spindle band)
+       │   beta (15–30 Hz)      → 1 feature
+       │   total power          → 1 feature
+       │
+       ├─ Derived ratios:
+       │   theta/delta ratio    → 1 feature  (EEG slowing index)
+       │   alpha/delta ratio    → 1 feature
+       │
+       └─ → 8 spectral features per epoch
+```
+
+Optionally add per-epoch ECG HRV and SpO₂ statistics (see Phase 6.3 in the original roadmap).
+
+**New feature dimension**: 21 (CAISR) + 8 (spectral) = **29 dims**.  With HRV (+4) and SpO₂ (+3): **36 dims**.
+
+### Channel selection
+
+S0001 and I0002 use bipolar `C3-M2`.  I0006 uses unipolar `C3` + `M2` → compute bipolar by subtraction.  All three sites have either `C3-M2` or the raw channels to derive it.  Fall back to any available EEG channel for the remaining records.
+
+### Caching
+
+Spectral features are expensive (Welch PSD per epoch).  Cache to `cache/spectral_features/<record_id>.npy` on first computation.  `FastDataReader.__getitem__` checks the cache first, then appends spectral features to the CAISR vector.
+
+### Validation protocol
+
+**Single-factor ablation**: Train `EpochCRNN_M` with (a) baseline 21-dim CAISR features only, (b) 21-dim + spectral features.  Keep all other hyperparameters identical.  Compare val AUROC.  Only proceed if (b) > (a).
+
+---
+
+## Phase 9 — Night-Level Aggregation Features 🔜
+
+Add per-night summary statistics as a separate feature branch, fused with the epoch-sequence output via late concatenation.
+
+### Motivation
+
+Clinical sleep reports summarize nights into single-number metrics (total N3 time, AHI, arousal index, etc.).  These aggregates are the features a sleep physician would use to assess a patient.  They are complementary to the epoch-level sequence — the sequence model sees fine-grained temporal patterns, while night-level aggregates provide explicit clinical summaries.
+
+### Features (all computable from CAISR annotations)
+
+```python
+night_features = {
+    # Sleep architecture
+    "total_sleep_time": ...,
+    "sleep_efficiency": ...,
+    "nrem3_pct": ...,            # N3%
+    "rem_pct": ...,
+    "wake_after_sleep_onset": ...,
+
+    # Clinical event indices
+    "arousal_index": ...,         # events per hour
+    "ahi": ...,                   # apnea-hypopnea index
+    "plmi": ...,                  # periodic limb movement index
+
+    # Temporal dynamics
+    "nrem3_latency": ...,         # minutes to first N3
+    "rem_latency": ...,
+    "sleep_stage_transitions": ..., # count of stage shifts
+    "first_half_nrem3_pct": ...,  # N3% in first half of night (glymphatic proxy)
+}
+```
+
+**Architecture**:
+```
+Epoch features (B, T, 21)                    Night features (B, 12)
+       │                                           │
+       ├─ EpochCRNN / Transformer                  ├─ MLP (small, e.g. 12→32→16)
+       │   → (B, d_model)                          │   → (B, 16)
+       │                                           │
+       └────────── Concat ─────────────────────────┘
+                         │
+                         ├─ FiLM demographics
+                         └─ Linear → scalar logit
+```
+
+---
+
+## Phase 10 — Calibration & Training Robustness 🔜
+
+### 10.1 Prevalence-shift calibration
+
+The training set is balanced (~50% CI positive) but the hidden validation/test sets reflect real-world prevalence (~5–15%).  This creates systematic miscalibration.
+
+Approaches (evaluate on val set; pick the best):
+- **Temperature scaling**: learn a single scalar temperature parameter on the val set after training.
+- **Platt scaling**: fit a logistic regression on val-set logits.
+- **pos_weight tuning**: train with `BCEWithLogitsLoss(pos_weight=w)` for w ∈ {2, 4, 8, 16}.
+- **Threshold optimization**: find the optimal binary threshold on val set (not only 0.5).
+
+### 10.2 Cross-site robustness
+
+- **StratifiedGroupKFold** (by SiteID × label): ensures each validation fold contains proportional representation from all three sites.
+- **Per-site batch normalization** (or domain-adversarial training) if per-site AUROC shows systematic gaps.
+
+### 10.3 Ensemble
+
+After identifying top-2 model architectures, ensemble their probability outputs:
+```python
+final_prob = α · prob_model_a + (1-α) · prob_model_b
+```
+Optimise α on the validation set.  Even a simple average (α=0.5) usually helps.
+
+---
+
+## Updated Immediate Next Steps
+
+1. **Spectral feature extraction pipeline** (Phase 8): implement per-epoch EEG bandpower computation with caching; test with single-factor ablation against the binary-arousal baseline (`EpochCRNN_M`, 21-dim vs 29-dim).
+2. **Night-level features** (Phase 9): compute night-level aggregates from CAISR annotations; add the small MLP branch; compare val AUROC with and without night-level features.
+3. **Calibration sweep** (Phase 10.1): test temperature scaling, Platt scaling, and pos_weight ∈ {2, 4, 8} on the current best model; pick the best calibration method.
+4. **Full training run** with the winning feature configuration (100 epochs, monitor val AUROC per site).
+5. **Phase 4**: Implement ECG-HRV MLP fallback for the 14 CAISR-missing records (replace current `(0, 0.5)` constant).
+6. **Phase 5**: Validation analysis — ROC curves, per-site AUROC, attention maps.
+7. **Docker submission**: Set `status: final`, ensure CI passes, submit.
 
 ---
 
 ## Feature Enrichment Backlog
 
 Items marked `[quick]` can be done without changing the model architecture (just `CAISR_EPOCH_DIM`).
+Items with ⚠️ were tested in submission 5 and found harmful — they should only be retried as isolated single-factor ablations.
 
-### Richer CAISR feature extraction  `[quick]`
+### Richer CAISR feature extraction  ⚠️ see Unofficial Phase Feedback §1
 
 `build_epoch_features` currently reduces sub-epoch signals to simple scalar means/fractions per 30 s epoch, discarding temporal structure within the epoch:
 
 | Current | What is lost | Better representation |
 |---|---|---|
-| `arousal_fraction` (scalar mean of binary `arousal_caisr`) | Arousal burst pattern within epoch | Use `caisr_prob_arous` (2 Hz, 60 samples/epoch): add mean + std + max of arousal probability → 3 features instead of 1 |
+| `arousal_fraction` (scalar mean of binary `arousal_caisr`) | Arousal burst pattern within epoch | ⚠️ Using `caisr_prob_arous` mean/std/max instead was tested in submission 5 and dropped AUROC from 0.555 → 0.448. If retrying: test mean-only first (single-factor), skip std/max. |
 | `resp_OA/CA/MA/HY` fractions (4 scalars) | Cluster vs spread of events | Add fraction of each class AND count per epoch (absolute burden, not just density) → or add variance of inter-event intervals |
 | `limb_iso/PLM` fractions (2 scalars) | PLM periodicity / clustering | Add run-length features: max consecutive PLM seconds, count of isolated bursts |
 | `stage_caisr` one-hot (6 dims) | Epoch-to-epoch transitions | Add 5-epoch rolling transition entropy (applied at dataset level, not epoch level) |
 
 Currently unused CAISR channels (see `data_reader.py` issue 7):
-- `caisr_prob_no-ar` (idx 1, 2 Hz) and `caisr_prob_arous` (idx 2, 2 Hz) — sub-epoch arousal probability. Richer than binary `arousal_caisr`. A simple addition: replace current 1-dim arousal feature with `[mean, std, max]` of `caisr_prob_arous` across the 60 sub-epoch samples → **+2 dims, total 23**.
+- `caisr_prob_no-ar` (idx 1, 2 Hz) and `caisr_prob_arous` (idx 2, 2 Hz) — sub-epoch arousal probability.  ⚠️ **Mean/std/max of this channel was the key change in submission 5 and made performance worse.**  If revisiting, try using only the *mean* of `caisr_prob_arous` (i.e. replacing the binary `arousal_fraction` with a soft version of the same quantity, without adding std/max), tested as a single-factor ablation.
 
-### Remove time-position encoding for CRNN  `[quick]`
+### Remove time-position encoding for CRNN  ⚠️ see Unofficial Phase Feedback §1
 
-Cols [19:21] (sin/cos positional encoding) were designed for the Transformer variant (which is permutation-invariant and needs explicit position info). The CRNN's recurrent backbone already tracks sequence position implicitly. Removing these 2 dims reduces `CAISR_EPOCH_DIM` from 21 → 19 and eliminates spurious signal for the CRNN. Requires:
+Cols [19:21] (sin/cos positional encoding) were designed for the Transformer variant (which is permutation-invariant and needs explicit position info). The CRNN's recurrent backbone already tracks sequence position implicitly. Removing these 2 dims reduces `CAISR_EPOCH_DIM` from 21 → 19 and eliminates spurious signal for the CRNN.  ⚠️ This was bundled into submission 5 and cannot be evaluated independently.  If retrying: test as a single-factor ablation.  Requires:
 1. `const.py`: `CAISR_EPOCH_DIM = 19`
 2. `dataset.py` `build_epoch_features`: drop the `features[:, 19:21] = sin/cos` block
 3. `cfg.py` model configs: verify `in_channels=21` is read from `CAISR_EPOCH_DIM` (it is via `BaseCfg.caisr_epoch_dim`)
 4. Re-train and compare AUROC vs 21-dim baseline
 
-### Per-record normalization of CAISR features  ✅ done
+### Per-record normalization of CAISR features  ⚠️ see Unofficial Phase Feedback §1
 
 `normalize_epoch_features()` added to `dataset.py`; applied in `FastDataReader.__getitem__` and mirrored in `team_code._run_model_impl`. Cols 19-20 (time-position encoding) are skipped. Zero-std columns left unchanged.
+
+⚠️ Per-record z-score normalization was part of submission 5 and is hypothesised to have destroyed between-site distributional signal.  If retrying, test as a single-factor ablation and monitor per-site AUROC before/after.
