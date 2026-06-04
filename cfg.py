@@ -87,7 +87,7 @@ TrainCfg.flooding_level = 0  # no flooding regularisation by default
 # full sequence.
 TrainCfg.max_seq_len = 768
 
-# sig_len: raw-signal legacy kept for backwards-compat with models/transformer.py
+# sig_len: raw-signal compatibility knob kept for models/transformer.py
 # prototype.  Not used in the CAISR epoch-feature pipeline.
 TrainCfg.sig_len = 3000  # 30 seconds at 100Hz
 

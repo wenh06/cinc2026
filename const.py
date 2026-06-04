@@ -21,9 +21,9 @@ __all__ = [
     "AROUSAL_PROB_STATS_FEATURE_SET",
     "CAISR_EPOCH_DIM",
     "CAISR_EPOCH_DIM_NO_TIME",
-    "LEGACY_CAISR_EPOCH_DIM",
-    "ENRICHED_CAISR_EPOCH_DIM",
-    "ENRICHED_CAISR_EPOCH_DIM_NO_TIME",
+    "BINARY_AROUSAL_CAISR_EPOCH_DIM",
+    "AROUSAL_PROB_STATS_CAISR_EPOCH_DIM",
+    "AROUSAL_PROB_STATS_CAISR_EPOCH_DIM_NO_TIME",
     "CAISR_PROB_EDF_SCALE",
     "DEMOGRAPHIC_DIM",
     "AROUSAL_SAMPLES_PER_EPOCH",
@@ -97,7 +97,7 @@ AROUSAL_PROB_STATS_FEATURE_SET = "arousal_prob_stats"
 
 # Per-epoch CAISR feature layout — binary-arousal pipeline used by unofficial submissions 1-4:
 #
-# Legacy layout (21 dims, used by all models in submissions 1-4):
+# Binary-arousal layout (21 dims, used by all models in submissions 1-4):
 #   [0:6]   stage one-hot          STAGE_ONEHOT_DIM = 6
 #   [6:11]  stage softmax probs    5  (n3, n2, n1, r, w; normalized to [0,1])
 #   [11]    arousal_fraction       1  mean of binary arousal_caisr over 60 sub-epoch samples
@@ -105,9 +105,9 @@ AROUSAL_PROB_STATS_FEATURE_SET = "arousal_prob_stats"
 #   [17:19] limb event fractions   2  (isolated, periodic)
 #   [19]    sin(2π*t/T)            1  time-position encoding
 #   [20]    cos(2π*t/T)            1  time-position encoding
-LEGACY_CAISR_EPOCH_DIM = 21
+BINARY_AROUSAL_CAISR_EPOCH_DIM = 21
 
-# Enriched layout (23 dims for Transformer, 21 dims for CRNN):
+# Arousal-prob-stats layout (23 dims for Transformer, 21 dims for CRNN):
 #   [0:6]   stage one-hot          STAGE_ONEHOT_DIM = 6
 #   [6:11]  stage softmax probs    5  (n3, n2, n1, r, w; normalized to [0,1])
 #   [11]    arousal_prob_mean      1  mean of caisr_prob_arous over 60 sub-epoch samples
@@ -117,12 +117,12 @@ LEGACY_CAISR_EPOCH_DIM = 21
 #   [19:21] limb event fractions   2  (isolated, periodic)
 #   [21]    sin(2π*t/T)            1  time-position encoding
 #   [22]    cos(2π*t/T)            1  time-position encoding
-ENRICHED_CAISR_EPOCH_DIM = 23
-ENRICHED_CAISR_EPOCH_DIM_NO_TIME = 21
+AROUSAL_PROB_STATS_CAISR_EPOCH_DIM = 23
+AROUSAL_PROB_STATS_CAISR_EPOCH_DIM_NO_TIME = 21
 
 # Backwards-compatible aliases used throughout the project.
-CAISR_EPOCH_DIM = LEGACY_CAISR_EPOCH_DIM
-CAISR_EPOCH_DIM_NO_TIME = ENRICHED_CAISR_EPOCH_DIM_NO_TIME
+CAISR_EPOCH_DIM = BINARY_AROUSAL_CAISR_EPOCH_DIM
+CAISR_EPOCH_DIM_NO_TIME = AROUSAL_PROB_STATS_CAISR_EPOCH_DIM_NO_TIME
 
 # EDF physical-range scaling bug: the prob channels are stored with
 # physical_max=9 instead of 1, causing pyedflib to scale up by 9×.
@@ -172,9 +172,9 @@ REMOTE_MODELS = {}
 def get_caisr_feature_dim(feature_set: str, include_time_encoding: bool = True) -> int:
     """Return the epoch-feature dimension for a feature-set / time-encoding choice."""
     if feature_set == BINARY_AROUSAL_FEATURE_SET:
-        return LEGACY_CAISR_EPOCH_DIM
+        return BINARY_AROUSAL_CAISR_EPOCH_DIM
     if feature_set == AROUSAL_PROB_STATS_FEATURE_SET:
-        return ENRICHED_CAISR_EPOCH_DIM if include_time_encoding else ENRICHED_CAISR_EPOCH_DIM_NO_TIME
+        return AROUSAL_PROB_STATS_CAISR_EPOCH_DIM if include_time_encoding else AROUSAL_PROB_STATS_CAISR_EPOCH_DIM_NO_TIME
     raise ValueError(f"Unsupported feature_set: {feature_set}")
 
 

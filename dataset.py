@@ -49,18 +49,18 @@ from tqdm.auto import tqdm
 
 from cfg import TrainCfg
 from const import (  # noqa: F401
+    AROUSAL_PROB_STATS_CAISR_EPOCH_DIM,
+    AROUSAL_PROB_STATS_CAISR_EPOCH_DIM_NO_TIME,
     AROUSAL_PROB_STATS_FEATURE_SET,
     AROUSAL_SAMPLES_PER_EPOCH,
+    BINARY_AROUSAL_CAISR_EPOCH_DIM,
     BINARY_AROUSAL_FEATURE_SET,
     CAISR_EPOCH_DIM,
     CAISR_EPOCH_DIM_NO_TIME,
     CAISR_PROB_EDF_SCALE,
     DEMOGRAPHIC_DIM,
-    ENRICHED_CAISR_EPOCH_DIM,
-    ENRICHED_CAISR_EPOCH_DIM_NO_TIME,
     FIXED_DATA_SPLIT_FILE,
     LABEL_CACHE_DIR,
-    LEGACY_CAISR_EPOCH_DIM,
     LIMB_SAMPLES_PER_EPOCH,
     RESP_SAMPLES_PER_EPOCH,
     STAGE_LABEL_TO_IDX,
@@ -101,7 +101,7 @@ class CINC2026Dataset(Dataset, ReprMixin):
         If ``False`` (default), the fixed canonical split shipped at
         ``utils/cinc2026-data-split.json`` is used, ensuring fully
         reproducible train/val assignments across runs and machines.
-        If ``True``, the legacy dynamic flow is used: read
+        If ``True``, the historical dynamic flow is used: read
         ``LABEL_CACHE_DIR/cinc2026-data-split.json`` when it exists,
         otherwise generate a fresh stratified split and save it there.
     reader_kwargs : dict, optional
@@ -457,9 +457,9 @@ def build_epoch_features(
     if feature_set == BINARY_AROUSAL_FEATURE_SET:
         if not include_time_encoding:
             raise ValueError("The binary-arousal CAISR feature set always includes time-position encoding.")
-        feat_dim = LEGACY_CAISR_EPOCH_DIM
+        feat_dim = BINARY_AROUSAL_CAISR_EPOCH_DIM
     elif feature_set == AROUSAL_PROB_STATS_FEATURE_SET:
-        feat_dim = ENRICHED_CAISR_EPOCH_DIM if include_time_encoding else ENRICHED_CAISR_EPOCH_DIM_NO_TIME
+        feat_dim = AROUSAL_PROB_STATS_CAISR_EPOCH_DIM if include_time_encoding else AROUSAL_PROB_STATS_CAISR_EPOCH_DIM_NO_TIME
     else:
         raise ValueError(f"Unsupported feature_set: {feature_set}")
 
@@ -469,7 +469,9 @@ def build_epoch_features(
     if n_epochs == 0:
         return np.zeros((0, feat_dim), dtype=dtype)
 
-    full_feat_dim = LEGACY_CAISR_EPOCH_DIM if feature_set == BINARY_AROUSAL_FEATURE_SET else ENRICHED_CAISR_EPOCH_DIM
+    full_feat_dim = (
+        BINARY_AROUSAL_CAISR_EPOCH_DIM if feature_set == BINARY_AROUSAL_FEATURE_SET else AROUSAL_PROB_STATS_CAISR_EPOCH_DIM
+    )
     features = np.zeros((n_epochs, full_feat_dim), dtype=dtype)
     stage_int = stage.astype(int)
 
@@ -503,11 +505,11 @@ def build_epoch_features(
 
     arousal_caisr = ann.get("arousal_caisr")
     if feature_set == BINARY_AROUSAL_FEATURE_SET:
-        # [11] Legacy arousal feature: fraction of 0.5 s arousal-positive samples.
+        # [11] Binary-arousal feature: fraction of 0.5 s arousal-positive samples.
         if arousal_caisr is not None and len(arousal_caisr) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
             features[:, 11] = arousal_caisr.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).mean(axis=1)
     else:
-        # [11:14] Enriched arousal features from caisr_prob_arous (2 Hz, 60 samples/epoch).
+        # [11:14] Arousal-probability-statistics from caisr_prob_arous (2 Hz, 60 samples/epoch).
         prob_arous = ann.get("caisr_prob_arous")
         if prob_arous is not None and len(prob_arous) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
             ar_mat = prob_arous.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).astype(np.float64)
@@ -550,7 +552,7 @@ def build_epoch_features(
         features[:, 22] = np.cos(2 * np.pi * t)
         return features.astype(dtype)
 
-    return features[:, :ENRICHED_CAISR_EPOCH_DIM_NO_TIME].astype(dtype)
+    return features[:, :AROUSAL_PROB_STATS_CAISR_EPOCH_DIM_NO_TIME].astype(dtype)
 
 
 def normalize_epoch_features(
