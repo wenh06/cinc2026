@@ -1,6 +1,24 @@
 # CinC 2026 — Development Roadmap
 
 > **Task**: Predict future cognitive impairment (MCI / Alzheimer's / dementia) from a single polysomnography night using the George B. Moody PhysioNet Challenge 2026 dataset.
+>
+> **Team**: Revenger  |  **Key Deadlines**: Wild-card 2026-08-07  |  Official phase 2026-08-20  |  CinC 2026 Madrid 2026-09-20–23
+
+---
+
+## Data Facts
+
+| Fact | Unofficial Phase | Official Phase |
+|------|:---------------:|:--------------:|
+| Training records (total) | 780 | 1,103 (small set) |
+| Records with CAISR | 766 (14 missing: 8 I0006, 6 S0001) | TBD |
+| CI positive rate (training) | ~50% (balanced) | prevalence-matched to large set |
+| Estimated CI rate (hidden test) | ~6% (inferred from AUPRC) | ~5–15% (real-world) |
+| Site distribution | S0001: 572 (73%), I0006: 154 (20%), I0002: 54 (7%) | S0001: 857, I0006: 192, I0002: 54 |
+| CI time window | 3–7 years post-PSG | **1–6 years** post-PSG |
+| Primary metric | AUROC | **Age-conditioned AUROC** |
+| Secondary metric | AUPRC, Accuracy, F1 | Prevalence-based reward, AUPRC |
+| Local val size (80/20 split) | ~156 samples | ~220 samples |
 
 ---
 
@@ -8,24 +26,88 @@
 
 We use **CAISR-annotation-based epoch-sequence models**.
 
-The current locked baseline after the unofficial phase is **`EpochCRNN_M` + the binary-arousal 21-dim CAISR feature set** (submission 3, AUROC = 0.555). Each PSG night is decomposed into N × 30-second epochs (≈ 730–1100 epochs per night). Each epoch is represented as a compact CAISR-derived feature vector, and an epoch-sequence model (CRNN or Transformer) then outputs a single binary CI prediction.
+The current locked baseline is **`EpochCRNN_M` + the binary-arousal 21-dim CAISR feature set** (submission 3, AUROC = 0.555). Each PSG night is decomposed into N × 30-second epochs (≈ 730–1100 epochs per night). Each epoch is represented as a compact CAISR-derived feature vector, and an epoch-sequence model (CRNN or Transformer) outputs a single binary CI prediction.
 
 **Why CAISR-derived features?**
 
-- Site-agnostic: CAISR outputs a canonical feature space regardless of the underlying hardware differences across S0001 / I0002 / I0006.
-- Available for all sets: The challenge organisers pre-ran CAISR on training, validation, and test sets; annotation EDF files ship alongside the physiological data.
-- Memory-efficient: 21 floats per epoch vs. ≈ 36 M raw EEG samples per night.
+- **Site-agnostic**: CAISR outputs a canonical feature space regardless of the underlying hardware differences across S0001 / I0002 / I0006.  No need for per-site channel name normalisation, montage conversion, or sampling-rate harmonisation.
+- **Available for all splits**: The challenge organisers pre-ran CAISR on training, validation, and test sets; annotation EDF files ship alongside the physiological data.
+- **Memory-efficient**: 21 floats per epoch vs. ≈ 36 M raw EEG samples per night.  A full night fits in ~30 KB for CAISR features vs. ~144 MB for the raw EEG alone.
 
-For the 1.8 % of training records that lack CAISR annotations (all due to missing EEG/EOG/EMG — see `_CINC2026_INFO` issue 5), a dedicated fallback branch is provided (see Phase 4).
+**Feature layout** (binary-arousal, 21 dims):
+
+| Indices | Content | Dims | Source |
+|:------:|---------|:---:|--------|
+| [0:6] | Sleep stage one-hot (N3, N2, N1, REM, W, Unknown) | 6 | `stage_caisr` |
+| [6:11] | Stage softmax probabilities (re-normalised) | 5 | `caisr_prob_{n3,n2,n1,r,w}` ÷ 9 |
+| [11] | Arousal fraction | 1 | `arousal_caisr` mean per epoch |
+| [12:17] | Respiratory event fractions (OA, CA, MA, HY, RERA) | 5 | `resp_caisr` |
+| [17:19] | Limb event fractions (isolated, periodic) | 2 | `limb_caisr` |
+| [19:21] | Sin/cos time-position encoding | 2 | Computed |
+
+For the 1.8% of training records lacking CAISR annotations (all due to missing EEG/EOG/EMG — see `_CINC2026_INFO` issue 5), a dedicated fallback returns `(0, 0.5)`; an ECG-HRV MLP fallback is planned (Phase 4).
 
 ---
 
-## Unofficial Phase Recap
+## Design Decisions & Literature Support
 
-- **Best result**: submission 3 (`EpochCRNN_M` + binary-arousal CAISR features) reached **AUROC 0.555** on the hidden validation set.
-- **What worked**: compact CAISR features, moderate model size, and keeping the original night-level burden summaries intact.
-- **What did not work**: the last arousal-probability-statistics run (submission 5, AUROC 0.448) bundled too many changes at once: replacing `arousal_fraction`, removing CRNN time encoding, and adding per-record z-score normalization.
-- **Lesson**: future changes should be tested by **single-factor ablation** against the locked binary-arousal baseline rather than by stacked edits.
+### Why epoch-sequence models
+
+Cognitive decline alters sleep *architecture* — not just the total amount of each stage, but the temporal organisation across the night.  A sequence model over 30-second epochs can capture:
+
+- **NREM3 dominance shifts** — in healthy sleep, slow-wave activity is concentrated in the first half of the night (driven by sleep pressure homeostasis); in MCI/AD this gradient flattens.  A Transformer attention mechanism can learn to weight early-night epochs differently from late-night epochs.
+- **Arousal periodicity** — the cyclic alternating pattern (CAP) has a period of ~20–40 seconds; a BiLSTM with its recurrent state can implicitly model this rhythm.
+- **Stage transition patterns** — frequent NREM→Wake transitions (sleep fragmentation) are more common in CI patients; a sequence model can learn transition probabilities from the data.
+
+### Why FiLM for demographics
+
+Feature-wise Linear Modulation (FiLM) injects demographic context (age, sex, BMI) as a learned affine transformation of the pooled night representation, rather than simple concatenation.  This allows the model to learn *conditional* feature weighting: e.g., the same NREM3 fraction may have different implications for a 45-year-old vs. an 85-year-old.  Age is the strongest known risk factor for CI; FiLM lets the model modulate its interpretation of sleep features by age rather than treating age as just another input feature.
+
+### Literature backing for Phase 8 spectral features
+
+| Biomarker | Physiological mechanism | Key references |
+|-----------|------------------------|----------------|
+| NREM delta power (0.5–4 Hz) | Glymphatic clearance of amyloid-β during slow-wave sleep; reduced SWA predicts cognitive decline | Xie et al., *Science* 2013; Ju et al., *Brain* 2017; Mander et al., *Neuron* 2016 |
+| Sleep spindle density (12–15 Hz) | Thalamocortical spindle activity supports memory consolidation; reduced fast spindle density in MCI/AD | Gorgoni et al., *J Sleep Res* 2016; Winer et al., *J Neurosci* 2019; Mander et al., *Neuron* 2016 |
+| Spindle–SW coupling | Temporal precision of spindle nesting in slow-wave up-states is critical for hippocampal-neocortical replay; impaired in AD | Helfrich et al., *Neuron* 2018; Winer et al., *Curr Biol* 2021 |
+| HRV (SDNN, RMSSD, LF/HF) | Autonomic dysfunction is an early marker of neurodegeneration; reduced parasympathetic tone during sleep | Lanfranchi et al., *Circulation* 1999; Toledo et al., *Sleep Med Rev* 2022 |
+| Theta/alpha ratio | EEG slowing (increased theta, decreased alpha) is a hallmark of cortical dysfunction in early AD | Babiloni et al., *Neurobiol Aging* 2016; Rossini et al., *Clin Neurophysiol* 2020 |
+
+### Literature backing for Night-Level features
+
+Clinical sleep metrics (sleep efficiency, N3%, WASO, arousal index, AHI) are the features a sleep physician would use in a clinical assessment.  They are interpretable, standardised across labs, and have decades of evidence linking them to cognitive outcomes (Blackwell et al., *Sleep* 2014; Yaffe et al., *JAMA* 2011; Diem et al., *J Am Geriatr Soc* 2014).
+
+---
+
+## Unofficial Phase Submission History
+
+| # | ID | Date | Model | Params | AUROC | AUPRC | Acc | F1 | Feature Set | Key Hyperparams |
+|:--:|:---:|------|-------|:-----:|:-----:|:-----:|:---:|:--:|-------------|----------------|
+| **1** | 1173 | 2026-04-03 | `EpochTransformer_M` | 826 K | 0.522 | 0.059 | 0.201 | 0.065 | `binary_arousal` (21d) | lr=3e-4, bs=16, OneCycle, pct_start=0.3, grad_clip=1.0, no norm |
+| **2** | 1192 | 2026-04-04 | `EpochCRNN_resnetNC_BNse_M` | ~1.08 M | 0.497 | 0.038 | 0.080 | 0.075 | `binary_arousal` (21d) | lr=3e-4, bs=64, OneCycle, grad_clip=0, no norm |
+| **3** | 1240 | 2026-04-07 | **`EpochCRNN_M`** 🏆 | **437 K** | **0.555** | **0.076** | 0.059 | 0.075 | `binary_arousal` (21d) | lr=3e-4, bs=16, OneCycle, pct_start=0.3, grad_clip=1.0, wd=1e-2, label_smoothing=0.05 |
+| 4 | 1270 | 2026-04-08 | `EpochTransformer_L` | ~4.8 M | 0.491 | 0.037 | 0.124 | 0.071 | `binary_arousal` (21d) | lr=3e-4, bs=16, OneCycle, pct_start=0.3, grad_clip=1.0, wd=1e-2, label_smoothing=0.1 |
+| 5 | 1348 | 2026-04-09 | `EpochCRNN_M` | 437 K | 0.448 | 0.034 | 0.072 | 0.076 | `arousal_prob_stats` (21d) ⚠️ | lr=3e-4, bs=16, OneCycle, pct_start=0.3, grad_clip=1.0, wd=1e-2, label_smoothing=0.1, **per-record z-score**, **no time enc for CRNN** |
+
+### Architecture comparison (all unofficial submissions)
+
+| Model | Params | Best AUROC | Notes |
+|-------|:-----:|:----------:|-------|
+| `EpochTransformer_M` | 826 K | 0.522 (sub1) | Pre-LN Transformer, sinusoidal PE, masked mean pooling |
+| `EpochCRNN_resnetNC_BNse_M` | ~1.08 M | 0.497 (sub2) | 4-stage bottleneck+SE CNN; batch_size=64 may have caused convergence issues |
+| **`EpochCRNN_M`** | **437 K** | **0.555 (sub3)** 🏆 | 3-stage ResNet-N + BiLSTM; simplest, least overfitting |
+| `EpochTransformer_L` | ~4.8 M | 0.491 (sub4) | Larger Transformer; likely overfitted with ≥6k params/sample |
+| `EpochCRNN_M` (alt features) | 437 K | 0.448 (sub5) | Same model as sub3; different feature set catastrophically degraded perf |
+
+**Key insight**: Among models using the same binary-arousal features, **parameter count and AUROC are inversely correlated** (sub3: 437K→0.555 > sub1: 826K→0.522 > sub4: 4.8M→0.491).  This is a classic small-data regime — regularisation through limited capacity beats expressivity.
+
+### Unofficial Phase Leaderboard Standing
+
+| Metric | Best (sub3) | Leaderboard Rank | Notes |
+|--------|:----------:|:----------------:|-------|
+| AUROC | 0.555 | 102 / 244 | Top half of leaderboard |
+| AUPRC | 0.076 | — | Consistent with ~6% test prevalence |
+| Accuracy | 0.059 | — | Model predicts positive for most cases but is mostly wrong (F=0.075) |
 
 ---
 
@@ -47,19 +129,23 @@ Hypothesised reasons:
 Current CAISR features summarize one epoch into a 21-dim vector covering sleep stage, arousals, respiratory events, and limb movements.  While this is site-agnostic and practical, it discards several sleep biomarkers with established links to cognitive decline:
 
 | Biomarker | Present in CAISR? | Evidence for CI prediction |
-|-----------|-------------------|---------------------------|
-| NREM delta power (0.5–4 Hz EEG) | ✗ | Strongest sleep biomarker.  Drives glymphatic amyloid-β clearance.  Reduced in MCI/AD. |
+|-----------|:-----------------:|---------------------------|
+| NREM delta power (0.5–4 Hz EEG) | ✗ | Strongest sleep biomarker.  Drives glymphatic amyloid-β clearance.  Consistently reduced in MCI/AD. |
 | Sleep spindle density / amplitude (12–15 Hz EEG) | ✗ | Fast spindles linked to memory consolidation.  Reduced in MCI. |
-| Spindle–slow-wave coupling | ✗ | Temporal coordination critical for hippocampal replay. |
+| Spindle–slow-wave coupling | ✗ | Temporal coordination critical for hippocampal replay.  Impaired in AD. |
 | Heart rate variability (SDNN, RMSSD, LF/HF) | ✗ | Autonomic dysfunction is an early marker of neurodegeneration. |
 | SpO₂ desaturation depth / hypoxic burden | ✗ | CAISR detects events but not the *severity* of oxygen drops. |
-| Sleep architecture summaries (N3%, REM latency, WASO) | Partially | Could be computed from CAISR stages but not currently used. |
+| Sleep architecture summaries (N3%, REM latency, WASO) | Partially | Could be computed from CAISR stages but not currently used as model features. |
 
 **Principle**: The highest-priority additions are features that capture *independent dimensions* of sleep physiology not represented in the current 21-dim vector — not richer re-parameterizations of the same CAISR signals.
 
 ### 3. The prevalence-shift calibration gap
 
-Training (50% positive) vs. hidden validation (~6% positive) creates a severe miscalibration.  Local val AUROC ≈ 0.70 but leaderboard AUROC ≈ 0.555 is a ~0.14 gap.  Simple calibration techniques (Platt scaling, temperature scaling, pos_weight tuning) have not yet been systematically evaluated.
+Training (50% positive) vs. hidden validation (~6% positive) creates severe miscalibration.  Local val AUROC ≈ 0.70 but leaderboard AUROC ≈ 0.555 is a ~0.14 gap.  The local val split (80/20 random, 156 records) is dominated by S0001 (~73%); the leaderboard validation set has a different site mix and prevalence.  Simple calibration techniques (Platt scaling, temperature scaling, pos_weight tuning) have not yet been systematically evaluated.
+
+### 4. Smaller models generalise better in this data regime
+
+Across all submissions with the binary-arousal feature set, the smallest model (EpochCRNN_M, 437 K params) achieved the best AUROC, and the largest model (EpochTransformer_L, 4.8 M params) the worst.  With only 624 training records and severe cross-site heterogeneity, model capacity must be constrained to avoid learning site-specific shortcuts.
 
 ---
 
@@ -68,11 +154,11 @@ Training (50% positive) vs. hidden validation (~6% positive) creates a severe mi
 - [x] Explore raw data at `/Data1/wenh06/physionetchallenge2026data`.
 - [x] Document site heterogeneity (S0001 / I0002 / I0006 signal differences) in `data_reader.py`.
 - [x] Discover and fix the `caisr_prob_*` EDF scale bug (divide by 9.0, re-normalise).
-- [x] Define constants in `const.py`: `CAISR_EPOCH_DIM=21`, `CAISR_PROB_EDF_SCALE=9.0`, `STAGE_LABEL_TO_IDX`, `STAGE_ONEHOT_DIM=6`, `DEMOGRAPHIC_DIM=3`, annotation samples-per-epoch.
+- [x] Define constants in `const.py`: `BINARY_AROUSAL_CAISR_EPOCH_DIM=21`, `CAISR_PROB_EDF_SCALE=9.0`, `STAGE_LABEL_TO_IDX`, `STAGE_ONEHOT_DIM=6`, `DEMOGRAPHIC_DIM=3`, annotation samples-per-epoch.
 - [x] Update `cfg.py`: add `ModelCfg.epoch_transformer` config block; set `TrainCfg.batch_size=16`, `TrainCfg.n_epochs=100`, `TrainCfg.max_seq_len=768`.
 - [x] Rewrite `dataset.py`:
   - `build_epoch_features()`: CAISR annotation dict → `(N, 21)` float32 array.
-  - `CINC2026Dataset`: stratified 80/20 train/val split (stratified by SiteID × label), split cached to `cache/cinc2026-data-split.json`.
+  - `CINC2026Dataset`: stratified 80/20 train/val split (stratified by SiteID × label), split cached to `utils/cinc2026-data-split.json`.
   - `collate_fn`: variable-length padding + `padding_mask` (True = padding, matching `TransformerEncoder.src_key_padding_mask` convention).
 - [x] End-to-end smoke test: DataLoader batch shape `(4, 965, 21)` ✓.
 
@@ -123,21 +209,16 @@ Key design choices:
 
 ## Phase 3 — Training Loop (`trainer.py`) ✅
 
-Implement `CINC2026Trainer` (can subclass `torch_ecg`'s base `Trainer` if it fits, otherwise write from scratch):
+Implement `CINC2026Trainer`:
 
-- **Loss**: `BCEWithLogitsLoss` (the training set is balanced, so no pos_weight needed for now).
-- **Metric**: AUROC (primary); also log AUPRC, accuracy, F1.
-- **Optimizer**: AdamW, `lr=1e-3`, `weight_decay=1e-4`.
-- **Scheduler**: CosineAnnealingLR over 50 epochs (or ReduceLROnPlateau on val AUROC).
-- **Gradient clipping**: `max_norm=1.0` (standard for Transformers).
-- **Checkpointing**: save best val AUROC checkpoint to `checkpoints/`.
-- **Logging**: log to `log/` via the existing logger infrastructure; optionally add W&B / TensorBoard.
-
-- [x] `BCEWithLogitsLoss` embedded in model; `_setup_criterion` is a no-op.
-- [x] AUROC primary metric; NaN-safe evaluation (`nan_to_num` + `clip` before `roc_auc_score`).
-- [x] Per-site AUROC (S0001 / I0002 / I0006) logged every epoch for domain-shift monitoring.
-- [x] Gradient clipping (`max_norm=1.0`).
-- [x] Smoke test: 1 epoch over 624 training records, loss decreases, best-model checkpoint saved.
+- **Loss**: `BCEWithLogitsLoss` embedded in model; `_setup_criterion` is a no-op.
+- **Optimizer**: AdamW (AMSGrad), `lr=3e-4`, `weight_decay=1e-2`.
+- **Scheduler**: OneCycleLR, `max_lr=1e-3`, `pct_start=0.3` (Transformer) / `0.1` (CRNN for faster convergence).
+- **Gradient clipping**: `max_norm=1.0`.
+- **Label smoothing**: `ε=0.05` (sub3 best), `ε=0.1` (sub4/5 over-smoothed).
+- **Metric**: AUROC (primary); also log AUPRC, per-site AUROC (S0001 / I0002 / I0006).
+- **Early stopping**: patience=20, min_delta=0.001.
+- **Checkpointing**: save best val AUROC to `checkpoints/`.
 
 Training run command:
 ```bash
@@ -148,26 +229,22 @@ python train_model.py -d /path/to/training_set -m saved_models/run1
 
 ## Phase 4 — Fallback for CAISR-Missing Records ⏳
 
-14/780 training records (1.8 %) have no CAISR annotations because the underlying recording contains no EEG/EOG/EMG (equipment failure). Strategy:
+14/780 training records (1.8%) have no CAISR annotations because the underlying recording contains no EEG/EOG/EMG (equipment failure). Strategy:
 
 1. **Detection**: `FastDataReader.__getitem__` checks `os.path.exists(algo_ann_path)` before loading.
-2. **Primary fallback — ECG-HRV MLP**: All 14 records do have an ECG channel. Extract 5-minute windowed HRV features (SDNN, RMSSD, LF/HF ratio, pNN50) using `neurokit2` or `biosppy` over the full night, aggregate to a fixed-length vector, and pass through a small MLP that outputs a calibrated CI probability.
-3. **Secondary fallback** (if HRV feature extraction fails): output the training-set label prior (≈ 0.5) as a maximally uncertain prediction.
+2. **Primary fallback — ECG-HRV MLP**: All 14 records do have an ECG channel. Extract 5-minute windowed HRV features (SDNN, RMSSD, LF/HF ratio, pNN50) using `neurokit2` or `biosppy` over the full night, aggregate to a fixed-length vector, and pass through a small MLP.
+3. **Secondary fallback**: output the training-set label prior (≈ 0.5) as a maximally uncertain prediction.
 
-The main `EpochTransformer` forward pass is never called for these records.
-
-> **Current fallback**: `team_code.run_model` returns `(0, 0.5)` when the CAISR EDF is missing (covers all 1.8 % of affected records).  The full ECG-HRV MLP branch remains to be implemented.
+> **Current**: `team_code.run_model` returns `(0, 0.5)` when the CAISR EDF is missing.  The full ECG-HRV MLP branch remains to be implemented.
 
 ---
 
 ## Phase 5 — Validation & Analysis ⏳
 
-After training converges:
-
 - Plot ROC curve and precision–recall curve on the validation set.
 - Check per-site AUROC (S0001 / I0002 / I0006 separately) to detect domain shift.
-- Inspect attention weights: do the Transformer heads attend to NREM3-heavy regions of the night? (Expected for cognitive biomarkers.)
-- Calibrate output probabilities with `sklearn.calibration.CalibratedClassifierCV` (Platt scaling) if needed for the AUROC metric.
+- Inspect attention weights: do the Transformer heads attend to NREM3-heavy regions of the night?
+- Calibrate output probabilities with Platt scaling / temperature scaling.
 
 ---
 
@@ -183,18 +260,18 @@ epoch_features (B, T, 21)
        │
        ├─ Transpose → (B, 21, T)  [21 CAISR features = "channels", T epochs = "time"]
        │
-       ├─ ResNet-N CNN (3 stages, epoch-scale kernels k=5,3,3, stride=2 each → T/8)
+       ├─ ResNet-N CNN (3 stages, kernel k=5,3,3, stride=2 each → T/8)
        │   CNN out: (B, C_out, T/8)
        │
        ├─ Bidirectional LSTM (retseq=False → last hidden, both directions cat'd)
        │   LSTM out: (B, 2·hidden)
        │
-       ├─ FiLM demographic modulation (same as EpochTransformer)
+       ├─ FiLM demographic modulation
        │
        └─ MLP head → scalar logit → BCEWithLogitsLoss
 ```
 
-Size presets (swap via `TrainCfg.model_name`):
+Size presets:
 
 | Preset | CNN channels | LSTM hidden | clf | ~params |
 |--------|-------------|------------|-----|---------|
@@ -206,123 +283,43 @@ Additional backbone variants (change `config.cnn.name`):
 - `resnetNS_M` — separable convolutions (~368 K)
 - `resnetNB_M` — bottleneck residual blocks (~1.08 M)
 
-**Modular config system** (`model_configs/` package):
-- `EPOCH_CRNN_CONFIG` registers all 5 backbone variants; switching backbone is one line.
-- `EPOCH_TRANSFORMER_BASE` holds size-agnostic Transformer params.
-- `cfg.py` helper functions `_make_epoch_crnn` / `_make_epoch_transformer` assemble presets DRY.
-- `team_code.py` is fully config-driven via `_MODEL_CLASS_MAP`; switch model by changing `TrainCfg.model_name` only.
+**Modular config system** (`model_configs/` package): `EPOCH_CRNN_CONFIG` registers all 5 backbone variants.  `team_code.py` is fully config-driven via `_MODEL_CLASS_MAP`.
 
 **Verified:** forward pass, inference API, save/load round-trip for all 6 presets.
 
-### 6.2 Time-Series Foundation Models (TimesFM etc.)
+### 6.2 Time-Series Foundation Models
 
-Foundation models (TimesFM, Chronos, Moirai, MOMENT) are **not recommended** for this task:
+Foundation models (TimesFM, Chronos, Moirai, MOMENT) are **not recommended** for this task.  Key reasons: scale mismatch (200M+ params → catastrophic overfitting on 624 training samples), forecasting-first design (no native classification head), and the fact that our input is CAISR features (not raw waveforms).
 
-| Model | Designed for | Parameters | Multivariate | Classification |
-|-------|-------------|------------|--------------|----------------|
-| TimesFM 2.5 (Google) | Univariate forecasting | 200 M | ✗ | Forecasting only |
-| Chronos (Amazon) | Univariate forecasting | 710 M | ✗ | Forecasting only |
-| Moirai (Salesforce) | Multivariate forecasting | 310 M | ✓ | Forecasting only |
-| MOMENT-small (CMU) | Multiple tasks incl. classification | ~40 M | ✓ | ✓ (native head, ECG-tested) |
-| MOMENT-large (CMU) | Multiple tasks incl. classification | 125 M | ✓ | ✓ |
+**Exception — Philosopher's Stone** (`github.com/bdsp-core/philosophers-stone`): A public pretrained sleep EEG model from BDSP (the same organisation that provides CinC 2026 data).  Outputs a 1024-D brain-health latent space + four cognitive scores.  Published to the challenge forum during the official phase.  **Worth evaluating as a frozen feature extractor** — the 1024-D latent vector could serve as a per-epoch embedding, replacing or augmenting CAISR features.  Data-domain match (BDSP → HSP), so transfer may be effective.
 
-Key reasons why they don't fit for the **CAISR-feature pathway**:
-1. **Scale mismatch**: TimesFM (200M), Chronos (710M), Moirai (310M) — 250k+ params per training sample → catastrophic overfitting.
-2. **Forecasting-first design**: TimesFM, Chronos, Moirai have no native classification head and require architectural surgery.
-3. **Univariate bias**: TimesFM and Chronos are univariate only; multivariate XReg support in TimesFM 2.5 is brand-new and unproven on medical data.
-4. **Our input is already features, not raw waveforms**: the pretrained representations don't transfer.
-
-**Exception — MOMENT-Small**: At ~25M params (vs. 200M+ for others), the param/sample ratio (~31k:1) is borderline acceptable for fine-tuning with a frozen backbone. It has a native multi-channel classification task, is proven on ECG data (PTB-XL tutorial), and is as simple as `pip install momentfm`. However, MOMENT expects raw time series patches (512 samples each), so it operates more naturally on raw signals than on CAISR epoch feature vectors. **For the raw-signal pathway (§6.3)**, MOMENT-Small is the most promising foundation-model option.
-
-**Verdict: For CAISR-feature pathway, use EpochTransformer + EpochCRNN. For raw-signal pathway, MOMENT-Small is worth evaluating alongside a custom EpochCNN.**
+**Exception — MOMENT-Small**: At ~25M params, has a native classification head, proven on ECG data.  More suitable for the raw-signal pathway than the CAISR pathway.
 
 ### 6.3 Raw Physiological Data Pathway
 
 > **Scale reality check:** physiological EDFs are ~160 GB for 780 records. A single 7-hour recording at 200 Hz with 18 channels contains ≈ 91 M samples. This pathway requires a fundamentally different data pipeline.
 
-#### Why it's hard
+#### Recommended strategy — 30-second epoch spectral augmentation (see Phase 8)
 
-| Challenge | Detail |
-|-----------|--------|
-| Channel heterogeneity | S0001: `E1-M2`, I0002: `E1` (unipolar), I0006: `E1` unipolar + `M1` separate |
-| Sampling rate heterogeneity | SpO2: 10–25 Hz; EEG/EOG/EMG: 200 Hz; airflow: 20–200 Hz |
-| Memory | Even a single EEG channel for 7 h at 200 Hz = 5.04 M floats per record |
-| Dataset size | 160 GB total; cannot be held in RAM or even SSD cache |
-
-#### Recommended strategy — 30-second epoch CNN encoder
-
-Instead of end-to-end raw-signal processing, **augment the CAISR feature vector** by adding per-epoch spectral and statistical features computed from the raw signals. This is an incremental upgrade that preserves the CAISR pipeline:
-
-```
-Per-epoch raw signals (30 s × 200 Hz = 6000 samples per channel)
-       │
-       ├─ Select "universal" channels present in all sites:
-       │   EEG (C3-M2 or C3-M2 equivalent), ECG, SpO2/SaO2
-       │
-       ├─ Channel-level pre-processing (per site):
-       │   - Resample to 200 Hz if needed
-       │   - Compute bipolar derivation for I0006 (C3 - M2)
-       │   - Bandpass filter: 0.5–40 Hz (EEG), 0.67–40 Hz (ECG)
-       │
-       ├─ Spectral features per EEG channel (Welch PSD):
-       │   delta (0.5–4 Hz), theta (4–8 Hz), alpha (8–12 Hz),
-       │   sigma (12–15 Hz), beta (15–30 Hz), total power
-       │   → 6 features per channel
-       │
-       ├─ ECG HRV per epoch:
-       │   SDNN, RMSSD, pNN50, LF/HF ratio → 4 features
-       │
-       └─ SpO2 statistics per epoch:
-           mean, std, % time < 90% → 3 features
-```
-
-This adds ~13 features per epoch on top of the 21 CAISR features → **34-dim epoch vector**, same pipeline, same model (just `CAISR_EPOCH_DIM = 34`).
-
-**Caching:** spectral features are expensive. Cache to `cache/spectral_features/<record_id>.npy` on first computation; `CINC2026Dataset.__getitem__` checks the cache first.
+Instead of end-to-end raw-signal processing, augment the CAISR feature vector with per-epoch spectral and statistical features computed from the raw signals.  This is an incremental upgrade that preserves the CAISR pipeline.
 
 #### Full end-to-end raw-signal model (longer term)
 
-If the augmented-feature approach shows headroom, a full end-to-end model can be built:
-
-```
-Per-epoch raw signals (30 s, 3 selected channels)
-       │
-       ├─ Shared EpochCNN (ResNet1d / EEGNet / STFT encoder)
-       │   → (B × T, cnn_dim) per-epoch embedding
-       │
-       ├─ Reshape → (B, T, cnn_dim) sequence
-       │
-       ├─ Transformer or BiGRU → (B, d_model) night summary
-       │
-       └─ Classification head (+ FiLM demographics)
-```
-
-Key implementation decisions:
-- **Channel selection**: use only EEG (C3-M2), ECG, and SpO2 — available in all three sites with a site-specific preprocessing layer to unify names/montage.
-- **Epoch CNN**: EEGNet (compact, 4-layer depthwise separable CNN, works well with <1000 samples) or a small ResNet1d. Input: `(B × T, C, L)` where `C=3` channels, `L=6000` samples.
-- **Memory management**: load one epoch at a time (30 s), compute CNN features, accumulate, then run the sequence model. Alternatively, cache CNN features to disk.
-- **Training**: freeze epoch CNN for the first N epochs; fine-tune jointly after.
-
-**Data pipeline additions needed:**
-- `PhysioDataReader`: loads physiological EDFs, normalises channel names, resamples.
-- `RawEpochDataset`: replaces `CINC2026Dataset`; reads 30-s windows from disk on the fly.
-- Site-specific channel-mapping config (in `const.py` or `cfg.py`).
-
-**Verdict:** Phase 6.3a (spectral augmentation of CAISR features) is the next practical step and should be tried before the full end-to-end approach. It reuses all existing infrastructure and is likely to improve AUROC without requiring a new data pipeline.
+If the augmented-feature approach shows headroom, a full end-to-end model can be built with a shared EpochCNN (ResNet1d / EEGNet) feeding a sequence model (Transformer / BiGRU).
 
 ---
 
 ## Phase 7 — Challenge Submission Pipeline 🔄
 
-- [x] `team_code.py`: `train_model`, `load_model`, `run_model` wrappers; fully config-driven via `_MODEL_CLASS_MAP` — switching model/size requires only changing `TrainCfg.model_name` in `cfg.py`.
-- [x] `test_docker.py`: all `test_*` functions implemented (`test_dataset`, `test_models`, `test_challenge_metrics`, `test_trainer`, `test_entry`); `test_models` covers both `EpochTransformer` and `EpochCRNN`; `test_trainer` uses `_MODEL_CLASS_MAP` (config-driven); `test_entry` uses the official `run_model.py` / `evaluate_model.py` entry points.
-- [x] `post_docker_build.py`: no pretrained models to cache; minimal environment check.
-- [x] Mini training-set subset (`create_mini_dataset.py`): 171 records, ~28 MB (CAISR EDFs only), uploaded to Google Drive; CI workflow downloads via `gdown`.
-- [x] Reduced training-set subset (`create_reduced_dataset.py`): 766 records, ~125 MB (CAISR EDFs only); upload to Google Drive and set `REDUCED_DATASET_GDRIVE_ID` in workflow.
-- [x] `status: alpha` set in `.github/workflows/docker-test.yml` — full CI pipeline active.
-- [x] Strict-test env var (`CINC2026_REVENGER_STRICT_TEST=1`) active in `test_docker.py`; `run_model` has production fallback `(0, 0.5)`.
-- [ ] CI pipeline passes end-to-end (Docker build → dataset download → `docker run` → `test_entry` score printed).
-- [ ] Full training run (100 epochs, monitor val AUROC, save best checkpoint).
+- [x] `team_code.py`: fully config-driven via `_MODEL_CLASS_MAP`; official phase API synced.
+- [x] `test_docker.py`: all `test_*` functions updated for official phase `evaluate_model.py` API.
+- [x] Official baseline synced to official phase commit; `create_labels.py` added.
+- [x] `sync_official.py`: includes all 6 official scripts.
+- [x] Mini training-set subset: 171 records, ~28 MB (CAISR EDFs only), uploaded to Google Drive.
+- [x] Reduced training-set subset: 766 records, ~125 MB (CAISR EDFs only).
+- [x] `status: alpha` set in CI workflow; strict-test env var active.
+- [ ] CI pipeline passes end-to-end (Docker build → dataset download → `docker run` → `test_entry`).
+- [ ] Full official-phase training run with new data.
 - [ ] Submit to the official evaluation system.
 
 ---
@@ -359,21 +356,21 @@ Per-epoch raw EEG (30 s × 200 Hz = 6000 samples)
        └─ → 8 spectral features per epoch
 ```
 
-Optionally add per-epoch ECG HRV and SpO₂ statistics (see Phase 6.3 in the original roadmap).
+Optionally add per-epoch ECG HRV and SpO₂ statistics.
 
 **New feature dimension**: 21 (CAISR) + 8 (spectral) = **29 dims**.  With HRV (+4) and SpO₂ (+3): **36 dims**.
 
 ### Channel selection
 
-S0001 and I0002 use bipolar `C3-M2`.  I0006 uses unipolar `C3` + `M2` → compute bipolar by subtraction.  All three sites have either `C3-M2` or the raw channels to derive it.  Fall back to any available EEG channel for the remaining records.
+S0001 and I0002 use bipolar `C3-M2`.  I0006 uses unipolar `C3` + `M2` → compute bipolar by subtraction.  All three sites have either `C3-M2` or the raw channels to derive it.  Fall back to any available EEG channel.
 
 ### Caching
 
-Spectral features are expensive (Welch PSD per epoch).  Cache to `cache/spectral_features/<record_id>.npy` on first computation.  `FastDataReader.__getitem__` checks the cache first, then appends spectral features to the CAISR vector.
+Spectral features are expensive (Welch PSD per epoch).  Cache to `cache/spectral_features/<record_id>.npy` on first computation; `FastDataReader.__getitem__` checks the cache first.
 
 ### Validation protocol
 
-**Single-factor ablation**: Train `EpochCRNN_M` with (a) baseline 21-dim CAISR features only, (b) 21-dim + spectral features.  Keep all other hyperparameters identical.  Compare val AUROC.  Only proceed if (b) > (a).
+**Single-factor ablation**: Train `EpochCRNN_M` with (a) baseline 21-dim CAISR features only, (b) 21-dim + spectral features.  Keep all other hyperparameters identical.  Compare val AUROC and per-site AUROC.  Only proceed if (b) > (a).
 
 ---
 
@@ -383,7 +380,7 @@ Add per-night summary statistics as a separate feature branch, fused with the ep
 
 ### Motivation
 
-Clinical sleep reports summarize nights into single-number metrics (total N3 time, AHI, arousal index, etc.).  These aggregates are the features a sleep physician would use to assess a patient.  They are complementary to the epoch-level sequence — the sequence model sees fine-grained temporal patterns, while night-level aggregates provide explicit clinical summaries.
+Clinical sleep reports summarize nights into single-number metrics (total N3 time, AHI, arousal index, etc.).  These aggregates are the features a sleep physician would use.  They are complementary to the epoch-level sequence — the sequence model sees fine-grained temporal patterns, while night-level aggregates provide explicit clinical summaries.
 
 ### Features (all computable from CAISR annotations)
 
@@ -426,40 +423,43 @@ Epoch features (B, T, 21)                    Night features (B, 12)
 
 ## Phase 10 — Calibration & Training Robustness 🔜
 
-### 10.1 Prevalence-shift calibration
+### 10.1 Official Phase Metric Alignment
 
-The training set is balanced (~50% CI positive) but the hidden validation/test sets reflect real-world prevalence (~5–15%).  This creates systematic miscalibration.
+The official phase uses **age-conditioned AUROC** for final ranking.  This metric compares only age-matched positive/negative pairs — penalising models that simply learn "older = CI".  Our current trainer monitors plain AUROC; adding age-binned AUROC monitoring will help detect whether the model is learning age-invariant features.
 
-Approaches (evaluate on val set; pick the best):
-- **Temperature scaling**: learn a single scalar temperature parameter on the val set after training.
+### 10.2 Prevalence-shift calibration
+
+Training is balanced (~50% CI positive) but test reflects real-world prevalence (~5–15%).  Evaluate:
+- **Temperature scaling**: learn a single temperature on the val set after training.
 - **Platt scaling**: fit a logistic regression on val-set logits.
 - **pos_weight tuning**: train with `BCEWithLogitsLoss(pos_weight=w)` for w ∈ {2, 4, 8, 16}.
-- **Threshold optimization**: find the optimal binary threshold on val set (not only 0.5).
 
-### 10.2 Cross-site robustness
+### 10.3 Cross-site robustness
 
 - **StratifiedGroupKFold** (by SiteID × label): ensures each validation fold contains proportional representation from all three sites.
-- **Per-site batch normalization** (or domain-adversarial training) if per-site AUROC shows systematic gaps.
+- **Domain-adversarial training**: add a site classifier head with gradient reversal to the pooled representation.
 
-### 10.3 Ensemble
+### 10.4 Ensemble
 
-After identifying top-2 model architectures, ensemble their probability outputs:
+After identifying top-2 model configurations, ensemble their probability outputs:
 ```python
 final_prob = α · prob_model_a + (1-α) · prob_model_b
 ```
-Optimise α on the validation set.  Even a simple average (α=0.5) usually helps.
+Optimise α on the validation set.  Even a simple average (α=0.5) usually helps with small-data generalisation.
 
 ---
 
 ## Updated Immediate Next Steps
 
-1. **Spectral feature extraction pipeline** (Phase 8): implement per-epoch EEG bandpower computation with caching; test with single-factor ablation against the binary-arousal baseline (`EpochCRNN_M`, 21-dim vs 29-dim).
-2. **Night-level features** (Phase 9): compute night-level aggregates from CAISR annotations; add the small MLP branch; compare val AUROC with and without night-level features.
-3. **Calibration sweep** (Phase 10.1): test temperature scaling, Platt scaling, and pos_weight ∈ {2, 4, 8} on the current best model; pick the best calibration method.
-4. **Full training run** with the winning feature configuration (100 epochs, monitor val AUROC per site).
-5. **Phase 4**: Implement ECG-HRV MLP fallback for the 14 CAISR-missing records (replace current `(0, 0.5)` constant).
-6. **Phase 5**: Validation analysis — ROC curves, per-site AUROC, attention maps.
-7. **Docker submission**: Set `status: final`, ensure CI passes, submit.
+1. **Download official phase data** and verify CAISR annotations are present for all new records.
+2. **Regenerate train/val split** with new labels (1–6 year window) and new record counts.
+3. **Spectral feature extraction pipeline** (Phase 8): implement per-epoch EEG bandpower computation with caching; single-factor ablation against baseline.
+4. **Night-level features** (Phase 9): compute night-level aggregates from CAISR; add MLP branch; compare val AUROC.
+5. **Calibration sweep** (Phase 10): test temperature scaling, Platt scaling, and pos_weight on the current best model.
+6. **Evaluate Philosopher's Stone** as a frozen feature extractor for per-epoch embeddings.
+7. **Full training run** with the winning configuration; monitor per-site and per-age-bin AUROC.
+8. **Phase 4**: Implement ECG-HRV MLP fallback for CAISR-missing records.
+9. **Docker submission**: ensure CI passes; submit to official evaluation system.
 
 ---
 
@@ -475,23 +475,52 @@ Items with ⚠️ were tested in submission 5 and found harmful — they should 
 | Current | What is lost | Better representation |
 |---|---|---|
 | `arousal_fraction` (scalar mean of binary `arousal_caisr`) | Arousal burst pattern within epoch | ⚠️ Using `caisr_prob_arous` mean/std/max instead was tested in submission 5 and dropped AUROC from 0.555 → 0.448. If retrying: test mean-only first (single-factor), skip std/max. |
-| `resp_OA/CA/MA/HY` fractions (4 scalars) | Cluster vs spread of events | Add fraction of each class AND count per epoch (absolute burden, not just density) → or add variance of inter-event intervals |
+| `resp_OA/CA/MA/HY` fractions (4 scalars) | Cluster vs spread of events | Add fraction of each class AND count per epoch (absolute burden, not just density) |
 | `limb_iso/PLM` fractions (2 scalars) | PLM periodicity / clustering | Add run-length features: max consecutive PLM seconds, count of isolated bursts |
-| `stage_caisr` one-hot (6 dims) | Epoch-to-epoch transitions | Add 5-epoch rolling transition entropy (applied at dataset level, not epoch level) |
+| `stage_caisr` one-hot (6 dims) | Epoch-to-epoch transitions | Add 5-epoch rolling transition entropy |
 
 Currently unused CAISR channels (see `data_reader.py` issue 7):
-- `caisr_prob_no-ar` (idx 1, 2 Hz) and `caisr_prob_arous` (idx 2, 2 Hz) — sub-epoch arousal probability.  ⚠️ **Mean/std/max of this channel was the key change in submission 5 and made performance worse.**  If revisiting, try using only the *mean* of `caisr_prob_arous` (i.e. replacing the binary `arousal_fraction` with a soft version of the same quantity, without adding std/max), tested as a single-factor ablation.
+- `caisr_prob_no-ar` (idx 1, 2 Hz) and `caisr_prob_arous` (idx 2, 2 Hz).  ⚠️ **Mean/std/max of this channel was the key change in submission 5 and made performance worse.**  If revisiting, try using only the *mean* of `caisr_prob_arous` (a soft version of `arousal_fraction`), tested as a single-factor ablation.
 
 ### Remove time-position encoding for CRNN  ⚠️ see Unofficial Phase Feedback §1
 
-Cols [19:21] (sin/cos positional encoding) were designed for the Transformer variant (which is permutation-invariant and needs explicit position info). The CRNN's recurrent backbone already tracks sequence position implicitly. Removing these 2 dims reduces `CAISR_EPOCH_DIM` from 21 → 19 and eliminates spurious signal for the CRNN.  ⚠️ This was bundled into submission 5 and cannot be evaluated independently.  If retrying: test as a single-factor ablation.  Requires:
-1. `const.py`: `CAISR_EPOCH_DIM = 19`
-2. `dataset.py` `build_epoch_features`: drop the `features[:, 19:21] = sin/cos` block
-3. `cfg.py` model configs: verify `in_channels=21` is read from `CAISR_EPOCH_DIM` (it is via `BaseCfg.caisr_epoch_dim`)
-4. Re-train and compare AUROC vs 21-dim baseline
+Cols [19:21] (sin/cos positional encoding) were designed for the Transformer variant.  The CRNN's recurrent backbone already tracks sequence position implicitly.  ⚠️ This was bundled into submission 5 and cannot be evaluated independently.  If retrying: test as a single-factor ablation.
 
 ### Per-record normalization of CAISR features  ⚠️ see Unofficial Phase Feedback §1
 
-`normalize_epoch_features()` added to `dataset.py`; applied in `FastDataReader.__getitem__` and mirrored in `team_code._run_model_impl`. Cols 19-20 (time-position encoding) are skipped. Zero-std columns left unchanged.
+`normalize_epoch_features()` added to `dataset.py`; applied in `FastDataReader.__getitem__` and mirrored in `team_code._run_model_impl`.  ⚠️ Per-record z-score normalization was part of submission 5 and is hypothesised to have destroyed between-site distributional signal.  If retrying, test as a single-factor ablation and monitor per-site AUROC before/after.
 
-⚠️ Per-record z-score normalization was part of submission 5 and is hypothesised to have destroyed between-site distributional signal.  If retrying, test as a single-factor ablation and monitor per-site AUROC before/after.
+---
+
+## Experiment Log
+
+Template for tracking training runs.  Fill in one row per experiment.
+
+| ID | Date | Model | Feat Dim | New Features | lr / bs / epochs | Val AUROC | Δ vs Baseline | Notes |
+|:--:|------|-------|:--------:|-------------|------------------|:---------:|:------------:|-------|
+| B0 | — | `EpochCRNN_M` | 21 | (baseline) | 3e-4 / 16 / 100 | — | — | Locked binary-arousal baseline |
+| E1 | | | | | | | | |
+| E2 | | | | | | | | |
+
+### Ablation protocol
+
+For each new feature / change:
+
+1. Start from the locked baseline config (`EpochCRNN_M`, binary-arousal 21-dim, all hyperparams as sub3).
+2. Make exactly **one** change.
+3. Train for 100 epochs; record val AUROC, per-site AUROC.
+4. If Δ > 0: accept the change and update the baseline.
+5. If Δ ≤ 0: reject, document the hypothesis for why it failed, move on.
+
+---
+
+## Key Dates & Deadlines
+
+| Date | Event |
+|------|-------|
+| 2026-07-31 | Early-bird registration deadline |
+| 2026-08-07 | Wild-card entry deadline |
+| 2026-08-20 | **Official phase final submission deadline** |
+| 2026-09-01 | 4-page preprint submission deadline |
+| 2026-09-20–23 | **CinC 2026, Madrid** |
+| 2026-10-10 | Final 4-page paper deadline |
