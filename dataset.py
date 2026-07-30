@@ -138,10 +138,13 @@ class CINC2026Dataset(Dataset, ReprMixin):
 
         self.reader = CINC2026(db_dir=self.config.db_dir, **reader_kwargs)
 
-        # Only use the labelled training_set for the train/val split.
+        # Only use the labelled training partition(s) for the train/val split.
+        # Official phase: "training_set_small" / "training_set_large";
+        # unofficial phase: "training_set".  All three contain labels.
         # The supplementary_set (I0004, I0007 examples) has no labels and
         # is kept aside for inspection / domain-adaptation experiments.
-        self._labelled_df = self.reader._df_records[self.reader._df_records["partition"] == "training_set"].copy()
+        _train_parts = {"training_set", "training_set_small", "training_set_large"}
+        self._labelled_df = self.reader._df_records[self.reader._df_records["partition"].isin(_train_parts)].copy()
 
         self.records = self._train_test_split()
         self.fdr = FastDataReader(self.reader, self.records, self.config)

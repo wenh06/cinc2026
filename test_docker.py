@@ -256,8 +256,13 @@ def test_entry() -> None:
     echo_write_permission(tmp_output_dir)
 
     db_dir = _resolve_db_dir(str(tmp_data_dir))
-    train_data_dir = db_dir / "training_set"
-    if not train_data_dir.exists():
+    train_data_dir = None
+    for part in ["training_set_small", "training_set_large", "training_set"]:
+        candidate = db_dir / part
+        if candidate.exists():
+            train_data_dir = candidate
+            break
+    if train_data_dir is None:
         train_data_dir = tmp_data_dir
 
     if not (train_data_dir / DEMOGRAPHICS_FILE).exists():

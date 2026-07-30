@@ -232,7 +232,16 @@ def analyze_supplementary_raw(data_dir: Path, out_dir: Path):
                     }
                 )
 
-    physio_train = data_dir / "training_set" / "physiological_data"
+    # Auto-detect training partition (official phase: training_set_small/large)
+    physio_train = None
+    for part in ["training_set_small", "training_set_large", "training_set"]:
+        candidate = data_dir / part / "physiological_data"
+        if candidate.exists():
+            physio_train = candidate
+            break
+    if physio_train is None:
+        print("No training partition found; skipping physiological data scan.", file=sys.stderr)
+        physio_train = Path("/nonexistent")  # empty iterator below
     physio_supp = data_dir / "supplementary_set" / "physiological_data"
 
     for site_dir in sorted(physio_train.iterdir()):
