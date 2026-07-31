@@ -219,6 +219,14 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
 
     model_name = train_config.model_name
     model_config = deepcopy(getattr(ModelCfg, model_name))
+
+    # Bridge TrainCfg.pos_weight → model criterion (BCEWithLogitsLoss).
+    # Official phase CI prevalence is 7.6% — without this, the loss is overwhelmed
+    # by negatives and the model can degenerate into an all-negative predictor.
+    pw = train_config.get("pos_weight", None)
+    if pw is not None:
+        pw_tensor = torch.tensor([float(pw)], device=DEVICE, dtype=torch.float32)
+        model_config.criterion_kw = {"pos_weight": pw_tensor}
     model_cls = _MODEL_CLASS_MAP[model_name]
     model = model_cls(config=model_config)
     model.to(DEVICE)

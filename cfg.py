@@ -95,8 +95,8 @@ TrainCfg.max_seq_len = 768
 TrainCfg.sig_len = 3000  # 30 seconds at 100Hz
 
 # Optimization Configs.
-# 624 train records / batch_size=16 ≈ 39 steps/epoch.
-# 100 epochs × 39 ≈ 3 900 total gradient steps.
+# Official phase: 882 train records / batch_size=16 ≈ 55 steps/epoch.
+# 100 epochs × 55 ≈ 5 500 total gradient steps.
 TrainCfg.n_epochs = 100
 TrainCfg.optimizer = "adamw_amsgrad"
 # weight_decay: BaseTrainer._setup_optimizer reads get_kwargs(AdamW) which uses the
@@ -118,13 +118,14 @@ TrainCfg.grad_clip = 1.0  # gradient clipping max norm (0 to disable)
 # and should only be wired in if a raw-signal model branch is added in the future.
 #
 # label_smoothing: smooths targets {0,1} → {ε/2, 1-ε/2} to discourage over-confident
-# predictions and improve calibration when test prevalence differs from training.
-TrainCfg.label_smoothing = 0.05
+# predictions.  Set to 0 for the official phase — at 7.6% prevalence label smoothing
+# would dilute the already-rare positive signal and hurt recall on the minority class.
+TrainCfg.label_smoothing = 0.0
 
-# pos_weight: BCEWithLogitsLoss pos_weight.
-# Hidden test set appears to have ~6% positive prevalence vs 50% in training.
-# Set to None to disable (balanced training, currently preferred for stability).
-TrainCfg.pos_weight = None  # e.g. 5.0 to upweight positives
+# pos_weight: BCEWithLogitsLoss pos_weight for the minority (CI-positive) class.
+# Official phase prevalence is 7.6% → positive:negative ≈ 1:12, so we up-weight
+# positives by ~12× to keep the loss from being dominated by the negative class.
+TrainCfg.pos_weight = 12.16  # ≈ (1-0.076)/0.076
 
 # The binary-arousal feature set used in unofficial submissions 1-4 did not use
 # per-record normalization, so we
