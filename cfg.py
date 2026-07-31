@@ -72,8 +72,11 @@ TrainCfg.learning_rate = TrainCfg.lr
 # db_dir must be set at training time (e.g. via command-line argument)
 TrainCfg.db_dir = None
 
-# Monitor metric for model selection and early stopping
-TrainCfg.monitor = "auroc"
+# Monitor metric for model selection and early stopping.
+# Official phase primary metric: age-conditioned AUROC ("auroc_age_cond"),
+# computed over positive-negative pairs within ±2 years of age; falls back to
+# plain AUROC when no valid age-matched pair exists on the evaluation split.
+TrainCfg.monitor = "auroc_age_cond"
 
 # Misc training flags
 TrainCfg.debug = False

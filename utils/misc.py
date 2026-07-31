@@ -34,6 +34,7 @@ __all__ = [
     "to_dtype",
     "remove_spikes_naive",
     "is_stdtypes",
+    "age_conditioned_auroc",
 ]
 
 
@@ -420,3 +421,54 @@ def is_stdtypes(x: Any) -> bool:
     )
     # fmt: on
     return isinstance(x, builtins)
+
+
+def age_conditioned_auroc(
+    probs: np.ndarray,
+    labels: np.ndarray,
+    ages: np.ndarray,
+    age_tolerance: float = 2.0,
+) -> float:
+    """Official primary metric for CinC 2026: AUROC over positive-negative
+    pairs whose ages differ by at most ``age_tolerance`` years.
+
+    Computes the Mann-Whitney statistic restricted to age-matched pairs
+    ``(|age_pos - age_neg| <= tolerance)``, i.e. a prediction is only compared
+    against negatives from a similar age window.  Returns chance level (0.5)
+    when only one class is present or no valid age-matched pair exists.
+
+    Parameters
+    ----------
+    probs : np.ndarray
+        Predicted CI probabilities, shape ``(N,)``.
+    labels : np.ndarray
+        Binary labels, shape ``(N,)``.
+    ages : np.ndarray
+        Patient ages in years, shape ``(N,)``.
+    age_tolerance : float, default 2.0
+        Maximum age difference (years) for a positive-negative pair to count.
+    """
+    probs = np.asarray(probs, dtype=np.float64)
+    labels = np.asarray(labels)
+    ages = np.asarray(ages, dtype=np.float64)
+
+    pos_idx = np.where(labels == 1)[0]
+    neg_idx = np.where(labels == 0)[0]
+    if len(pos_idx) == 0 or len(neg_idx) == 0:
+        return 0.5
+
+    n_agree = 0.0
+    n_pairs = 0
+    for i in pos_idx:
+        age_diff = np.abs(ages[neg_idx] - ages[i])
+        valid = neg_idx[age_diff <= age_tolerance]
+        if len(valid) == 0:
+            continue
+        p_pos = probs[i]
+        p_neg = probs[valid]
+        n_agree += float((p_pos > p_neg).sum()) + 0.5 * float((p_pos == p_neg).sum())
+        n_pairs += len(valid)
+
+    if n_pairs == 0:
+        return 0.5
+    return float(n_agree / n_pairs)

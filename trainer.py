@@ -12,7 +12,9 @@ Key design decisions vs the generic BaseTrainer
 - ``collate_fn`` from ``dataset`` handles variable-length padding.
 - Gradient clipping (``train_config.grad_clip``) is applied after each
   backward pass for Transformer numerical stability.
-- Primary evaluation metric: AUROC (``train_config.monitor = "auroc"``).
+- Primary evaluation metric: AUROC (``train_config.monitor = "auroc"``);
+  official phase primary metric is the age-conditioned AUROC
+  (``"auroc_age_cond"``), computed in :meth:`evaluate`.
 - Per-site AUROC breakdown (S0001 / I0002 / I0006) is logged every epoch
   for domain-shift monitoring.
 """
@@ -40,6 +42,7 @@ from tqdm.auto import tqdm
 from cfg import ModelCfg, TrainCfg
 from dataset import CINC2026Dataset, collate_fn
 from models import EpochTransformer
+from utils.misc import age_conditioned_auroc
 
 __all__ = ["CINC2026Trainer"]
 
@@ -394,9 +397,11 @@ class CINC2026Trainer(BaseTrainer):
     def evaluate(self, data_loader: DataLoader) -> Dict[str, float]:
         """Evaluate the model and return a metrics dict.
 
-        Primary metric is ``"auroc"`` (area under the ROC curve).  Additional
-        metrics include ``"auprc"`` and per-site AUROC values when site IDs
-        are present in the batch.
+        Primary metric is ``"auroc"`` (area under the ROC curve) with
+        ``"auroc_age_cond"`` — the official age-conditioned AUROC over
+        positive-negative pairs within ±2 years of age — computed alongside.
+        Additional metrics include ``"auprc"`` and per-site AUROC values when
+        site IDs are present in the batch.
 
         Parameters
         ----------
@@ -406,12 +411,13 @@ class CINC2026Trainer(BaseTrainer):
         Returns
         -------
         dict
-            ``{"auroc": float, "auprc": float, "auroc_<site>": float, ...}``
+            ``{"auroc": float, "auprc": float, "auroc_age_cond": float, "auroc_<site>": float, ...}``
         """
         self.model.eval()
 
         all_probs: List[float] = []
         all_labels: List[int] = []
+        all_ages: List[float] = []
         all_site_ids: List[str] = []
         all_record_ids: List[str] = []
 
@@ -436,6 +442,8 @@ class CINC2026Trainer(BaseTrainer):
 
                 all_probs.extend(outputs.ci_prob[:, 1].tolist())
                 all_labels.extend(labels.tolist())
+                # demographics[:, 0] is Age normalised by /100 (FastDataReader)
+                all_ages.extend((batch["demographics"][:, 0].cpu().numpy() * 100.0).tolist())
                 all_site_ids.extend(site_ids)
                 all_record_ids.extend(record_ids)
 
@@ -443,6 +451,7 @@ class CINC2026Trainer(BaseTrainer):
 
         probs_arr = np.clip(np.nan_to_num(np.array(all_probs), nan=0.5), 0.0, 1.0)
         labels_arr = np.array(all_labels)
+        ages_arr = np.array(all_ages)
 
         if len(np.unique(labels_arr)) < 2:
             self.log_manager.log_message(
@@ -455,6 +464,18 @@ class CINC2026Trainer(BaseTrainer):
             auroc = float(roc_auc_score(labels_arr, probs_arr))
             auprc = float(average_precision_score(labels_arr, probs_arr))
         metrics: Dict[str, float] = {"auroc": auroc, "auprc": auprc}
+
+        # Official primary metric: age-conditioned AUROC (positive-negative
+        # pairs within ±2 years of age only).  Falls back to plain AUROC when
+        # no valid age-matched pair exists on this split.
+        auroc_age_cond = age_conditioned_auroc(probs_arr, labels_arr, ages_arr, age_tolerance=2.0)
+        if auroc_age_cond == 0.5 and auroc != 0.5:
+            self.log_manager.log_message(
+                "No valid age-matched positive-negative pairs; age-conditioned AUROC falls back to plain AUROC.",
+                level=logging.WARNING,
+            )
+            auroc_age_cond = auroc
+        metrics["auroc_age_cond"] = auroc_age_cond
 
         # Per-site AUROC — requires at least two classes present per site
         if all_site_ids:
