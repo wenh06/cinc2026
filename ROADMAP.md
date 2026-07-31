@@ -12,13 +12,17 @@
 |------|:---------------:|:--------------:|
 | Training records (total) | 780 | 1,103 (small set) |
 | Records with CAISR | 766 (14 missing: 8 I0006, 6 S0001) | 1,090 (13 missing: S0001:10, I0002:1, I0006:2) |
-| CI positive rate (training) | ~50% (balanced) | prevalence-matched to large set |
+| CI positive (training) | 392 / 780 (50.3%) — artificially balanced | 84 / 1,103 (7.6%) — prevalence-matched |
 | Estimated CI rate (hidden test) | ~6% (inferred from AUPRC) | ~5–15% (real-world) |
+| Age (mean ± std, range) | 70.4 ± 8.3, [50, 89] | 62.0 ± 8.5, [50, 88] |
+| Sex (M / F) | 471 / 309 (60% / 40%) | 585 / 518 (53% / 47%) |
 | Site distribution | S0001: 572 (73%), I0006: 154 (20%), I0002: 54 (7%) | S0001: 857, I0006: 192, I0002: 54 |
 | CI time window | 3–7 years post-PSG | **1–6 years** post-PSG |
 | Primary metric | AUROC | **Age-conditioned AUROC** |
 | Secondary metric | AUPRC, Accuracy, F1 | Prevalence-based reward, AUPRC |
 | Local val size (80/20 split) | ~156 samples | ~220 samples |
+
+> **Dataset continuity**: Only 116 records (BidsFolder IDs) are shared between the unofficial and official training sets — 987 records are new, 664 were removed.  The official phase is effectively a fresh dataset, not an expansion.  On the 116 shared records, CI labels, Age, and Sex are **100% consistent** (only 3 records show minor age deltas of ±1–2 years, likely data corrections).  The CI rate change (50% → 7.6%) is therefore entirely driven by dataset re-composition — adding 987 younger, predominantly CI-negative records and removing 664 older, CI-heavy records — not by label redefinition.  Contributing factors: (1) prevalence-matching to the real population instead of artificial balancing, (2) a narrower CI time window (1–6 years post-PSG instead of 3–7), and (3) a younger average age (62 vs 70).
 
 ---
 
@@ -322,7 +326,7 @@ If the augmented-feature approach shows headroom, a full end-to-end model can be
 - [x] Reduced training-set subset: 766 records, ~125 MB (CAISR EDFs only).
 - [x] `status: alpha` set in CI workflow; strict-test env var active.
 - [x] Official phase data layout support: `data_reader.py` auto-detects `training_set_small` / `training_set_large` / `training_set` partitions; `dataset.py` partition filter broadened accordingly.
-- [ ] Official phase training data downloaded and verified.
+- [x] Official phase training data downloaded and verified.
 - [ ] CI pipeline passes end-to-end (Docker build → dataset download → `docker run` → `test_entry`).
 - [ ] Full official-phase training run with new data.
 - [ ] Submit to the official evaluation system.
