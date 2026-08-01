@@ -26,6 +26,7 @@ import sys
 import textwrap
 from collections import OrderedDict
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -41,7 +42,7 @@ from tqdm.auto import tqdm
 
 from cfg import ModelCfg, TrainCfg
 from dataset import CINC2026Dataset, collate_fn
-from models import EpochTransformer
+from models import EpochCRNN, EpochTransformer
 from utils.misc import age_conditioned_auroc
 
 __all__ = ["CINC2026Trainer"]
@@ -192,6 +193,10 @@ class CINC2026Trainer(BaseTrainer):
         OrderedDict
             State dict of the best model.
         """
+        # lazy=True defers DataLoader construction; build them now
+        if self.train_loader is None:
+            self._setup_dataloaders()
+
         self._setup_optimizer()
         self._setup_scheduler()
         self._setup_criterion()
@@ -570,17 +575,83 @@ def get_args(**kwargs: Any) -> CFG:
         dest="keep_checkpoint_max",
     )
     parser.add_argument("--debug", type=str2bool, default=False, dest="debug")
+    parser.add_argument(
+        "-m",
+        "--model-dir",
+        type=str,
+        default=None,
+        dest="model_dir",
+        help="directory to save the final model (default: saved_models/)",
+    )
+    parser.add_argument(
+        "-w",
+        "--working-dir",
+        type=str,
+        default=None,
+        dest="working_dir",
+        help="working directory for logs and checkpoints (default: auto-generated under model_dir)",
+    )
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default=TrainCfg.model_name,
+        dest="model_name",
+        help="model config name from ModelCfg, e.g. epoch_crnn_M, epoch_transformer_M",
+    )
     args = vars(parser.parse_args())
     cfg.update(args)
     return CFG(cfg)
 
 
+# ---------------------------------------------------------------------------
+# Model lookup
+# ---------------------------------------------------------------------------
+
+_MODEL_CLASS_MAP = {
+    "epoch_transformer": EpochTransformer,
+    "epoch_crnn": EpochCRNN,
+}
+
+_MODEL_CONFIG_MAP = {}
+for _name in dir(ModelCfg):
+    if _name.startswith("epoch_transformer") or _name.startswith("epoch_crnn"):
+        _MODEL_CONFIG_MAP[_name] = getattr(ModelCfg, _name)
+
+# ---------------------------------------------------------------------------
+
+
 if __name__ == "__main__":
     train_config = get_args(**TrainCfg)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model_config = deepcopy(ModelCfg.epoch_transformer)
-    model = EpochTransformer(config=model_config)
+    # Resolve model directory
+    if train_config.get("model_dir", None) is not None:
+        train_config.model_dir = Path(train_config.model_dir)
+    else:
+        train_config.model_dir = Path("saved_models")
+    train_config.model_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve working directory
+    if train_config.get("working_dir", None) is not None:
+        train_config.working_dir = Path(train_config.working_dir)
+    else:
+        train_config.working_dir = train_config.model_dir / "working_dir"
+    train_config.working_dir.mkdir(parents=True, exist_ok=True)
+
+    train_config.checkpoints = train_config.working_dir / "checkpoints"
+    train_config.log_dir = train_config.working_dir / "log"
+
+    # Resolve model
+    model_name = train_config.get("model_name", "epoch_crnn_M")
+    # Determine model family: pick the first match in _MODEL_CLASS_MAP by prefix
+    model_family = next((prefix for prefix in _MODEL_CLASS_MAP if model_name.startswith(prefix)), "epoch_transformer")
+    model_cls = _MODEL_CLASS_MAP.get(model_family, EpochTransformer)
+    model_config = deepcopy(_MODEL_CONFIG_MAP.get(model_name, ModelCfg.epoch_crnn))
+    print(
+        f"Model: {model_name} ({model_cls.__name__}), {sum(p.numel() for p in model_cls(config=model_config).parameters()):,} params"
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model_cls(config=model_config)
 
     if torch.cuda.device_count() > 1:
         model = DP(model)
