@@ -273,6 +273,18 @@ class EpochCRNN(ECG_CRNN):
             self.age_adv_lambda = float(age_adv_cfg.get("lambda_", 1.0))
             self.age_adv_position = str(age_adv_cfg.get("position", "before_film"))
 
+        # ── O4: drop the age channel from FiLM demographics ─────────────────────
+        # Config key: no_age (bool, False).  When enabled, demographics
+        # [age/100, sex, bmi/50] become [0, sex, bmi/50] in forward — a constant
+        # channel carries no information, so the FiLM modulator learns a fixed
+        # per-(sex,bmi) modulation and the model cannot exploit age as a
+        # between-stratum shortcut (the official metric is age-conditioned
+        # AUROC).  Mutually exclusive with age_adv, whose regression target is
+        # the age channel.
+        self.no_age = bool(self.config.get("no_age", False))
+        if self.no_age and self.age_adv is not None:
+            raise ValueError("no_age and age_adv are mutually exclusive: age_adv needs the age channel")
+
     # ─── Forward pass ────────────────────────────────────────────────────────
 
     def forward(self, input_tensors: Dict[str, torch.Tensor]) -> Dict[str, Union[torch.Tensor, None]]:
@@ -284,6 +296,10 @@ class EpochCRNN(ECG_CRNN):
         # (B, T, caisr_dim) → (B, caisr_dim, T) for Conv1d backbone
         x = input_tensors["epoch_features"].to(self.device).to(self.dtype).transpose(1, 2)
         demographics = input_tensors["demographics"].to(self.device).to(self.dtype)
+        if self.no_age:
+            # O4: constant age channel → informationally equivalent to removing
+            # it; the FiLM modulator sees only (0, sex, bmi/50).
+            demographics = torch.cat([torch.zeros_like(demographics[:, :1]), demographics[:, 1:]], dim=-1)
 
         # ── Backbone: CNN + BiLSTM (via ECG_CRNN) ────────────────────────────
         features = self.extract_features(x)  # (B, 2·rnn_hidden)

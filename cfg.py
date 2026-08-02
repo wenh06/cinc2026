@@ -173,6 +173,17 @@ TrainCfg.night_features = CFG(
     dropouts=0.1,
 )
 
+# O4 (2026-08-03): drop the age channel from the FiLM demographic conditioning
+# (demographics [age/100, sex, bmi/50] → [0, sex, bmi/50]).  Rationale: the
+# official metric is the age-conditioned AUROC — age is constant within each
+# stratum, so the age input can only power between-stratum shortcuts and can
+# never help within-stratum ranking.  Zeroing it is informationally equivalent
+# to removing it (a constant channel), and forces the model to rank on sleep
+# features alone.  Age-adversarial training (O1) failed; this is the cheap
+# direct test of the same hypothesis.  EpochCRNN only; mutually exclusive
+# with age_adv (which needs the age channel as its regression target).
+TrainCfg.no_age = False
+
 # Callbacks & Logging
 TrainCfg.log_step = 20
 TrainCfg.keep_checkpoint_max = 5
@@ -246,6 +257,7 @@ def _make_epoch_crnn(cnn_name: str, lstm_hidden: list, clf_hidden: list) -> CFG:
     cfg.dem_encoder = CFG(enable=True, input_dim=3, hidden_dim=64, mode="film")
     cfg.age_adv = deepcopy(TrainCfg.age_adv)  # disabled by default; toggle at train time
     cfg.night_features = deepcopy(TrainCfg.night_features)  # disabled by default; toggle at train time
+    cfg.no_age = deepcopy(TrainCfg.no_age)  # disabled by default; toggle at train time
     # Select backbone
     cfg.cnn.name = cnn_name
     # Override LSTM hidden sizes for this preset

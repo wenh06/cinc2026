@@ -638,6 +638,16 @@ def get_args(**kwargs: Any) -> CFG:
         help="enable the night-level aggregation feature branch (Phase 9 / P1); "
         "EpochCRNN models only, ignored by EpochTransformer",
     )
+    # ── O4: drop the age channel from FiLM demographics ───────────────────────
+    parser.add_argument(
+        "--no-age",
+        action="store_true",
+        default=False,
+        dest="no_age",
+        help="zero the age channel in the FiLM demographic conditioning "
+        "(age-conditioned AUROC cannot be helped by age — constant within "
+        "stratum); EpochCRNN models only, mutually exclusive with --age-adv",
+    )
     args = vars(parser.parse_args())
     cfg.update(args)
     return CFG(cfg)
@@ -710,6 +720,11 @@ if __name__ == "__main__":
     model_config.night_features = night_cfg
     # write back so the checkpoint's train_config mirrors what was actually trained
     train_config.night_features = night_cfg
+    # Bridge TrainCfg.no_age → model config (O4: drop the age channel from FiLM).
+    no_age = bool(train_config.get("no_age", False))
+    model_config.no_age = no_age
+    # write back so the checkpoint's train_config mirrors what was actually trained
+    train_config.no_age = no_age
     print(
         f"Model: {model_name} ({model_cls.__name__}), {sum(p.numel() for p in model_cls(config=model_config).parameters()):,} params"
     )

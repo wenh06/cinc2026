@@ -237,6 +237,8 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
     night_cfg = train_config.get("night_features", None)
     if night_cfg is not None:
         model_config.night_features = deepcopy(night_cfg)
+    # Bridge TrainCfg.no_age → model config (O4: drop the age channel from FiLM)
+    model_config.no_age = bool(train_config.get("no_age", False))
     model_cls = _MODEL_CLASS_MAP[model_name]
     model = model_cls(config=model_config)
     model.to(DEVICE)
