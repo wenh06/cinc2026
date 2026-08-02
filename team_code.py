@@ -227,6 +227,11 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
     if pw is not None:
         pw_tensor = torch.tensor([float(pw)], device=DEVICE, dtype=torch.float32)
         model_config.criterion_kw = {"pos_weight": pw_tensor}
+
+    # Bridge TrainCfg.age_adv → model config (age-adversarial branch toggle)
+    age_adv_cfg = train_config.get("age_adv", None)
+    if age_adv_cfg is not None:
+        model_config.age_adv = deepcopy(age_adv_cfg)
     model_cls = _MODEL_CLASS_MAP[model_name]
     model = model_cls(config=model_config)
     model.to(DEVICE)
@@ -238,9 +243,14 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
         device=DEVICE,
         lazy=False,
     )
-    trainer.train()
+    best_state_dict = trainer.train()
 
-    # Save the final model checkpoint for load_model()
+    # Save the best model checkpoint for load_model().  trainer.train()
+    # returns the state dict of the best epoch (per `monitor`); load it into
+    # the model so that `model.save()` (which serialises the *current* weights)
+    # writes the best-epoch weights, not the final-epoch ones.
+    if best_state_dict:
+        model.load_state_dict(best_state_dict)
     save_path = Path(model_folder) / FINAL_MODEL_NAME
     model.save(str(save_path), train_config=train_config)
 

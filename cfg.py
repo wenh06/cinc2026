@@ -136,6 +136,24 @@ TrainCfg.pos_weight = 12.16  # ≈ (1-0.076)/0.076
 # and sync_feature_config(...) will update skip_cols automatically.
 TrainCfg.normalize = None
 
+# Age-adversarial head (gradient reversal) — P0 age-dependence mitigation.
+# When enabled, the pooled backbone representation is fed through a gradient-
+# reversal layer into an age-regression head; the reversed gradient forces the
+# backbone to become age-invariant, leaving FiLM as the only explicit age
+# channel.  Keys mirror the model config (see models/epoch_crnn.py):
+#   enable      (bool,  False) — toggle the branch
+#   alpha       (float, 0.5)   — GRL coefficient
+#   lambda_     (float, 1.0)   — weight of the age MSE in the total loss
+#   hidden_dim  (int,   32)    — age-head MLP width
+#   position    ("before_film" | "after_film")
+TrainCfg.age_adv = CFG(
+    enable=False,
+    alpha=0.5,
+    lambda_=1.0,
+    hidden_dim=32,
+    position="before_film",
+)
+
 # Callbacks & Logging
 TrainCfg.log_step = 20
 TrainCfg.keep_checkpoint_max = 5
@@ -207,6 +225,7 @@ def _make_epoch_crnn(cnn_name: str, lstm_hidden: list, clf_hidden: list) -> CFG:
     cfg.demographic_dim = 3
     cfg.criterion = "BCEWithLogitsLoss"
     cfg.dem_encoder = CFG(enable=True, input_dim=3, hidden_dim=64, mode="film")
+    cfg.age_adv = deepcopy(TrainCfg.age_adv)  # disabled by default; toggle at train time
     # Select backbone
     cfg.cnn.name = cnn_name
     # Override LSTM hidden sizes for this preset

@@ -315,7 +315,7 @@ class CINC2026Trainer(BaseTrainer):
                     f"BestModel_{self.save_prefix}{self.best_epoch}_{get_date_str()}_metric_{monitor_val:.2f}.pth.tar"
                 )
             save_path = self.train_config.model_dir / save_filename
-            self.save_checkpoint(str(save_path))
+            self.save_checkpoint(str(save_path), state_dict=self.best_state_dict)
             self.log_manager.log_message(f"best model saved at {save_path}")
         elif self.train_config.monitor is None:
             self.log_manager.log_message("no monitor set; saving last model as best model")
@@ -532,11 +532,16 @@ class CINC2026Trainer(BaseTrainer):
         # CAISR feature inputs require no signal augmentation.
         self.augmenter_manager = None
 
-    def save_checkpoint(self, path: str) -> None:
-        """Save model + optimizer state to *path*."""
+    def save_checkpoint(self, path: str, state_dict: Optional[Dict] = None) -> None:
+        """Save model + optimizer state to *path*.
+
+        If *state_dict* is ``None``, the current model state is used.
+        """
+        if state_dict is None:
+            state_dict = self._model.state_dict()
         torch.save(
             {
-                "model_state_dict": self._model.state_dict(),
+                "model_state_dict": state_dict,
                 "optimizer_state_dict": self.optimizer.state_dict(),
                 "model_config": self.model_config,
                 "train_config": self.train_config,
@@ -598,6 +603,28 @@ def get_args(**kwargs: Any) -> CFG:
         dest="model_name",
         help="model config name from ModelCfg, e.g. epoch_crnn_M, epoch_transformer_M",
     )
+    # ── Age-adversarial branch (P0 mitigation) ────────────────────────────────
+    parser.add_argument(
+        "--age-adv",
+        action="store_true",
+        default=False,
+        dest="age_adv_enable",
+        help="enable the age-adversarial head (gradient reversal) to reduce age shortcut",
+    )
+    parser.add_argument(
+        "--age-adv-alpha",
+        type=float,
+        default=0.5,
+        dest="age_adv_alpha",
+        help="GRL gradient-reversal coefficient for the age-adversarial head",
+    )
+    parser.add_argument(
+        "--age-adv-lambda",
+        type=float,
+        default=1.0,
+        dest="age_adv_lambda",
+        help="weight of the age MSE in the total loss",
+    )
     args = vars(parser.parse_args())
     cfg.update(args)
     return CFG(cfg)
@@ -646,6 +673,16 @@ if __name__ == "__main__":
     model_family = next((prefix for prefix in _MODEL_CLASS_MAP if model_name.startswith(prefix)), "epoch_transformer")
     model_cls = _MODEL_CLASS_MAP.get(model_family, EpochTransformer)
     model_config = deepcopy(_MODEL_CONFIG_MAP.get(model_name, ModelCfg.epoch_crnn))
+    # Bridge TrainCfg.age_adv → model config (age-adversarial branch toggle).
+    # CLI flags override the config block.
+    age_adv_cfg = deepcopy(
+        train_config.get("age_adv", CFG(enable=False, alpha=0.5, lambda_=1.0, hidden_dim=32, position="before_film"))
+    )
+    if train_config.get("age_adv_enable", False):
+        age_adv_cfg.enable = True
+        age_adv_cfg.alpha = float(train_config.get("age_adv_alpha", age_adv_cfg.alpha))
+        age_adv_cfg.lambda_ = float(train_config.get("age_adv_lambda", age_adv_cfg.lambda_))
+    model_config.age_adv = age_adv_cfg
     print(
         f"Model: {model_name} ({model_cls.__name__}), {sum(p.numel() for p in model_cls(config=model_config).parameters()):,} params"
     )

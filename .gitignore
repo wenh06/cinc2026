@@ -134,6 +134,8 @@ dmypy.json
 
 .vscode/
 
+.claude
+
 working_dir
 tmp
 temp

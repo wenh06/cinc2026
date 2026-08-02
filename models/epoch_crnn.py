@@ -70,7 +70,52 @@ from outputs import CINC2026Outputs
 
 from .building_blocks import DemographicEncoder
 
-__all__ = ["EpochCRNN"]
+__all__ = ["EpochCRNN", "GradientReversalFunction", "AgeAdversarialHead"]
+
+
+class GradientReversalFunction(torch.autograd.Function):
+    """Gradient Reversal Layer (GRL) for domain-adversarial training.
+
+    ``forward`` is the identity; ``backward`` negates the incoming gradient
+    (scaled by ``alpha``) so the upstream features are pushed *away* from
+    predicting the adversarial target.
+    """
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, alpha: float) -> torch.Tensor:
+        ctx.alpha = alpha
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return -ctx.alpha * grad_output, None
+
+
+class AgeAdversarialHead(torch.nn.Module):
+    """Age-regression head with gradient reversal.
+
+    Attached to the pooled backbone representation; forces the backbone
+    features to become age-invariant by minimising the *negated* age-loss
+    gradient, so the main (CI) task can no longer exploit age as a shortcut.
+    """
+
+    def __init__(self, feature_dim: int, hidden_dim: int = 32, alpha: float = 0.5) -> None:
+        super().__init__()
+        self.alpha = alpha
+        self.grl = GradientReversalFunction.apply
+        self.head = MLP(
+            in_channels=feature_dim,
+            out_channels=[hidden_dim, 1],
+            activation="gelu",
+            bias=True,
+            dropouts=0.1,
+            skip_last_activation=True,
+        )
+        self.criterion = torch.nn.MSELoss()
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        features = self.grl(features, self.alpha)
+        return self.head(features)  # (B, 1) raw prediction of (age/100)
 
 
 class EpochCRNN(ECG_CRNN):
@@ -174,6 +219,29 @@ class EpochCRNN(ECG_CRNN):
         # ── Criterion ─────────────────────────────────────────────────────────
         self.criterion = setup_criterion(self.config.criterion, **self.config.get("criterion_kw", {}))
 
+        # ── Age-adversarial head (gradient reversal) ──────────────────────────
+        # Config keys (all optional, defaults shown):
+        #   age_adv.enable      (bool,  False) — toggle the branch
+        #   age_adv.alpha       (float, 0.5)   — GRL gradient-reversal coefficient
+        #   age_adv.lambda_     (float, 1.0)   — weight of the age MSE in the total loss
+        #   age_adv.hidden_dim  (int,   32)    — age-head MLP width
+        #   age_adv.position    ("before_film" | "after_film") — where the head taps
+        #                          the representation.  "before_film" (default)
+        #                          forces the *backbone* to be age-invariant while
+        #                          FiLM remains the only explicit age channel.
+        age_adv_cfg = self.config.get("age_adv", None)
+        self.age_adv: Optional[AgeAdversarialHead] = None
+        self.age_adv_lambda: float = 1.0
+        self.age_adv_position: str = "before_film"
+        if age_adv_cfg is not None and age_adv_cfg.get("enable", False):
+            self.age_adv = AgeAdversarialHead(
+                feature_dim=clf_in,
+                hidden_dim=int(age_adv_cfg.get("hidden_dim", 32)),
+                alpha=float(age_adv_cfg.get("alpha", 0.5)),
+            )
+            self.age_adv_lambda = float(age_adv_cfg.get("lambda_", 1.0))
+            self.age_adv_position = str(age_adv_cfg.get("position", "before_film"))
+
     # ─── Forward pass ────────────────────────────────────────────────────────
 
     def forward(self, input_tensors: Dict[str, torch.Tensor]) -> Dict[str, Union[torch.Tensor, None]]:
@@ -191,10 +259,24 @@ class EpochCRNN(ECG_CRNN):
         features = self.pool(features)
         features = self.pool_rearrange(features)
 
+        # ── Age-adversarial branch (before FiLM) ──────────────────────────────
+        age_loss = None
+        age_pred = None
+        if self.age_adv is not None and self.age_adv_position == "before_film":
+            age_pred = self.age_adv(features)  # (B, 1)
+            age_target = demographics[:, 0:1]  # age/100
+            age_loss = self.age_adv.criterion(age_pred, age_target)
+
         # ── FiLM demographic modulation ───────────────────────────────────────
         if self.dem_encoder is not None:
             scale, shift = self.dem_encoder(demographics)
             features = self.dem_encoder.modulate_features(features, scale, shift)
+
+        # ── Age-adversarial branch (after FiLM) ───────────────────────────────
+        if self.age_adv is not None and self.age_adv_position == "after_film":
+            age_pred = self.age_adv(features)
+            age_target = demographics[:, 0:1]
+            age_loss = self.age_adv.criterion(age_pred, age_target)
 
         # ── Classify (1-logit BCE) ─────────────────────────────────────────────
         ci_logit = self.clf(features).squeeze(-1)  # (B,)
@@ -206,12 +288,16 @@ class EpochCRNN(ECG_CRNN):
         if "labels" in input_tensors:
             labels = input_tensors["labels"].to(self.device).to(self.dtype)
             ci_loss = self.criterion(ci_logit, labels)
+            if age_loss is not None:
+                ci_loss = ci_loss + self.age_adv_lambda * age_loss
 
         return {
             "ci_logits": ci_logit.unsqueeze(-1),  # (B, 1) for CINC2026Outputs
             "ci_prob": ci_prob,  # (B, 2)
             "cognitive_impairment": cognitive_impairment,
-            "ci_loss": ci_loss,
+            "ci_loss": ci_loss,  # total loss (CI BCE + λ·age MSE) when labels present
+            "age_pred": age_pred,  # (B, 1) or None
+            "age_loss": age_loss,  # scalar or None
         }
 
     # ─── Inference ───────────────────────────────────────────────────────────
