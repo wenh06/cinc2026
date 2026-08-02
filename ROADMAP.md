@@ -551,9 +551,9 @@ Features to add (12–15 dims → small MLP → late fusion with epoch-sequence 
 
 **Why second**: 50% training prevalence → 5–15% validation prevalence is a known source of miscalibration.  These changes are low-risk and low-cost:
 
-- [ ] **pos_weight tuning**: sweep `pos_weight ∈ {2, 4, 8, 16}` in `BCEWithLogitsLoss`
-- [ ] **Temperature scaling**: learn a single scalar temperature on val logits post-training
-- [ ] **Platt scaling**: logistic regression on val logits (more expressive than temperature)
+- [x] **pos_weight tuning**: sweep `pos_weight ∈ {2, 4, 8, 16}` in `BCEWithLogitsLoss` → **O3 (2026-08-03): no gain over default 12.16** (best pw=4 ties O0; pw=16 degrades).  Route closed.
+- [x] **Temperature scaling**: learn a single scalar temperature on val logits post-training → implemented in `scripts/calibrate.py` (analysis-only).  **AUROC is rank-invariant to temperature/Platt** — they cannot move the official leaderboard metric; only Brier/ECE.
+- [x] **Platt scaling**: logistic regression on val logits (more expressive than temperature) → same utility; ECE 0.033→0.014, mean_p→prevalence on the pw=2 checkpoint.
 
 ### P3 — Conservative spectral features (Phase 8, reduced scope)
 
@@ -623,9 +623,10 @@ Template for tracking training runs.  Fill in one row per experiment.
 
 | ID | Date | Model | Feat Dim | New Features | lr / bs / epochs | Val AUROC | Age-cond AUROC | Δ vs Baseline | Notes |
 |:--:|------|-------|:--------:|-------------|------------------|:---------:|:--------------:|:------------:|-------|
-| **O0** | 2026-08-01 | `EpochCRNN_M` | 21 | (baseline) | 3e-4 / 16 / 100 | **0.833** | **0.762** | — | Official phase baseline (binary-arousal, 6,600 records, 5,280/1,320 split). Best @ epoch 51 (early stop 71). Per-site: S0001=0.840, I0006=0.786, I0002=0.791. Age gap ~0.069. |
+| **O0** | 2026-08-01 | `EpochCRNN_M` | 21 | (baseline) | 3e-4 / 16 / 100 | **0.833** | **0.762** | — | Official phase baseline (binary-arousal, 6,600 records, 5,280/1,320 split). Best @ epoch 51 (early stop 71). Per-site: S0001=0.840, I0006=0.786, I0002=0.791. Age gap ~0.069. Run B (same config): 0.836/0.769 @ ep58. ⚠️ Saved `official_baseline` checkpoint (Run B, pre-fix) hit the best-state-dict snapshot bug — reloading it reproduces 0.824/0.744, not the CSV's 0.836/0.769; CSV numbers (training-log) remain trustworthy. |
 | **O1** | 2026-08-02 | `EpochCRNN_M` + age-adv | 21 | age-adversarial head (GRL α=0.5, λ=1.0, before FiLM) | 3e-4 / 16 / 100 | 0.816 | 0.735 | −0.027 | ❌ Failed. CSV true best (ep45) still below O0; GRL shoved age signal into FiLM channel — r(age,prob) rose to +0.61, gap 0.106; degrades post-best (0.735 → 0.685 @ ep65, no plateau). (Saved BestModel also hit the best-state-dict snapshot bug.) |
 | **O2** | 2026-08-02 | `EpochCRNN_M` + night-feat | 21 + 15 | night-level aggregation features (15 dims, fixed-divisor norm, late fusion before FiLM) | 3e-4 / 16 / 100 | 0.817 | 0.738 | −0.024 | ❌ Failed. Best @ epoch 21 (early stop 41). Full-night aggregates largely redundant with the epoch-sequence backbone's own summary; per-site only I0006 gained (0.786→0.818), S0001 (0.840→0.818) and I0002 (0.791→0.750) lost. Literature hypotheses (TST/SE/arousal-index negative findings in Yaffe 2011 / Blackwell 2014) correctly predicted weak signal. P1 route closed. |
+| **O3** | 2026-08-03 | `EpochCRNN_M` pw∈{2,4,8,16} | 21 | pos_weight sweep (P2 calibration; default 12.16 = prevalence-matched) | 3e-4 / 16 / 100 | 0.825–0.827 | pw4 0.761 / pw8 0.755 / pw2 0.750 / pw16 0.731 | ≈0 | ❌ No gain over default. Best pw=4 (0.7607 @ ep74, stop 94) ties O0 Run A (0.762, within noise), below Run B (0.769); pw=16 collapses fast (0.731 @ ep17, stop 36). Per-site pw=4: S0001=0.844, I0006=0.783, I0002=0.751. Default 12.16 stays. Temperature/Platt (analysis-only, `scripts/calibrate.py`): AUROC rank-invariant by construction; Platt ECE 0.033→0.014, mean_p→prevalence. P2 route closed. |
 
 ### Ablation protocol
 
