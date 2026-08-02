@@ -29,6 +29,7 @@ __all__ = [
     "AROUSAL_SAMPLES_PER_EPOCH",
     "RESP_SAMPLES_PER_EPOCH",
     "LIMB_SAMPLES_PER_EPOCH",
+    "NIGHT_FEATURE_DIM",
     "get_caisr_feature_dim",
     "get_caisr_time_cols",
     "resolve_feature_pipeline",
@@ -130,6 +131,12 @@ CAISR_PROB_EDF_SCALE = 9.0
 
 # Demographic feature dimension (Age, Sex, BMI)
 DEMOGRAPHIC_DIM = 3
+
+# Night-level aggregation feature dimension (P1, Phase 9) — per-night summary
+# statistics computed from the FULL-night CAISR annotations, independent of the
+# per-epoch feature matrix (which may be cropped to max_seq_len).  The layout is
+# fixed by dataset.NIGHT_FEATURE_NAMES; do not reorder.
+NIGHT_FEATURE_DIM = 15
 
 
 MODEL_CACHE_DIR = str(

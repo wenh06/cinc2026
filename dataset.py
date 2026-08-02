@@ -62,6 +62,7 @@ from const import (  # noqa: F401
     FIXED_DATA_SPLIT_FILE,
     LABEL_CACHE_DIR,
     LIMB_SAMPLES_PER_EPOCH,
+    NIGHT_FEATURE_DIM,
     RESP_SAMPLES_PER_EPOCH,
     STAGE_LABEL_TO_IDX,
     STAGE_ONEHOT_DIM,
@@ -74,7 +75,9 @@ __all__ = [
     "FastDataReader",
     "collate_fn",
     "build_epoch_features",
+    "build_night_features",
     "normalize_epoch_features",
+    "NIGHT_FEATURE_NAMES",
 ]
 
 try:
@@ -299,7 +302,16 @@ class CINC2026Dataset(Dataset, ReprMixin):
 
     @property
     def data_fields(self) -> Set[str]:
-        return {"epoch_features", "demographics", "label", "padding_mask", "n_epochs", "record_id", "site_id"}
+        return {
+            "epoch_features",
+            "demographics",
+            "label",
+            "padding_mask",
+            "n_epochs",
+            "record_id",
+            "site_id",
+            "night_features",
+        }
 
     @property
     def labels(self) -> np.ndarray:
@@ -331,6 +343,9 @@ class FastDataReader(Dataset, ReprMixin):
     ``demographics``   : np.ndarray, shape ``(DEMOGRAPHIC_DIM,)``
     ``label``          : np.int64   (0 = no CI, 1 = CI)
     ``n_epochs``       : np.int64   actual sequence length before padding
+    ``night_features`` : np.ndarray, shape ``(NIGHT_FEATURE_DIM,)``
+        Full-night aggregates from the complete annotation (independent of the
+        epoch matrix, which may be cropped to max_seq_len).
     """
 
     __name__ = "FastDataReader"
@@ -375,6 +390,11 @@ class FastDataReader(Dataset, ReprMixin):
         if norm_cfg and getattr(norm_cfg, "method", "") == "per_record_zscore":
             epoch_features = normalize_epoch_features(epoch_features, norm_cfg)
 
+        # Night-level aggregates over the FULL night (before the crop below —
+        # the epoch matrix may be cropped to max_seq_len, night features must
+        # not be).
+        night_features = build_night_features(ann, dtype=self.dtype)
+
         # Optionally crop to max_seq_len
         max_len = self.config.get("max_seq_len", None)
         n = len(epoch_features)
@@ -397,6 +417,7 @@ class FastDataReader(Dataset, ReprMixin):
             "n_epochs": np.int64(len(epoch_features)),
             "record_id": rec,
             "site_id": str(row.get("SiteID", "")),
+            "night_features": night_features,  # (NIGHT_FEATURE_DIM,)
         }
 
     def _extract_demographics(self, rec: str) -> np.ndarray:
@@ -558,6 +579,175 @@ def build_epoch_features(
     return features[:, :AROUSAL_PROB_STATS_CAISR_EPOCH_DIM_NO_TIME].astype(dtype)
 
 
+# ---------------------------------------------------------------------------
+# Night-level aggregation features (P1, Phase 9)
+# ---------------------------------------------------------------------------
+
+
+NIGHT_FEATURE_NAMES = [
+    "total_sleep_time_h",
+    "sleep_efficiency",
+    "nrem3_pct",
+    "rem_pct",
+    "wake_after_sleep_onset_min",
+    "arousal_index",
+    "ahi",
+    "plmi",
+    "nrem3_latency_min",
+    "rem_latency_min",
+    "stage_transitions_per_h",
+    "first_half_nrem3_pct",
+    "nrem_rem_cycle_count",
+    "mean_cycle_length_min",
+    "n3_decay_slope",
+]
+
+
+def _count_rising_edges(sig: np.ndarray) -> int:
+    """Count rising edges of a binary/discrete 1 Hz (or 2 Hz) event signal.
+
+    A rising edge is a transition from 0 to a positive value at the same
+    sample position, i.e. ``sig[i] > 0`` and ``sig[i-1] == 0`` (with
+    ``sig[-1] == 0`` prepended).  This matches the official baseline's
+    ``count_discrete_events`` pattern (``np.diff(..., prepend=0) == 1``).
+    """
+    return int(np.count_nonzero(np.diff(sig.astype(np.int64), prepend=0) == 1))
+
+
+def build_night_features(
+    ann: Dict[str, np.ndarray],
+    dtype: type = np.float32,
+) -> np.ndarray:
+    """Build the per-night aggregation feature vector from CAISR annotations.
+
+    Unlike :func:`build_epoch_features` (which produces one row per 30 s
+    epoch and may be cropped to ``max_seq_len``), these features summarise
+    the **complete** night — they are computed here from the full annotation
+    dict, never from a cropped epoch matrix.  They carry clinical sleep
+    metrics (TST, efficiency, stage shares, event indices, latencies,
+    transitions, NREM-REM cycles) that a physician would read off the
+    hypnogram.
+
+    All normalisation uses **fixed divisors** (never per-record statistics —
+    per-record z-scoring was found to destroy cross-site signal, see
+    Unofficial Phase Feedback in ROADMAP), so values land mostly in [0, 1]
+    with event indices allowed to reach ~5 in severe OSA.
+
+    Feature order is fixed by :data:`NIGHT_FEATURE_NAMES`; do not reorder
+    (models are built with a matching fixed dim).
+
+    Parameters
+    ----------
+    ann : dict
+        Annotation dict from ``CINC2026.load_ann(rec, ann_type='algorithmic')``.
+    dtype : numpy dtype
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(NIGHT_FEATURE_DIM,)``.  Returns zeros when ``stage_caisr``
+        is absent/empty or when no sleep epochs are present (mirrors
+        :func:`build_epoch_features` returning an empty matrix).
+    """
+    stage = ann.get("stage_caisr", np.array([])).astype(np.int64)
+    n_epochs = len(stage)
+
+    if n_epochs == 0:
+        return np.zeros((NIGHT_FEATURE_DIM,), dtype=dtype)
+
+    sleep = (stage >= 1) & (stage <= 4)  # N3, N2, N1, REM
+    tst_epochs = int(sleep.sum())
+    if tst_epochs == 0:
+        return np.zeros((NIGHT_FEATURE_DIM,), dtype=dtype)
+
+    EPOCH_MIN = 0.5  # 30 s per epoch
+    tst_h = tst_epochs * EPOCH_MIN / 60.0
+    features = np.zeros((NIGHT_FEATURE_DIM,), dtype=np.float64)
+
+    # 0: TST [h] / 12 h cap
+    features[0] = tst_h / 12.0
+    # 1: sleep efficiency = sleep epochs / known epochs (excl. Unavailable=9)
+    features[1] = tst_epochs / float(np.count_nonzero(stage != 9))
+    # 2: N3% ; 3: REM%  (of sleep epochs)
+    features[2] = np.count_nonzero(stage == 1) / tst_epochs
+    features[3] = np.count_nonzero(stage == 4) / tst_epochs
+
+    # Sleep onset = first sleep epoch
+    onset = int(np.argmax(sleep))
+    # 4: WASO [min] = wake epochs after onset × 0.5, / 6 h cap
+    features[4] = np.count_nonzero(stage[onset:] == 5) * EPOCH_MIN / 360.0
+
+    # 5: arousal index — rising edges of the 2 Hz binary arousal signal per TST hour
+    arousal = ann.get("arousal_caisr")
+    if arousal is not None and len(arousal) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
+        features[5] = _count_rising_edges(arousal) / tst_h / 60.0
+
+    # 6: AHI — rising edges of respiratory events OA+CA+MA+HY (codes 1-4) per
+    #    TST hour; code 5 (RERA) is excluded per AASM convention.
+    resp = ann.get("resp_caisr")
+    if resp is not None and len(resp) == n_epochs * RESP_SAMPLES_PER_EPOCH:
+        ahi_events = sum(_count_rising_edges(resp == c) for c in (1, 2, 3, 4))
+        features[6] = ahi_events / tst_h / 60.0
+
+    # 7: PLMI — rising edges of any limb event (isolated=1, periodic=2) per TST hour.
+    #    The `> 0` matters: limb codes can jump 0 → 2 directly, which
+    #    `diff == 1` alone would miss.
+    limb = ann.get("limb_caisr")
+    if limb is not None and len(limb) == n_epochs * LIMB_SAMPLES_PER_EPOCH:
+        features[7] = _count_rising_edges(limb > 0) / tst_h / 60.0
+
+    # 8: N3 latency [min] — from sleep onset to first N3; fill 240 min if none
+    first_n3 = int(np.argmax(stage[onset:] == 1))
+    features[8] = (first_n3 * EPOCH_MIN if stage[onset + first_n3] == 1 else 240.0) / 240.0
+    # 9: REM latency [min]
+    first_rem = int(np.argmax(stage[onset:] == 4))
+    features[9] = (first_rem * EPOCH_MIN if stage[onset + first_rem] == 4 else 240.0) / 240.0
+
+    # 10: stage transitions per hour — adjacent known epochs (≠9) with a stage change
+    valid_adj = (stage[:-1] != 9) & (stage[1:] != 9)
+    transitions = int(np.count_nonzero(valid_adj & (stage[:-1] != stage[1:])))
+    features[10] = transitions / tst_h / 40.0
+
+    # 11: first-half N3% — N3 share of the first half of the SLEEP epochs
+    half = tst_epochs // 2
+    if half > 0:
+        sleep_idx = np.flatnonzero(sleep)[:half]
+        features[11] = np.count_nonzero(stage[sleep_idx] == 1) / half
+
+    # 12-14: NREM-REM cycles — every REM run whose preceding segment contains
+    #        NREM (N1/N2/N3) evidence terminates one cycle.
+    s = stage[onset:]
+    rem_mask = s == 4
+    cycle_count = 0
+    n3_fracs = []
+    if rem_mask.any():
+        d = np.diff(rem_mask.astype(np.int8))
+        run_starts = np.flatnonzero(d == 1) + 1
+        run_ends = np.flatnonzero(d == -1)  # exclusive
+        if rem_mask[0]:
+            run_starts = np.concatenate(([0], run_starts))
+        if rem_mask[-1]:
+            run_ends = np.concatenate((run_ends, [len(s)]))
+        prev_end = -1
+        for run_start, run_end in zip(run_starts, run_ends):
+            seg = s[prev_end + 1 : run_end]
+            if np.any((seg == 1) | (seg == 2) | (seg == 3)):
+                cycle_count += 1
+                n3_fracs.append(float(np.mean(seg == 1)))
+            prev_end = run_end - 1
+    features[12] = cycle_count / 10.0
+    # 13: mean cycle length [min], / 3 h cap
+    if cycle_count > 0:
+        features[13] = tst_epochs * EPOCH_MIN / cycle_count / 180.0
+    # 14: N3 decay slope — OLS slope of per-cycle N3 fraction vs cycle index,
+    #     / 0.3 (normalised slope units), clipped to [-1, 1]
+    if len(n3_fracs) >= 2:
+        slope = float(np.polyfit(np.arange(1, len(n3_fracs) + 1), n3_fracs, 1)[0])
+        features[14] = float(np.clip(slope / 0.3, -1.0, 1.0))
+
+    return features.astype(dtype)
+
+
 def normalize_epoch_features(
     features: np.ndarray,
     cfg=None,
@@ -641,6 +831,7 @@ def collate_fn(
 
     demographics = np.stack([item["demographics"] for item in batch]).astype(np.float32)
     labels = np.array([int(item["label"]) for item in batch], dtype=np.int64)
+    night_features = np.stack([item["night_features"] for item in batch]).astype(np.float32)
 
     return {  # type: ignore
         "epoch_features": torch.from_numpy(epoch_features),  # (B, T, D)
@@ -650,6 +841,7 @@ def collate_fn(
         "n_epochs": torch.tensor(n_epochs_list, dtype=torch.int64),
         "record_id": [item["record_id"] for item in batch],  # list[str]
         "site_id": [item["site_id"] for item in batch],  # list[str]
+        "night_features": torch.from_numpy(night_features),  # (B, NIGHT_FEATURE_DIM)
     }
 
 
@@ -688,4 +880,5 @@ def _merge_batches(
         "n_epochs": torch.tensor(result["n_epochs"], dtype=torch.int64),
         "record_id": result["record_id"],
         "site_id": result["site_id"],
+        "night_features": torch.cat(result["night_features"], dim=0),
     }

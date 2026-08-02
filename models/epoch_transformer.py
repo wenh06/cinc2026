@@ -216,6 +216,7 @@ class EpochTransformer(nn.Module, SizeMixin, CkptMixin):
         epoch_features: Union[np.ndarray, torch.Tensor],
         demographics: Union[np.ndarray, torch.Tensor],
         padding_mask: Optional[Union[np.ndarray, torch.Tensor]] = None,
+        night_features: Optional[Union[np.ndarray, torch.Tensor]] = None,
     ) -> CINC2026Outputs:
         """Run inference on a single sample or a batch.
 
@@ -227,6 +228,9 @@ class EpochTransformer(nn.Module, SizeMixin, CkptMixin):
             Normalised demographic features.
         padding_mask : ndarray or BoolTensor, shape ``(T,)`` or ``(B, T)``, optional
             Padding mask (True = padding position).
+        night_features : ignored
+            Accepted for API compatibility with :meth:`EpochCRNN.inference`
+            (P1 night-level aggregation branch; EpochTransformer does not use it).
 
         Returns
         -------

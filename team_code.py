@@ -58,7 +58,7 @@ import torch
 
 from cfg import ModelCfg, TrainCfg, sync_feature_config
 from const import BINARY_AROUSAL_FEATURE_SET, resolve_feature_pipeline
-from dataset import build_epoch_features, normalize_epoch_features
+from dataset import build_epoch_features, build_night_features, normalize_epoch_features
 from helper_code import (
     DEMOGRAPHICS_FILE,
     HEADERS,
@@ -232,6 +232,11 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
     age_adv_cfg = train_config.get("age_adv", None)
     if age_adv_cfg is not None:
         model_config.age_adv = deepcopy(age_adv_cfg)
+
+    # Bridge TrainCfg.night_features → model config (night-level aggregation branch)
+    night_cfg = train_config.get("night_features", None)
+    if night_cfg is not None:
+        model_config.night_features = deepcopy(night_cfg)
     model_cls = _MODEL_CLASS_MAP[model_name]
     model = model_cls(config=model_config)
     model.to(DEVICE)
@@ -388,12 +393,18 @@ def _run_model_impl(
             print(f"  Empty CAISR features for {bids_folder}; returning fallback.")
         return 0, 0.5
 
+    # Night-level aggregation features (P1, Phase 9) — computed from the full
+    # annotation dict; the model only consumes them when its night branch is
+    # enabled (old O0 checkpoints load and run untouched).
+    night_features = build_night_features(ann)
+
     # ------------------------------------------------------------------
     # 3. Inference
     # ------------------------------------------------------------------
     outputs: CINC2026Outputs = model.inference(
         epoch_features=epoch_features,
         demographics=demographics,
+        night_features=night_features,
     )
 
     binary_output = int(outputs.cognitive_impairment[0])

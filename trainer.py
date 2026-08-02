@@ -446,6 +446,7 @@ class CINC2026Trainer(BaseTrainer):
                     epoch_features=batch["epoch_features"],
                     demographics=batch["demographics"],
                     padding_mask=batch.get("padding_mask"),
+                    night_features=batch.get("night_features"),
                 )
 
                 all_probs.extend(outputs.ci_prob[:, 1].tolist())
@@ -628,6 +629,15 @@ def get_args(**kwargs: Any) -> CFG:
         dest="age_adv_lambda",
         help="weight of the age MSE in the total loss",
     )
+    # ── Night-level aggregation features (P1, Phase 9) ─────────────────────────
+    parser.add_argument(
+        "--night-features",
+        action="store_true",
+        default=False,
+        dest="night_features_enable",
+        help="enable the night-level aggregation feature branch (Phase 9 / P1); "
+        "EpochCRNN models only, ignored by EpochTransformer",
+    )
     args = vars(parser.parse_args())
     cfg.update(args)
     return CFG(cfg)
@@ -688,6 +698,18 @@ if __name__ == "__main__":
     model_config.age_adv = age_adv_cfg
     # write back so the checkpoint's train_config mirrors what was actually trained
     train_config.age_adv = age_adv_cfg
+    # Bridge TrainCfg.night_features → model config (night-level aggregation branch).
+    night_cfg = deepcopy(
+        train_config.get(
+            "night_features",
+            CFG(enable=False, dim=15, hidden_dim=[32, 16], activation="gelu", dropouts=0.1),
+        )
+    )
+    if train_config.get("night_features_enable", False):
+        night_cfg.enable = True
+    model_config.night_features = night_cfg
+    # write back so the checkpoint's train_config mirrors what was actually trained
+    train_config.night_features = night_cfg
     print(
         f"Model: {model_name} ({model_cls.__name__}), {sum(p.numel() for p in model_cls(config=model_config).parameters()):,} params"
     )

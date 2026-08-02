@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from torch_ecg.cfg import CFG
 
-from const import BINARY_AROUSAL_FEATURE_SET, resolve_feature_pipeline
+from const import BINARY_AROUSAL_FEATURE_SET, NIGHT_FEATURE_DIM, resolve_feature_pipeline
 from model_configs import EPOCH_CRNN_CONFIG, EPOCH_TRANSFORMER_BASE
 
 __all__ = [
@@ -154,6 +154,25 @@ TrainCfg.age_adv = CFG(
     position="before_film",
 )
 
+# Night-level aggregation features (P1, Phase 9) — per-night 15-dim summary
+# statistics computed from the FULL-night CAISR annotations (independent of
+# the per-epoch matrix, which is cropped to max_seq_len=768).  Fused into the
+# CRNN backbone output via late concatenation: backbone (B, 2·rnn_hidden)
+# → concat MLP(15→32→16) output (B, 16) → FiLM → clf.  Keys mirror the model
+# config (see models/epoch_crnn.py):
+#   enable      (bool,  False)      — toggle the branch (default OFF = O0 baseline)
+#   dim         (int,   15)         — fixed by dataset.build_night_features
+#   hidden_dim  ([int], [32, 16])   — MLP widths; hidden_dim[-1] = fusion dim
+#   activation  (str,   "gelu")
+#   dropouts    (float, 0.1)
+TrainCfg.night_features = CFG(
+    enable=False,
+    dim=NIGHT_FEATURE_DIM,
+    hidden_dim=[32, 16],
+    activation="gelu",
+    dropouts=0.1,
+)
+
 # Callbacks & Logging
 TrainCfg.log_step = 20
 TrainCfg.keep_checkpoint_max = 5
@@ -226,6 +245,7 @@ def _make_epoch_crnn(cnn_name: str, lstm_hidden: list, clf_hidden: list) -> CFG:
     cfg.criterion = "BCEWithLogitsLoss"
     cfg.dem_encoder = CFG(enable=True, input_dim=3, hidden_dim=64, mode="film")
     cfg.age_adv = deepcopy(TrainCfg.age_adv)  # disabled by default; toggle at train time
+    cfg.night_features = deepcopy(TrainCfg.night_features)  # disabled by default; toggle at train time
     # Select backbone
     cfg.cnn.name = cnn_name
     # Override LSTM hidden sizes for this preset

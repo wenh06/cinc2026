@@ -66,6 +66,7 @@ from torch_ecg.models._nets import MLP
 from torch_ecg.models.loss import setup_criterion
 
 from cfg import ModelCfg
+from const import NIGHT_FEATURE_DIM
 from outputs import CINC2026Outputs
 
 from .building_blocks import DemographicEncoder
@@ -190,13 +191,43 @@ class EpochCRNN(ECG_CRNN):
         self.classes = list(self.config.classes)
         self.n_classes = len(self.classes)
 
+        # ── Night-level aggregation features (P1, Phase 9) ────────────────────
+        # Late fusion: the backbone output (B, 2·rnn_hidden) is concatenated
+        # with the night-MLP output (B, hidden_dim[-1]) BEFORE FiLM.  The
+        # age-adv "before_film" tap keeps seeing the raw backbone output, so
+        # its head dim is unchanged.  When disabled, night_out_dim = 0 →
+        # fused_dim == clf_in → the architecture is bit-identical to the O0
+        # baseline.  Config keys (all optional, defaults shown):
+        #   night_features.enable     (bool,  False)   — toggle the branch
+        #   night_features.dim        (int,   15)      — fixed by dataset.build_night_features
+        #   night_features.hidden_dim ([int], [32,16]) — MLP widths; [-1] = fusion dim
+        #   night_features.activation (str,   "gelu")
+        #   night_features.dropouts   (float, 0.1)
+        night_cfg = self.config.get("night_features", None)
+        self.night_encoder: Optional[MLP] = None
+        night_out_dim: int = 0
+        if night_cfg is not None and night_cfg.get("enable", False):
+            night_dim = int(night_cfg.get("dim", 15))
+            assert (
+                night_dim == NIGHT_FEATURE_DIM
+            ), f"night feature dim fixed at {NIGHT_FEATURE_DIM} by build_night_features, got {night_dim}"
+            self.night_encoder = MLP(
+                in_channels=night_dim,
+                out_channels=list(night_cfg.get("hidden_dim", [32, 16])),
+                activation=str(night_cfg.get("activation", "gelu")),
+                bias=True,
+                dropouts=float(night_cfg.get("dropouts", 0.1)),
+            )
+            night_out_dim = list(night_cfg.get("hidden_dim", [32, 16]))[-1]  # e.g. 16
+
         # ── Replace 2-class softmax clf with 1-logit BCE clf ─────────────────
         # ECG_CRNN built a 2-output MLP; swap it for a single-logit head so we
         # train with BCEWithLogitsLoss (consistent with EpochTransformer).
         clf_in: int = self.clf.in_channels  # = 2 × rnn_hidden
+        fused_dim: int = clf_in + night_out_dim  # + night fusion dim when enabled
         clf_hidden: list = list(self.config.clf.out_channels)  # e.g. [64]
         self.clf = MLP(
-            in_channels=clf_in,
+            in_channels=fused_dim,
             out_channels=[*clf_hidden, 1],
             activation=self.config.clf.activation,
             bias=True,
@@ -209,7 +240,7 @@ class EpochCRNN(ECG_CRNN):
         if dem_cfg.enable:
             self.dem_encoder = DemographicEncoder(
                 dem_input_dim=dem_cfg.input_dim,
-                feature_dim=clf_in,
+                feature_dim=fused_dim,
                 mode=dem_cfg.mode,
                 hidden_dim=dem_cfg.hidden_dim,
             )
@@ -267,6 +298,14 @@ class EpochCRNN(ECG_CRNN):
             age_target = demographics[:, 0:1]  # age/100
             age_loss = self.age_adv.criterion(age_pred, age_target)
 
+        # ── Night-level aggregation features (late fusion, before FiLM) ───────
+        # The night-MLP output is concatenated to the backbone output here, so
+        # FiLM modulates the fused vector and the "after_film" age-adv tap (if
+        # selected) sees the night contribution as well.
+        if self.night_encoder is not None:
+            night = self.night_encoder(input_tensors["night_features"].to(self.device).to(self.dtype))  # (B, 16)
+            features = torch.cat([features, night], dim=-1)  # (B, 2·rnn_hidden + 16)
+
         # ── FiLM demographic modulation ───────────────────────────────────────
         if self.dem_encoder is not None:
             scale, shift = self.dem_encoder(demographics)
@@ -308,6 +347,7 @@ class EpochCRNN(ECG_CRNN):
         epoch_features: Union[np.ndarray, torch.Tensor],
         demographics: Union[np.ndarray, torch.Tensor],
         padding_mask: Optional[Union[np.ndarray, torch.Tensor]] = None,
+        night_features: Optional[Union[np.ndarray, torch.Tensor]] = None,
     ) -> CINC2026Outputs:
         """Run inference on a single sample or a batch.
 
@@ -320,6 +360,10 @@ class EpochCRNN(ECG_CRNN):
         padding_mask : ignored
             Accepted for API compatibility with :meth:`EpochTransformer.inference`
             but not used (see class docstring).
+        night_features : ndarray or Tensor, shape ``(night_feature_dim,)`` or ``(B, night_feature_dim)``, optional
+            Night-level aggregation features (P1).  Only used when the model's
+            night branch is enabled; ignored otherwise (so old checkpoints and
+            disabled models never touch this key).
 
         Returns
         -------
@@ -341,6 +385,11 @@ class EpochCRNN(ECG_CRNN):
             "epoch_features": epoch_features,
             "demographics": demographics,
         }
+        if self.night_encoder is not None and night_features is not None:
+            night = _to_tensor(night_features)
+            if night.ndim == 1:
+                night = night.unsqueeze(0)
+            tensors["night_features"] = night
 
         output_dict = self.forward(tensors)
         return CINC2026Outputs.from_dict(output_dict)

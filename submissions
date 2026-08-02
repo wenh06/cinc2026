@@ -140,3 +140,32 @@ Unofficial Phase:
 
 Official Phase:
   submission 1:
+    submission ID: ~
+    submission time: ~
+    challenge_scores:
+      AUROC: ~
+      age_cond_AUROC: ~
+    model: EpochCRNN_M
+    loss: BCEWithLogitsLoss
+    train:
+      n_epochs: 100
+      batch_size: 16
+      optimizer: adamw_amsgrad
+      lr: 0.0003
+      max_lr: 0.001
+      lr_scheduler: one_cycle
+      pct_start: 0.3
+      grad_clip: 1.0
+      weight_decay: 0.01
+      label_smoothing: 0.0
+      early_stopping_patience: 20
+      pos_weight: 12.16
+      monitor: auroc_age_cond
+      age_adv: false
+      data: official-phase-large (6600 records, 5280/1320 split)
+    features:
+      version: binary_arousal_v1
+      dim: 21
+      layout: stage_onehot(6) + stage_probs(5) + arousal_fraction(1) + resp_fractions(5) + limb_fractions(2) + time_encoding(2)
+      normalization: none
+    hash: 941b0b5
