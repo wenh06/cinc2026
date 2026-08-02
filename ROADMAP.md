@@ -430,7 +430,7 @@ The official phase uses **age-conditioned AUROC** for final ranking.  This metri
 
 - [x] Plot predicted probability vs. age on validation set.
 - [x] Add age-conditioned AUROC as a validation metric in `CINC2026Trainer`.
-- [x] Consider age-adversarial head (gradient reversal) if strong age dependence is detected. → Implemented 2026-08-02 (`--age-adv` CLI flag; GRL + age-regression head in `EpochCRNN`, tap point before FiLM; `TrainCfg.age_adv` config block).
+- [x] Consider age-adversarial head (gradient reversal) if strong age dependence is detected. → Implemented 2026-08-02 (`--age-adv` CLI flag; GRL + age-regression head in `EpochCRNN`, tap point before FiLM; `TrainCfg.age_adv` config block). **Result: failed (experiment O1)** — see Experiment Log.
 
 ### 10.2 Prevalence-shift calibration (→ Strategy P2)
 
@@ -464,7 +464,7 @@ The model's 0.555 plain AUROC may partially reflect "age → CI" heuristics, whi
 
 - [x] Plot **predicted probability vs. age** on the validation set.  A strong positive correlation means the model is using age as a shortcut. → Done 2026-08-02: r(age, prob)=+0.39, age gap=0.08 (best model).  Strong age dependence confirmed.
 - [x] Add **age-conditioned AUROC** to `CINC2026Trainer` as a validation metric (separate from the existing plain-AUROC monitor).
-- [x] Evaluate whether FiLM appropriately modulates features by age, or whether an age-adversarial head (gradient reversal on age prediction from the pooled representation) is needed. → Implemented 2026-08-02 (`--age-adv`; GRL + age head before FiLM; experiment O1).
+- [x] Evaluate whether FiLM appropriately modulates features by age, or whether an age-adversarial head (gradient reversal on age prediction from the pooled representation) is needed. → Implemented 2026-08-02 (`--age-adv`; GRL + age head before FiLM; experiment O1). **Result: failed** — CSV best age-cond 0.735 < O0's 0.762, and r(age,prob) *rose* to +0.61 (the GRL pushes the age signal into the FiLM channel, which per-sample modulation keeps leaky). Current config (α=0.5, λ=1.0, before-FiLM) not viable; a retry would need λ≫1 (e.g. 10–50) or an after-FiLM tap, with mechanism risk remaining — or drop this route and proceed to P1.
 - [ ] Consider **age-stratified sampling** in the DataLoader to ensure each batch contains diverse ages.
 
 ### P1 — Night-level aggregation features (Phase 9)
@@ -570,7 +570,7 @@ Template for tracking training runs.  Fill in one row per experiment.
 | ID | Date | Model | Feat Dim | New Features | lr / bs / epochs | Val AUROC | Age-cond AUROC | Δ vs Baseline | Notes |
 |:--:|------|-------|:--------:|-------------|------------------|:---------:|:--------------:|:------------:|-------|
 | **O0** | 2026-08-01 | `EpochCRNN_M` | 21 | (baseline) | 3e-4 / 16 / 100 | **0.833** | **0.762** | — | Official phase baseline (binary-arousal, 6,600 records, 5,280/1,320 split). Best @ epoch 51 (early stop 71). Per-site: S0001=0.840, I0006=0.786, I0002=0.791. Age gap ~0.069. |
-| **O1** | 2026-08-02 | `EpochCRNN_M` + age-adv | 21 | age-adversarial head (GRL α=0.5, λ=1.0, before FiLM) | 3e-4 / 16 / 100 | — | — | vs O0 | Age-dependence mitigation. Goal: reduce age gap (<0.05) and raise age-cond AUROC. |
+| **O1** | 2026-08-02 | `EpochCRNN_M` + age-adv | 21 | age-adversarial head (GRL α=0.5, λ=1.0, before FiLM) | 3e-4 / 16 / 100 | 0.816 | 0.735 | −0.027 | ❌ Failed. CSV true best (ep45) still below O0; GRL shoved age signal into FiLM channel — r(age,prob) rose to +0.61, gap 0.106; degrades post-best (0.735 → 0.685 @ ep65, no plateau). (Saved BestModel also hit the best-state-dict snapshot bug.) |
 | O2 | | | | | | | | | |
 
 ### Ablation protocol
