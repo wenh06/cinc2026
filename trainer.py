@@ -271,7 +271,10 @@ class CINC2026Trainer(BaseTrainer):
                     monitor_val = eval_res.get(self.train_config.monitor, -np.inf)
                     if monitor_val > self.best_metric:
                         self.best_metric = monitor_val
-                        self.best_state_dict = self._model.state_dict()
+                        # Deep-copy: state_dict() returns *references* to the parameter
+                        # tensors, so a shallow snapshot would silently track later
+                        # training updates and the saved "best" weights would drift.
+                        self.best_state_dict = deepcopy(self._model.state_dict())
                         self.best_eval_res = deepcopy(eval_res)
                         self.best_epoch = self.epoch
                         self.pseudo_best_epoch = self.epoch
@@ -683,6 +686,8 @@ if __name__ == "__main__":
         age_adv_cfg.alpha = float(train_config.get("age_adv_alpha", age_adv_cfg.alpha))
         age_adv_cfg.lambda_ = float(train_config.get("age_adv_lambda", age_adv_cfg.lambda_))
     model_config.age_adv = age_adv_cfg
+    # write back so the checkpoint's train_config mirrors what was actually trained
+    train_config.age_adv = age_adv_cfg
     print(
         f"Model: {model_name} ({model_cls.__name__}), {sum(p.numel() for p in model_cls(config=model_config).parameters()):,} params"
     )
