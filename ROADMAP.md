@@ -248,9 +248,9 @@ Strategy:
 ## Phase 5 — Validation & Analysis 🔄
 
 - [ ] Plot ROC curve and precision–recall curve on the validation set.
-- [ ] Check per-site AUROC (S0001 / I0002 / I0006 separately) to detect domain shift.
-- [ ] **Age-dependence diagnosis** (→ P0 in Strategy): plot predicted probability vs. age; check if model uses age as a shortcut.
-- [ ] Inspect attention weights: do the Transformer heads attend to NREM3-heavy regions of the night?
+- [x] Check per-site AUROC (S0001 / I0002 / I0006 separately) to detect domain shift. → Tracked per-epoch, gap ~0.05.
+- [x] **Age-dependence diagnosis** (→ P0 in Strategy): plot predicted probability vs. age; check if model uses age as a shortcut.
+- [ ] Inspect attention weights: do the Transformer heads attend to NREM3-heavy regions of the night? (N/A for CRNN)
 - [ ] Calibration moved to → [Official Phase Strategy P2](#official-phase-strategy-post-abstract-acceptance).
 
 ---
@@ -328,7 +328,7 @@ If the augmented-feature approach shows headroom, a full end-to-end model can be
 - [x] Official phase data layout support: `data_reader.py` auto-detects `training_set_small` / `training_set_large` / `training_set` partitions; `dataset.py` partition filter broadened accordingly.
 - [x] Official phase training data downloaded and verified.
 - [ ] CI pipeline passes end-to-end (Docker build → dataset download → `docker run` → `test_entry`).
-- [ ] Full official-phase training run with new data.
+- [x] Full official-phase training run with new data. → O0 baseline done, AUROC=0.833, age-cond=0.762.
 - [ ] Submit to the official evaluation system.
 
 ---
@@ -428,9 +428,9 @@ Epoch features (B, T, 21)                    Night features (B, 15)
 
 The official phase uses **age-conditioned AUROC** for final ranking.  This metric compares only age-matched positive/negative pairs — penalising models that simply learn "older = CI".  Our current trainer monitors plain AUROC; age-conditioned AUROC monitoring must be added *before* any feature work so we can track whether changes actually help or hurt.
 
-- [ ] Plot predicted probability vs. age on validation set.
-- [ ] Add age-conditioned AUROC as a validation metric in `CINC2026Trainer`.
-- [ ] Consider age-adversarial head (gradient reversal) if strong age dependence is detected.
+- [x] Plot predicted probability vs. age on validation set.
+- [x] Add age-conditioned AUROC as a validation metric in `CINC2026Trainer`.
+- [x] Consider age-adversarial head (gradient reversal) if strong age dependence is detected. → Implemented 2026-08-02 (`--age-adv` CLI flag; GRL + age-regression head in `EpochCRNN`, tap point before FiLM; `TrainCfg.age_adv` config block).
 
 ### 10.2 Prevalence-shift calibration (→ Strategy P2)
 
@@ -462,9 +462,9 @@ Optimise α on the validation set.
 
 The model's 0.555 plain AUROC may partially reflect "age → CI" heuristics, which age-conditioned scoring nullifies.  Before any new features:
 
-- [ ] Plot **predicted probability vs. age** on the validation set.  A strong positive correlation means the model is using age as a shortcut.
-- [ ] Add **age-conditioned AUROC** to `CINC2026Trainer` as a validation metric (separate from the existing plain-AUROC monitor).
-- [ ] Evaluate whether FiLM appropriately modulates features by age, or whether an age-adversarial head (gradient reversal on age prediction from the pooled representation) is needed.
+- [x] Plot **predicted probability vs. age** on the validation set.  A strong positive correlation means the model is using age as a shortcut. → Done 2026-08-02: r(age, prob)=+0.39, age gap=0.08 (best model).  Strong age dependence confirmed.
+- [x] Add **age-conditioned AUROC** to `CINC2026Trainer` as a validation metric (separate from the existing plain-AUROC monitor).
+- [x] Evaluate whether FiLM appropriately modulates features by age, or whether an age-adversarial head (gradient reversal on age prediction from the pooled representation) is needed. → Implemented 2026-08-02 (`--age-adv`; GRL + age head before FiLM; experiment O1).
 - [ ] Consider **age-stratified sampling** in the DataLoader to ensure each batch contains diverse ages.
 
 ### P1 — Night-level aggregation features (Phase 9)
@@ -569,8 +569,8 @@ Template for tracking training runs.  Fill in one row per experiment.
 
 | ID | Date | Model | Feat Dim | New Features | lr / bs / epochs | Val AUROC | Age-cond AUROC | Δ vs Baseline | Notes |
 |:--:|------|-------|:--------:|-------------|------------------|:---------:|:--------------:|:------------:|-------|
-| **O0** | — | `EpochCRNN_M` | 21 | (baseline) | 3e-4 / 16 / 100 | — | — | — | Official phase baseline (binary-arousal, 1,103 records) |
-| O1 | | | | | | | | | |
+| **O0** | 2026-08-01 | `EpochCRNN_M` | 21 | (baseline) | 3e-4 / 16 / 100 | **0.833** | **0.762** | — | Official phase baseline (binary-arousal, 6,600 records, 5,280/1,320 split). Best @ epoch 51 (early stop 71). Per-site: S0001=0.840, I0006=0.786, I0002=0.791. Age gap ~0.069. |
+| **O1** | 2026-08-02 | `EpochCRNN_M` + age-adv | 21 | age-adversarial head (GRL α=0.5, λ=1.0, before FiLM) | 3e-4 / 16 / 100 | — | — | vs O0 | Age-dependence mitigation. Goal: reduce age gap (<0.05) and raise age-cond AUROC. |
 | O2 | | | | | | | | | |
 
 ### Ablation protocol
