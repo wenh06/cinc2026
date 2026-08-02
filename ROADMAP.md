@@ -79,7 +79,9 @@ Feature-wise Linear Modulation (FiLM) injects demographic context (age, sex, BMI
 
 ### Literature backing for Night-Level features
 
-Clinical sleep metrics (sleep efficiency, N3%, WASO, arousal index, AHI) are the features a sleep physician would use in a clinical assessment.  They are interpretable, standardised across labs, and have decades of evidence linking them to cognitive outcomes (Blackwell et al., *Sleep* 2014; Yaffe et al., *JAMA* 2011; Diem et al., *J Am Geriatr Soc* 2014).
+Clinical sleep metrics (sleep efficiency, N3%, WASO, arousal index, AHI) are the features a sleep physician would use in a clinical assessment.  They are interpretable, standardised across labs, and have decades of evidence linking them to cognitive outcomes (Blackwell et al., *Sleep* 2014; Yaffe et al., *JAMA* 2011; Diem et al., *Am J Geriatr Psychiatry* 2016 — original citation "JAGS 2014" corrected 2026-08-02).
+
+> **Evidence grades per feature** (web-verified 2026-08-02): strong — AHI, sleep efficiency, WASO, PLMI, REM latency, N3%; mixed/weak — REM%, TST, arousal index; inferred (physiology-based hypothesis, no direct study) — N3 latency, stage transitions, first-half N3%, cycle count/length, N3 decay slope.  Full per-feature table + complete references in [Phase 9 → Literature verification](#phase-9--night-level-aggregation-features--strategy-p1-top-priority).
 
 ---
 
@@ -419,6 +421,56 @@ Epoch features (B, T, 21)                    Night features (B, 15)
                          └─ Linear → scalar logit
 ```
 
+### Literature verification (2026-08-02, web-verified)
+
+> The 15-dim feature list above was defined internally (2026-07-30 review).  Every feature was
+> **independently verified against the literature** on 2026-08-02 by searching PubMed / journal sites.
+> Verdict per feature — **strong** (direct prospective evidence linking the metric to cognitive
+> outcomes), **mixed** (conflicting cohort results), or **inferred** (physiological rationale,
+> no direct "metric → cognition" study found).  Also note: the original "Literature backing"
+> paragraph below cited Diem as *J Am Geriatr Soc* 2014 — the correct citation is
+> Diem et al., *Am J Geriatr Psychiatry* 2016 (verified via DOI).
+
+| # | Feature | Evidence | Key findings |
+|---|---------|:--------:|--------------|
+| 0 | TST | mixed/weak | **Negative in most cohorts** — Yaffe 2011 & Blackwell 2014 both report TST *not* associated with cognitive outcomes ("quality not quantity"). Retained as a clinically-standard covariate. |
+| 1 | Sleep efficiency | **strong** | SE < 74% → MCI/dementia OR 1.53 (Diem 2016, 1,245 women); SE < 70% → executive-decline OR 1.53 (Blackwell 2014, 2,822 men) |
+| 2 | N3% | **strong** | Reduced SWS% in AD vs controls, associated with CI severity (Zhang 2022 meta-analysis, 28 studies); SWS correlated with NF-L (neurodegeneration marker) |
+| 3 | REM% | mixed | Framingham: lower REM% → dementia risk HR 0.91/%-point (Pase 2017); but 5-cohort Sleep & Dementia Consortium meta (4,657) finds no association (Yiallourou 2025) |
+| 4 | WASO | **strong** | WASO ≥ 90 min → executive-decline OR 1.47 (Blackwell 2014); higher WASO with AD (Zhang 2022 meta) |
+| 5 | Arousal index | mixed | Yaffe 2011: arousal index **not** associated (driven by hypoxia instead); fragmentation via actigraphy is a strong AD-risk factor (Lim 2013) — AI's own evidence is weaker |
+| 6 | AHI | **strong** | AHI ≥ 15 → MCI/dementia OR 1.85 (Yaffe 2011, 298 women, 4.7 y) |
+| 7 | PLMI | **strong** | PLMI ≥ 30 → cognitive impairment OR 1.48 (Leng 2016, 2,636 men); PLMS more frequent in aMCI/AD (Liu 2020) |
+| 8 | N3 latency | inferred | No direct study found; related metrics (sleep-onset latency, delayed REM) are altered in AD (Zhang 2022; Jin 2025) |
+| 9 | REM latency | **strong** | Highest REM-latency tertile → +16% amyloid, +29% tau, −39% BDNF (Jin 2025, *Alzheimers Dement*); AD patients show increased REM latency (Zhang 2022 meta) |
+| 10 | Stage transitions/h | **strong** (concept) | Sleep fragmentation → AD HR 1.22/SD (Lim 2013); transitions/h is the PSG-version of this concept |
+| 11 | First-half N3% | inferred | SWA is physiologically front-loaded (Borbély homeostatic model); total SWA ↓ with Aβ (Mander 2015) — but no study tests the *gradient* directly |
+| 12 | Cycle count | inferred | Cycle number declines with age (established physiology); no direct cognition-outcome study found |
+| 13 | Mean cycle length | inferred | Same as #12 |
+| 14 | N3 decay slope | inferred | Homeostatic SWA decay is established physiology (Borbély); Mander 2015 links *overall* SWA to Aβ/memory — slope-flattening in CI is an extrapolation, not a tested biomarker |
+
+**Caveats (honest reading):**
+1. The strongest direct evidence is for **AHI, SE, WASO, PLMI, REM latency, N3%** — the "clinical index" features.
+2. **TST and arousal index** have notable *negative* findings in major cohorts (Yaffe 2011; Blackwell 2014) — they are retained as standard covariates, not because the literature is uniformly positive.
+3. **REM%** is genuinely contested (positive Framingham vs null 5-cohort meta-analysis).
+4. The **temporal-dynamics features** (#11–14, and partly #8, #10) are physiologically-motivated *hypotheses*, not validated biomarkers.  This is exactly what experiment O2 is testing — if the age-cond AUROC gains come from these, they are novel contributions; if not, the model already extracts them from the epoch sequence.
+
+#### Full reference list (verified 2026-08-02)
+
+1. **Yaffe K, Laffan AM, Harrison SL, et al.** Sleep-Disordered Breathing, Hypoxia, and Risk of Mild Cognitive Impairment and Dementia in Older Women. *JAMA*. 2011;306(6):613–619. doi:10.1001/jama.2011.1115. — AHI≥15 → MCI/dementia OR 1.85 (95% CI 1.11–3.08); hypoxia-driven; arousal/WASO/TST not associated.
+2. **Blackwell T, Yaffe K, Ancoli-Israel S, et al.** Associations of Objectively and Subjectively Measured Sleep Quality with Subsequent Cognitive Decline in Older Community-Dwelling Men: the MrOS Sleep Study. *Sleep*. 2014;37(4):655–663. — SE<70% OR 1.53; WASO≥90 min OR 1.47; TST not associated.
+3. **Lim ASP, Kowgier M, Yu L, Buchman AS, Bennett DA.** Sleep Fragmentation and the Risk of Incident Alzheimer's Disease and Cognitive Decline in Older Persons. *Sleep*. 2013;36(7):1027–1032. doi:10.5665/sleep.2802. — Fragmentation → AD HR 1.22/SD; 90th-percentile vs 10th: 1.5× risk.
+4. **Diem SJ, Blackwell TL, Stone KL, Yaffe K, Tranah G, Cauley JA, Ancoli-Israel S, Redline S, Spira AP, Hillier TA, Ensrud KE.** Measures of Sleep-Wake Patterns and Risk of Mild Cognitive Impairment or Dementia in Older Women. *Am J Geriatr Psychiatry*. 2016;24(3):248–258. PMID 26964485. — SE<74% → MCI/dementia OR 1.53; longer sleep latency associated; TST not associated. ⚠️ (Originally cited in this roadmap as "J Am Geriatr Soc 2014" — corrected 2026-08-02.)
+5. **Pase MP, Himali JJ, Grima NA, et al.** Sleep Architecture and the Risk of Incident Dementia in the Community. *Neurology*. 2017;89(12):1244–1250. — Lower REM% → dementia risk (HR 0.91 per %-point).
+6. **Yiallourou SR, et al.** Sleep Macro-architecture and Dementia Risk in Adults: Meta-Analysis of 5 Cohorts from the Sleep and Dementia Consortium. *Sleep*. 2025 (PMC11722510). — No consistent association of N1/N2/N3/REM% with incident dementia (4,657 participants; marginal N3% HR 1.06 in a 3-cohort subset).
+7. **Leng Y, Blackwell T, Stone KL, Hoang TD, Redline S, Yaffe K.** Periodic Limb Movements in Sleep are Associated with Greater Cognitive Decline in Older Men without Dementia. *Sleep*. 2016;39(10):1807–1810. doi:10.5665/sleep.6158. — PLMI≥30 → cognitive impairment OR 1.48 (95% CI 1.05–2.07); executive function.
+8. **Zhang Y, Ren R, Yang L, et al.** Sleep in Alzheimer's Disease: a Systematic Review and Meta-Analysis of Polysomnographic Findings. *Transl Psychiatry*. 2022;12:136. — AD: reduced SWS%/REM%, increased REM latency and sleep latency vs controls.
+9. **Jin J, Chen J, Cavaillès C, Yaffe K, Winer J, Stankeviciute L, Lucey BP, Zhou X, Gao S, Peng D, Leng Y.** Association of Rapid Eye Movement Sleep Latency with Multimodal Biomarkers of Alzheimer's Disease. *Alzheimers Dement*. 2025;21(2):e14495. PMID 39868572. — Highest REM-latency tertile: +16% Aβ, +29% p-tau181, −39% BDNF (128 participants).
+10. **Mander BA, Marks SM, Vogel JW, et al.** β-Amyloid Disrupts Human NREM Slow Waves and Related Hippocampus-Dependent Memory Consolidation. *Nat Neurosci*. 2015;18(7):1051–1057. — mPFC Aβ ↔ reduced 0.6–1 Hz SWA (r=−0.45); mediates memory-consolidation deficit. Supports overall SWA, not the within-night gradient.
+11. **Liu S, et al.** Sleep Spindles, K-complexes, Limb Movements and Sleep Stage Proportions May Be Biomarkers for Amnestic Mild Cognitive Impairment and Alzheimer's Disease. *Sleep Breath*. 2020. — More PLMS in aMCI/AD than controls; correlated with MMSE/MoCA.
+
+> Physiology background for the *inferred* features: SWA homeostatic front-loading across the night (Borbély's two-process model) and the decline of NREM-REM cycle number with age are established sleep physiology; glymphatic clearance of Aβ during SWS (Xie et al., *Science* 2013) motivates the N3%/first-half-N3% proxies.
+
 
 ---
 
@@ -468,6 +520,8 @@ The model's 0.555 plain AUROC may partially reflect "age → CI" heuristics, whi
 - [ ] Consider **age-stratified sampling** in the DataLoader to ensure each batch contains diverse ages.
 
 ### P1 — Night-level aggregation features (Phase 9)
+
+> **Status 2026-08-02**: Implementation complete (commit `2658f57`) — `build_night_features` (15 dims, fixed-divisor normalisation, AASM-consistent AHI excl. RERA), late fusion `backbone → concat MLP(15→32→16) → FiLM → clf`, config block `TrainCfg.night_features` (default OFF = O0 baseline unchanged), `--night-features` CLI, full train/inference plumbing.  Feature sanity cross-checked against the official baseline's event counts on real records (exact match); 3-epoch smoke train→run→evaluate passed; disabled default bit-identical (436,865 params, old O0 checkpoints load fine).  Literature backing verified 2026-08-02 (see [Literature verification](#literature-verification-2026-08-02-web-verified)).  **O2 full-run experiment complete 2026-08-02: ❌ failed** — age-cond 0.738 < O0's 0.762 (Δ −0.024), plain AUROC 0.817 < 0.833.  The 15-dim aggregate signal (computed over the *full* night) is partly redundant with what the epoch-sequence backbone already extracts, and per-site it only helped I0006 (+0.032) while hurting S0001 (−0.022) and I0002 (−0.041) — no consistent benefit.  Route closed; next candidate P2 (calibration).
 
 **Why first**: Computed entirely from CAISR annotations — zero raw-signal dependency, zero site-confounding risk.  Clinical interpretability is the highest of any planned change.
 
@@ -571,7 +625,7 @@ Template for tracking training runs.  Fill in one row per experiment.
 |:--:|------|-------|:--------:|-------------|------------------|:---------:|:--------------:|:------------:|-------|
 | **O0** | 2026-08-01 | `EpochCRNN_M` | 21 | (baseline) | 3e-4 / 16 / 100 | **0.833** | **0.762** | — | Official phase baseline (binary-arousal, 6,600 records, 5,280/1,320 split). Best @ epoch 51 (early stop 71). Per-site: S0001=0.840, I0006=0.786, I0002=0.791. Age gap ~0.069. |
 | **O1** | 2026-08-02 | `EpochCRNN_M` + age-adv | 21 | age-adversarial head (GRL α=0.5, λ=1.0, before FiLM) | 3e-4 / 16 / 100 | 0.816 | 0.735 | −0.027 | ❌ Failed. CSV true best (ep45) still below O0; GRL shoved age signal into FiLM channel — r(age,prob) rose to +0.61, gap 0.106; degrades post-best (0.735 → 0.685 @ ep65, no plateau). (Saved BestModel also hit the best-state-dict snapshot bug.) |
-| O2 | | | | | | | | | |
+| **O2** | 2026-08-02 | `EpochCRNN_M` + night-feat | 21 + 15 | night-level aggregation features (15 dims, fixed-divisor norm, late fusion before FiLM) | 3e-4 / 16 / 100 | 0.817 | 0.738 | −0.024 | ❌ Failed. Best @ epoch 21 (early stop 41). Full-night aggregates largely redundant with the epoch-sequence backbone's own summary; per-site only I0006 gained (0.786→0.818), S0001 (0.840→0.818) and I0002 (0.791→0.750) lost. Literature hypotheses (TST/SE/arousal-index negative findings in Yaffe 2011 / Blackwell 2014) correctly predicted weak signal. P1 route closed. |
 
 ### Ablation protocol
 
