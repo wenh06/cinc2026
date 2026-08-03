@@ -32,6 +32,7 @@ then re-normalise each row so the five probabilities sum to 1.
 import json
 import os
 import time
+import warnings
 from copy import deepcopy
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Union
@@ -44,6 +45,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Dataset
 from torch_ecg.cfg import CFG, DEFAULTS
 from torch_ecg.utils.misc import ReprMixin
+from torch_ecg.utils.utils_data import stratified_train_test_split
 from torch_ecg.utils.utils_nn import default_collate_fn
 from tqdm.auto import tqdm
 
@@ -59,6 +61,7 @@ from const import (  # noqa: F401
     CAISR_EPOCH_DIM_NO_TIME,
     CAISR_PROB_EDF_SCALE,
     DEMOGRAPHIC_DIM,
+    FIVE_FOLD_SPLIT_FILE,
     FIXED_DATA_SPLIT_FILE,
     LABEL_CACHE_DIR,
     LIMB_SAMPLES_PER_EPOCH,
@@ -177,18 +180,42 @@ class CINC2026Dataset(Dataset, ReprMixin):
     def _train_test_split(self) -> List[str]:
         """Return the record list for this split.
 
-        Two modes controlled by ``self.override_data_split``:
+        Three sources, in priority order:
 
-        * ``False`` (default) — load the fixed canonical split from
-          ``utils/cinc2026-data-split.json``.  Falls back to the dynamic
-          flow only when the file is absent (should not happen in a normal
-          installation).
-        * ``True`` — dynamic flow: read
-          ``LABEL_CACHE_DIR/cinc2026-data-split.json`` when present, else
-          generate a fresh stratified split and persist it there.
+        1. **5-fold CV** — when ``self.config.fold`` is an int (set e.g. via
+           ``CINC2026_OVERRIDE_JSON {"fold": k}`` for ensemble training),
+           read ``utils/cinc2026-5fold-split.json`` and use that fold's
+           train/val assignment.
+        2. **Canonical split** — ``self.override_data_split=False`` (default):
+           the fixed split shipped at ``utils/cinc2026-data-split.json``.
+        3. **Dynamic split** — ``self.override_data_split=True`` (or the
+           canonical file is absent): read
+           ``LABEL_CACHE_DIR/cinc2026-data-split.json`` when present, else
+           generate a fresh multi-factor stratified split and persist it.
         """
         part = "train" if self.training else "val"
         available = set(self._labelled_df.index)
+
+        # ------------------------------------------------------------------
+        # 5-fold CV mode (fold via train_config.fold)
+        # ------------------------------------------------------------------
+        fold = self.config.get("fold", None)
+        if fold is not None:
+            fold_file = Path(FIVE_FOLD_SPLIT_FILE)
+            if fold_file.exists():
+                with open(fold_file) as f:
+                    split = json.load(f)
+                records = [r for r in split.get(f"fold_{fold}", {}).get(part, []) if r in available]
+                if records:
+                    if self.training:
+                        DEFAULTS.RNG.shuffle(records)
+                    return records
+            warnings.warn(
+                f"5-fold split file not found at {FIVE_FOLD_SPLIT_FILE}; "
+                f"fold={fold} ignored — falling back to the canonical split.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
 
         if not self.override_data_split:
             # ----------------------------------------------------------
@@ -203,9 +230,6 @@ class CINC2026Dataset(Dataset, ReprMixin):
                     if self.training:
                         DEFAULTS.RNG.shuffle(records)
                     return records
-            # Canonical file missing — warn and fall through to dynamic path
-            import warnings
-
             warnings.warn(
                 f"Fixed data-split file not found at {FIXED_DATA_SPLIT_FILE}. " "Falling back to dynamic split generation.",
                 RuntimeWarning,
@@ -226,17 +250,36 @@ class CINC2026Dataset(Dataset, ReprMixin):
                     DEFAULTS.RNG.shuffle(records)
                 return records
 
-        # Generate a fresh stratified split and cache it
-        from sklearn.model_selection import StratifiedShuffleSplit
-
-        df = self._labelled_df
-        strat_key = df["SiteID"].astype(str) + "_" + df["Cognitive_Impairment"].astype(str)
+        # Generate a fresh multi-factor stratified split and cache it.
+        # Stratification on label × site × sex × age band (not label alone)
+        # keeps the val fold representative on every demographic axis we can
+        # measure — a label-only split lets site/age drift between folds and
+        # would corrupt the age-conditioned AUROC comparison.  Uses torch_ecg's
+        # stratified_train_test_split, which enforces the test_ratio within
+        # each stratum group (DEFAULTS.RNG, seed 42 → reproducible).
+        df = self._labelled_df.copy()
+        df["AgeGroup"] = pd.cut(
+            df["Age"],
+            bins=[49, 55, 60, 65, 70, 75, 80, 85, 100],
+            labels=[
+                "50-54",
+                "55-59",
+                "60-64",
+                "65-69",
+                "70-74",
+                "75-79",
+                "80-84",
+                "85-90",
+            ],
+        )
         train_ratio = self.config.get("train_ratio", 0.8)
-        sss = StratifiedShuffleSplit(n_splits=1, train_size=train_ratio, random_state=42)
-        train_idx, val_idx = next(sss.split(df.index, strat_key))
-
-        train_records = df.index[train_idx].tolist()
-        val_records = df.index[val_idx].tolist()
+        train_df, val_df = stratified_train_test_split(
+            df,
+            stratified_cols=["Cognitive_Impairment", "SiteID", "Sex", "AgeGroup"],
+            test_ratio=1.0 - train_ratio,
+        )
+        train_records = train_df.index.tolist()
+        val_records = val_df.index.tolist()
 
         with open(split_file, "w") as f:
             json.dump({"train": train_records, "val": val_records}, f, indent=2)
