@@ -55,6 +55,7 @@ from typing import Any, Dict, Tuple
 
 import numpy as np
 import torch
+from pyedflib import EdfReader
 
 from cfg import ModelCfg, TrainCfg, sync_feature_config
 from const import BINARY_AROUSAL_FEATURE_SET, resolve_feature_pipeline
@@ -101,7 +102,14 @@ def _is_strict_test() -> bool:
     caught and replaced with a safe fallback ``(0, 0.5)`` so the challenge
     scorer always receives a valid prediction.
     """
-    return os.environ.get("CINC2026_REVENGER_TEST", "0") not in ("0", "", "false", "False", "no", "No")
+    return os.environ.get("CINC2026_REVENGER_TEST", "0") not in (
+        "0",
+        "",
+        "false",
+        "False",
+        "no",
+        "No",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +135,6 @@ def _resolve_db_dir(data_folder: str) -> Path:
 def _load_caisr_ann(caisr_path: str) -> Dict[str, np.ndarray]:
     """Load CAISR annotation signals from an EDF file into a label→array dict."""
     try:
-        from pyedflib import EdfReader
-
         reader = EdfReader(caisr_path)
         annotations: Dict[str, np.ndarray] = {}
         for i, label in enumerate(reader.getSignalLabels()):
@@ -185,6 +191,16 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
     (e.g. ``training_set/``) or the data root; both are handled correctly.
     Change the active model by setting ``TrainCfg.model_name`` in ``cfg.py``
     (e.g. ``"epoch_crnn_M"`` or ``"epoch_transformer_L"``).
+
+    Two training modes, controlled by ``TrainCfg.folds``:
+
+    * ``None`` (default) — train a single model on the canonical split and
+      save it to ``model_folder/final_model.pth.tar``.
+    * list of fold indices (e.g. ``[0, 1, 2, 3, 4]``) — 5-fold CV ensemble:
+      each fold trains on its own train split (``train_config.fold = k``,
+      see :class:`CINC2026Dataset`) and is saved to
+      ``model_folder/fold_{k}/final_model.pth.tar``.  :func:`load_model`
+      detects this layout and loads all folds for averaged inference.
     """
     if verbose:
         print(f"[CinC2026] Training on {DEVICE} — data: {data_folder}")
@@ -205,10 +221,30 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
         for k, v in overrides.items():
             if k not in _skip:
                 setattr(train_config, k, v)
+
+    folds = train_config.get("folds", None)
+    if folds is None:
+        _train_single_fold(train_config, Path(model_folder), verbose)
+        return
+
+    # 5-fold ensemble mode: one model per fold, each on its own data split
+    if verbose:
+        print(f"[CinC2026] 5-fold ensemble mode — folds: {list(folds)}")
+    for k in folds:
+        fold_config = deepcopy(train_config)
+        fold_config.fold = k
+        _train_single_fold(fold_config, Path(model_folder) / f"fold_{k}", verbose)
+        if verbose:
+            print(f"[CinC2026] fold_{k} saved")
+
+
+def _train_single_fold(train_config: Any, out_folder: Path, verbose: bool) -> None:
+    """Train one model (single fold, or the canonical split) into *out_folder*."""
+    out_folder.mkdir(parents=True, exist_ok=True)
     sync_feature_config(train_config, ModelCfg)
 
-    # Route trainer logs and checkpoints inside model_folder
-    working_dir = Path(model_folder) / "working_dir"
+    # Route trainer logs and checkpoints inside the output folder
+    working_dir = out_folder / "working_dir"
     working_dir.mkdir(parents=True, exist_ok=True)
     train_config.working_dir = working_dir
     train_config.model_dir = working_dir / "checkpoints"
@@ -258,7 +294,7 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
     # writes the best-epoch weights, not the final-epoch ones.
     if best_state_dict:
         model.load_state_dict(best_state_dict)
-    save_path = Path(model_folder) / FINAL_MODEL_NAME
+    save_path = out_folder / FINAL_MODEL_NAME
     model.save(str(save_path), train_config=train_config)
 
     if verbose:
@@ -266,17 +302,44 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
 
 
 def load_model(model_folder: str, verbose: bool) -> Dict[str, Any]:
-    """Load the trained model from *model_folder*.
+    """Load the trained model(s) from *model_folder*.
 
     The model class is inferred from ``TrainCfg.model_name``.
     Called by ``run_model.py``.  Falls back to a randomly initialised model
     if the checkpoint file is not found (useful for dry runs).
+
+    Two layouts are supported:
+
+    * single model — ``model_folder/final_model.pth.tar``, returned as
+      ``{"model": ..., "train_config": ...}``;
+    * 5-fold ensemble — ``model_folder/fold_{k}/final_model.pth.tar``
+      (trained with ``TrainCfg.folds`` set), returned as
+      ``{"models": [...], "train_config": ..., "ensemble": True}``.
+      :func:`run_model` averages the fold probabilities.
     """
     if verbose:
         print("[CinC2026] Loading model ...")
 
     model_name = TrainCfg.model_name
     model_cls = _MODEL_CLASS_MAP[model_name]
+
+    # 5-fold ensemble layout: model_folder/fold_{k}/final_model.pth.tar
+    fold_dirs = sorted(
+        Path(model_folder).glob("fold_*/" + FINAL_MODEL_NAME),
+        key=lambda p: int(p.parent.name.split("_")[1]),
+    )
+    if fold_dirs:
+        if verbose:
+            print(f"  Loading {len(fold_dirs)}-fold ensemble: {[str(p) for p in fold_dirs]}")
+        models = []
+        train_configs = []
+        for ckpt in fold_dirs:
+            model, tc = model_cls.from_checkpoint(str(ckpt), weights_only=False)
+            model.to(DEVICE)
+            model.eval()
+            models.append(model)
+            train_configs.append(tc)
+        return {"models": models, "train_config": train_configs[0], "ensemble": True}
 
     model_path = Path(model_folder) / FINAL_MODEL_NAME
     if model_path.exists():
@@ -343,7 +406,7 @@ def _run_model_impl(
     verbose: bool,
 ) -> Tuple[int, float]:
     """Inner implementation of :func:`run_model` (may raise)."""
-    model: Any = model_dict["model"]
+    model: Any = model_dict.get("model", None)
 
     bids_folder = str(record[HEADERS["bids_folder"]])
     site_id = str(record[HEADERS["site_id"]])
@@ -403,12 +466,31 @@ def _run_model_impl(
     # ------------------------------------------------------------------
     # 3. Inference
     # ------------------------------------------------------------------
-    outputs: CINC2026Outputs = model.inference(
-        epoch_features=epoch_features,
-        demographics=demographics,
-        night_features=night_features,
-    )
+    if model is not None:
+        # Single-model path
+        outputs: CINC2026Outputs = model.inference(
+            epoch_features=epoch_features,
+            demographics=demographics,
+            night_features=night_features,
+        )
+        binary_output = int(outputs.cognitive_impairment[0])
+        probability_output = float(outputs.ci_prob[0, 1])
+        return binary_output, probability_output
 
-    binary_output = int(outputs.cognitive_impairment[0])
-    probability_output = float(outputs.ci_prob[0, 1])
+    # 5-fold ensemble path — equal-weight average of the fold probabilities.
+    # The folds share the same feature pipeline, so the per-record features
+    # above are computed once and reused.
+    models: Any = model_dict["models"]
+    probabilities = [
+        float(
+            m.inference(
+                epoch_features=epoch_features,
+                demographics=demographics,
+                night_features=night_features,
+            ).ci_prob[0, 1]
+        )
+        for m in models
+    ]
+    probability_output = float(np.mean(probabilities))
+    binary_output = int(probability_output >= 0.5)
     return binary_output, probability_output

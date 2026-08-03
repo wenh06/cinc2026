@@ -9,7 +9,11 @@ import numpy as np
 import torch
 from torch_ecg.cfg import CFG
 
-from const import BINARY_AROUSAL_FEATURE_SET, NIGHT_FEATURE_DIM, resolve_feature_pipeline
+from const import (
+    BINARY_AROUSAL_FEATURE_SET,
+    NIGHT_FEATURE_DIM,
+    resolve_feature_pipeline,
+)
 from model_configs import EPOCH_CRNN_CONFIG, EPOCH_TRANSFORMER_BASE
 
 __all__ = [
@@ -62,6 +66,15 @@ TrainCfg.batch_size = 16
 # train_ratio: fallback 80/20 split used by CINC2026Dataset when the canonical
 # JSON split file (utils/cinc2026-data-split.json) is absent.
 TrainCfg.train_ratio = 0.8
+
+# folds: 5-fold CV ensemble mode.  None (default) trains a single model on
+# the canonical split.  A list of fold indices (e.g. [0, 1, 2, 3, 4]) trains
+# one model per fold on the multi-factor stratified split in
+# utils/cinc2026-5fold-split.json (see utils/make_5fold_split.py) and saves
+# each to model_folder/fold_{k}/; team_code.load_model then loads all folds
+# and team_code.run_model averages their probabilities (equal weight).
+# NOTE: the official re-training will run len(folds) × the single-fold time.
+TrainCfg.folds = None
 TrainCfg.model_name = "epoch_crnn_M"  # best AUROC so far (sub3: 0.555)
 TrainCfg.feature_set = BINARY_AROUSAL_FEATURE_SET  # submission-1~4 feature set; best public run so far
 
@@ -339,7 +352,12 @@ def sync_feature_config(train_cfg: CFG = TrainCfg, model_cfg: CFG = ModelCfg) ->
     transformer_dim = resolve_feature_pipeline(train_cfg.feature_set, "epoch_transformer")["feature_dim"]
     crnn_dim = resolve_feature_pipeline(train_cfg.feature_set, "epoch_crnn")["feature_dim"]
 
-    for name in ["epoch_transformer_S", "epoch_transformer_M", "epoch_transformer_L", "epoch_transformer"]:
+    for name in [
+        "epoch_transformer_S",
+        "epoch_transformer_M",
+        "epoch_transformer_L",
+        "epoch_transformer",
+    ]:
         getattr(model_cfg, name).caisr_feat_dim = transformer_dim
 
     for name in [
