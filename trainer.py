@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.optim as optim
 from sklearn.metrics import average_precision_score, roc_auc_score
 from torch.nn.parallel import DataParallel as DP
 from torch.utils.data import DataLoader, Dataset
@@ -387,7 +388,12 @@ class CINC2026Trainer(BaseTrainer):
                 step_metrics = {"loss": loss.item()}
                 if self.scheduler:
                     step_metrics["lr"] = self.scheduler.get_last_lr()[0]
-                    pbar.set_postfix(**{"loss (batch)": loss.item(), "lr": self.scheduler.get_last_lr()[0]})
+                    pbar.set_postfix(
+                        **{
+                            "loss (batch)": loss.item(),
+                            "lr": self.scheduler.get_last_lr()[0],
+                        }
+                    )
                 else:
                     pbar.set_postfix(**{"loss (batch)": loss.item()})
                 self.log_manager.log_metrics(
@@ -517,11 +523,12 @@ class CINC2026Trainer(BaseTrainer):
         faster, a shorter warm-up (e.g. 0.1) helps.  We pass the value from
         ``train_config.pct_start`` if present, otherwise fall back to 0.3.
         """
-        if self.train_config.get("lr_scheduler", "none").lower() not in ("one_cycle", "onecycle"):
+        if self.train_config.get("lr_scheduler", "none").lower() not in (
+            "one_cycle",
+            "onecycle",
+        ):
             super()._setup_scheduler()
             return
-
-        import torch.optim as optim
 
         pct_start = float(self.train_config.get("pct_start", 0.3))
         self.scheduler = optim.lr_scheduler.OneCycleLR(
@@ -693,13 +700,25 @@ if __name__ == "__main__":
     # Resolve model
     model_name = train_config.get("model_name", "epoch_crnn_M")
     # Determine model family: pick the first match in _MODEL_CLASS_MAP by prefix
-    model_family = next((prefix for prefix in _MODEL_CLASS_MAP if model_name.startswith(prefix)), "epoch_transformer")
+    model_family = next(
+        (prefix for prefix in _MODEL_CLASS_MAP if model_name.startswith(prefix)),
+        "epoch_transformer",
+    )
     model_cls = _MODEL_CLASS_MAP.get(model_family, EpochTransformer)
     model_config = deepcopy(_MODEL_CONFIG_MAP.get(model_name, ModelCfg.epoch_crnn))
     # Bridge TrainCfg.age_adv → model config (age-adversarial branch toggle).
     # CLI flags override the config block.
     age_adv_cfg = deepcopy(
-        train_config.get("age_adv", CFG(enable=False, alpha=0.5, lambda_=1.0, hidden_dim=32, position="before_film"))
+        train_config.get(
+            "age_adv",
+            CFG(
+                enable=False,
+                alpha=0.5,
+                lambda_=1.0,
+                hidden_dim=32,
+                position="before_film",
+            ),
+        )
     )
     if train_config.get("age_adv_enable", False):
         age_adv_cfg.enable = True
@@ -712,7 +731,13 @@ if __name__ == "__main__":
     night_cfg = deepcopy(
         train_config.get(
             "night_features",
-            CFG(enable=False, dim=15, hidden_dim=[32, 16], activation="gelu", dropouts=0.1),
+            CFG(
+                enable=False,
+                dim=15,
+                hidden_dim=[32, 16],
+                activation="gelu",
+                dropouts=0.1,
+            ),
         )
     )
     if train_config.get("night_features_enable", False):

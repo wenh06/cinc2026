@@ -1,5 +1,6 @@
 """ """
 
+import json
 import os
 import tempfile
 from copy import deepcopy
@@ -9,15 +10,18 @@ from typing import Union
 import numpy as np
 import pandas as pd
 import torch
+from torch_ecg.cfg import CFG
 from torch_ecg.utils.misc import str2bool
 
 from cfg import _BASE_DIR, ModelCfg, TrainCfg
 from dataset import CINC2026Dataset, collate_fn
 from evaluate_model import evaluate_model as _evaluate_model
 from evaluate_model import run as model_evaluator_func
+from helper_code import DEMOGRAPHICS_FILE
 from models import EpochCRNN, EpochTransformer
 from run_model import run as model_runner_func
 from team_code import _MODEL_CLASS_MAP, _resolve_db_dir, train_model
+from trainer import CINC2026Trainer
 from utils.misc import func_indicator
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -124,13 +128,19 @@ def test_models() -> None:
             out = model(input_dict)
 
         assert "ci_logits" in out, f"{model_name}: ci_logits missing from output"
-        assert out["ci_logits"].shape == (B, 1), f"{model_name}: expected ci_logits (B,1), got {out['ci_logits'].shape}"
+        assert out["ci_logits"].shape == (
+            B,
+            1,
+        ), f"{model_name}: expected ci_logits (B,1), got {out['ci_logits'].shape}"
 
         # Inference (single sample, numpy)
         feat_np = np.random.randn(100, D).astype(np.float32)
         demo_np = np.array([0.65, 1.0, 0.5], dtype=np.float32)
         outputs = model.inference(epoch_features=feat_np, demographics=demo_np)
-        assert outputs.ci_prob.shape == (1, 2), f"{model_name}: expected ci_prob (1,2), got {outputs.ci_prob.shape}"
+        assert outputs.ci_prob.shape == (
+            1,
+            2,
+        ), f"{model_name}: expected ci_prob (1,2), got {outputs.ci_prob.shape}"
         prob = outputs.ci_prob[0, 1].item()
         assert 0.0 <= prob <= 1.0, f"{model_name}: probability out of [0,1]: {prob}"
 
@@ -203,8 +213,6 @@ def test_trainer() -> None:
     echo_write_permission(tmp_data_dir)
     echo_write_permission(tmp_model_dir)
 
-    from trainer import CINC2026Trainer
-
     train_config = deepcopy(TrainCfg)
     train_config.db_dir = _resolve_db_dir(str(tmp_data_dir))
     train_config.n_epochs = 3
@@ -247,10 +255,6 @@ def test_entry() -> None:
     2. ``run_model.py``    →  ``team_code.load_model`` + ``team_code.run_model``
     3. ``evaluate_model.py`` →  scoring
     """
-    from torch_ecg.cfg import CFG
-
-    from helper_code import DEMOGRAPHICS_FILE
-
     echo_write_permission(tmp_data_dir)
     echo_write_permission(tmp_model_dir)
     echo_write_permission(tmp_output_dir)
@@ -278,8 +282,6 @@ def test_entry() -> None:
     # 1. Train (short run for speed; CI shrinks batch to avoid OOM)
     # ------------------------------------------------------------------
     print("   Train model   ".center(100, "#"))
-    import json as _json
-    import tempfile as _tempfile
 
     # Build CI-specific config overrides and inject via CINC2026_OVERRIDE_JSON.
     # n_epochs=3 keeps the test fast; batch_size=4 prevents OOM in CI.
@@ -288,8 +290,8 @@ def test_entry() -> None:
         _ci_cfg["batch_size"] = 4
 
     prev_override = os.environ.get("CINC2026_OVERRIDE_JSON")
-    _tmp_override = _tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    _json.dump(_ci_cfg, _tmp_override)
+    _tmp_override = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    json.dump(_ci_cfg, _tmp_override)
     _tmp_override.close()
     os.environ["CINC2026_OVERRIDE_JSON"] = _tmp_override.name
     try:

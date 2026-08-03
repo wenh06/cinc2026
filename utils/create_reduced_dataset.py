@@ -36,6 +36,8 @@ import shutil
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 SITES = ["S0001", "I0002", "I0006"]
 DEMOGRAPHICS_FILE = "demographics.csv"
 ANN_SUBDIR = "algorithmic_annotations"
@@ -91,8 +93,6 @@ def main():
     print(f"Copied {DEMOGRAPHICS_FILE}")
 
     # Copy all CAISR EDFs site by site; count missing against demographics.csv
-    import pandas as pd
-
     demo_df = pd.read_csv(src_demo)
     # Build expected (SiteID, filename) pairs from demographics.csv
     expected: dict[str, list[str]] = {site: [] for site in SITES}
@@ -134,7 +134,12 @@ def main():
     # -----------------------------------------------------------------------
     zip_path = Path(args.zip).resolve()
     zip_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=str(out_root), base_dir="training_set")
+    shutil.make_archive(
+        str(zip_path.with_suffix("")),
+        "zip",
+        root_dir=str(out_root),
+        base_dir="training_set",
+    )
     size_mb = zip_path.stat().st_size / 1024 / 1024
     print(f"\nCreated {zip_path}  ({size_mb:.1f} MB)")
     print(

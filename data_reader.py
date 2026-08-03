@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 from pyedflib import EdfReader
+from sklearn.metrics import cohen_kappa_score, f1_score
 from torch_ecg.cfg import CFG
 from torch_ecg.databases.base import DataBaseInfo, PSGDataBaseMixin, _DataBase
 from torch_ecg.utils.misc import add_docstring
@@ -213,7 +214,12 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
         # ── Standard (nested) layout ──────────────────────────────────────────
         # Official phase uses "training_set_small" / "training_set_large";
         # unofficial phase used "training_set".  All three are recognised.
-        for part in ["training_set", "training_set_small", "training_set_large", "supplementary_set"]:
+        for part in [
+            "training_set",
+            "training_set_small",
+            "training_set_large",
+            "supplementary_set",
+        ]:
             demo_path = self.db_dir / part / "demographics.csv"
             if demo_path.exists():
                 dfs.append(_build_partition_df(demo_path, self.db_dir / part, part))
@@ -482,11 +488,6 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
         >>> result = dr.compare_annotations()
         >>> print(result["aggregate"])
         """
-        from sklearn.metrics import (
-            cohen_kappa_score,
-            f1_score,
-        )
-
         stage_names = {1: "N3", 2: "N2", 3: "N1", 4: "REM", 5: "W", 9: "Unknown"}
 
         # ------------------------------------------------------------------
@@ -639,7 +640,11 @@ class CINC2026(_DataBase, PSGDataBaseMixin):
                 else:
                     print(f"  {k:<30s}: {v}")
 
-        return {"per_record": per_record, "aggregate": agg, "n_records": len(per_record)}
+        return {
+            "per_record": per_record,
+            "aggregate": agg,
+            "n_records": len(per_record),
+        }
 
     @property
     def url(self) -> Dict[str, str]:  # type: ignore
