@@ -41,9 +41,12 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
   [official baseline](https://github.com/physionetchallenges/python-example-2026.git).
   Modifications on these files are invalid and are immediately overwritten after being pulled by the organizers (or the submission system).
 - [sync_official.py](sync_official.py): script for synchronizing data from the official baseline and official scoring code.
-- [team_code.py](team_code.py): entry file for the submissions.
+- [team_code.py](team_code.py): entry file for the submissions — `train_model` / `load_model` / `run_model`, including the
+  5-fold CV ensemble mode (`TrainCfg.folds = [0..4]`: one model per fold, equal-weight probability averaging at inference).
 - [trainer.py](trainer.py): training loop (`CINC2026Trainer`) with AUROC monitoring, per-site evaluation, and early stopping.
-- [dataset.py](dataset.py): dataset classes (`CINC2026Dataset`, `FastDataReader`) and CAISR epoch-feature construction (`build_epoch_features`).
+- [dataset.py](dataset.py): dataset classes (`CINC2026Dataset`, `FastDataReader`) and CAISR epoch-feature construction
+  (`build_epoch_features`).  Supports 5-fold CV via `train_config.fold`; train/val splits use multi-factor stratification
+  (label × site × sex × age band) via torch_ecg's `stratified_train_test_split`.
 - [data_reader.py](data_reader.py): database reader (`CINC2026`) for loading PSG recordings, CAISR and human-expert annotations.
 - [outputs.py](outputs.py): model output dataclass (`CINC2026Outputs`) handling logits → probability → binary prediction conversion.
 - [test_docker.py](test_docker.py): tests for the Docker submission pipeline (dataset, models, trainer, entry).
@@ -64,7 +67,9 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 - [models](models): model definitions (`EpochTransformer`, `EpochCRNN` with multiple CNN backbone variants, `ChannelTransformer`, `MultiBranchNet`).
 - [utils](utils): utility scripts, including [custom scoring metrics](utils/scoring_metrics.py), [hyperparameter search](utils/run_search.py),
   [log analysis](utils/analyze_logs.py), [feature shift analysis](utils/analyze_feature_shift.py),
-  and a [fixed train/val split](utils/cinc2026-data-split.json).
+  the [fixed train/val split](utils/cinc2026-data-split.json) (alias of the 5-fold split's fold_0),
+  the [5-fold split generator](utils/make_5fold_split.py) + [5-fold split](utils/cinc2026-5fold-split.json),
+  and [out-of-fold evaluation](utils/evaluate_oof.py) for the ensemble.
 - [results](results): experiment log files and analysis notes.
 
 </details>
