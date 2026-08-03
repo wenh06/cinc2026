@@ -491,14 +491,46 @@ Training is balanced (~50% CI positive) but test reflects real-world prevalence 
 - **Temperature scaling**: learn a single scalar temperature on val logits post-training.
 - **Platt scaling**: logistic regression on val logits (more expressive than temperature).
 
-### 10.3 Cross-site robustness (deferred)
+### 10.3 Cross-site robustness (partially implemented 2026-08-03)
 
-- **StratifiedGroupKFold** (by SiteID × label): ensures each validation fold contains proportional representation from all three sites.
-- **Domain-adversarial training**: add a site classifier head with gradient reversal to the pooled representation.
+- ✅ **Multi-factor stratified split**: both the canonical dynamic split
+  (`CINC2026Dataset`) and the 5-fold split (`utils/make_5fold_split.py`)
+  stratify on **label × SiteID × Sex × age band** via torch_ecg's
+  `stratified_train_test_split` — each fold mirrors the population on every
+  axis (val deviations < 0.8% in the 5-fold report).  Replaces the earlier
+  label-only `StratifiedShuffleSplit`.
+- **Domain-adversarial training**: add a site classifier head with gradient reversal to the pooled representation. (deferred — O1 age-adv variant failed; site-adv not yet attempted)
 
-### 10.4 Ensemble (deferred)
+### 10.4 Ensemble — 5-fold CV (O5, implemented 2026-08-03)
 
-After identifying top-2 model configurations, ensemble their probability outputs:
+5-fold CV ensemble implemented end-to-end (multi-factor stratified split →
+5× training → equal-weight probability averaging at inference):
+
+- **Split** — `utils/make_5fold_split.py` carves 5 non-overlapping val folds
+  (≈ 20% each, disjoint, covering all 6600 records) via recursive
+  `torch_ecg.utils.utils_data.stratified_train_test_split` with multi-factor
+  stratification on **label × site × sex × age band** (per-fold deviations
+  < 0.8% on every axis).  Shipped as `utils/cinc2026-5fold-split.json`.
+- **Dataset** — `CINC2026Dataset` reads `train_config.fold` (e.g.
+  `CINC2026_OVERRIDE_JSON {"fold": k}`) and serves that fold's train/val
+  split; the dynamic canonical split now also uses the same multi-factor
+  stratified split (replacing the old sklearn label-only
+  StratifiedShuffleSplit; see §10.3).
+- **Training** — `TrainCfg.folds = [0..4]` makes `team_code.train_model`
+  train one model per fold, saving each to `model_folder/fold_{k}/`.
+  `None` (default) keeps the single-model behaviour.
+- **Inference** — `load_model` auto-detects the `fold_*` layout and loads
+  all folds; `run_model` returns the equal-weight average of the fold
+  probabilities.  Official re-training cost: `len(folds) ×` single-fold time.
+- **Evaluation** — `utils/evaluate_oof.py` scores each fold on its own val
+  fold and aggregates: unbiased out-of-fold AUROC / age-conditioned AUROC /
+  per-site.  OOF is a conservative lower bound of the 5-model average the
+  official test set measures.
+
+Status: machinery validated via 3-epoch smoke (2 folds) + full test_docker
+suite; full 5×100-epoch run (O5) pending — target: O0 0.833/0.762 or better.
+
+The older α-weighted top-2-config ensemble idea (below) remains available:
 ```python
 final_prob = α · prob_model_a + (1-α) · prob_model_b
 ```
