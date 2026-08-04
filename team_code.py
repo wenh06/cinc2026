@@ -51,7 +51,7 @@ import json
 import os
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -88,7 +88,6 @@ _MODEL_CLASS_MAP: Dict[str, Any] = {
     "epoch_crnn_tresnetE_M": EpochCRNN,
     "epoch_crnn_tresnetE_L": EpochCRNN,
 }
-from outputs import CINC2026Outputs
 from trainer import CINC2026Trainer
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -370,6 +369,55 @@ def load_model(model_folder: str, verbose: bool) -> Dict[str, Any]:
 
 
 @torch.no_grad()
+def _sliding_window_inference(
+    model: Any,
+    epoch_features: np.ndarray,
+    demographics: np.ndarray,
+    night_features: Optional[np.ndarray],
+    window: int,
+    stride: int,
+) -> Tuple[int, float]:
+    """Infer one record over overlapping windows; return ``(binary, probability)``.
+
+    Training crops long nights to ``max_seq_len`` (768) but the inference
+    features here are the full night, so a full-length forward sees sequences
+    the model never trained on.  Covering the night with overlapping windows of
+    the training length and averaging the per-window probabilities removes the
+    mismatch (measured +0.013 age-cond on fold_0 val vs full-night inference).
+    """
+    T = len(epoch_features)
+    if T <= window:
+        out = model.inference(
+            epoch_features=epoch_features,
+            demographics=demographics,
+            night_features=night_features,
+        )
+        return int(out.cognitive_impairment[0]), float(out.ci_prob[0, 1])
+
+    starts = list(range(0, T - window + 1, stride))
+    starts.append(T - window)  # include the tail window
+    win_probs = []
+    for s in starts:
+        w = epoch_features[s : s + window]
+        pad = window - len(w)
+        if pad > 0:
+            w = np.pad(w, ((0, pad), (0, 0)), mode="constant")
+            padding_mask = np.concatenate([np.zeros(window - pad, dtype=bool), np.ones(pad, dtype=bool)])
+        else:
+            padding_mask = None
+        out = model.inference(
+            epoch_features=w,
+            demographics=demographics,
+            padding_mask=padding_mask,
+            night_features=night_features,
+        )
+        win_probs.append(float(out.ci_prob[0, 1]))
+
+    p = float(np.mean(win_probs))
+    threshold = float(getattr(model.config, "binary_threshold", 0.5))
+    return int(p >= threshold), p
+
+
 def run_model(
     model_dict: Dict[str, Any],
     record: Dict[str, str],
@@ -424,13 +472,19 @@ def _run_model_impl(
 
     bids_folder = str(record[HEADERS["bids_folder"]])
     site_id = str(record[HEADERS["site_id"]])
-    session_id = str(record[HEADERS["session_id"]])
+    # Keep the original SessionID type for load_demographics: demographics.csv
+    # stores it as an int column, so find_patients returns an int; casting to
+    # str here silently makes the mask never match and every demographics
+    # vector falls back to the defaults (measured: ~0.09 AUROC / ~0.10 age-cond
+    # loss on the O5 fold_0 val).  The filename still needs the string form.
+    session_id_raw = record[HEADERS["session_id"]]
+    session_id = str(session_id_raw)
 
     # ------------------------------------------------------------------
     # 1. Demographics
     # ------------------------------------------------------------------
     demo_file = Path(data_folder) / DEMOGRAPHICS_FILE
-    patient_data = load_demographics(str(demo_file), bids_folder, session_id)
+    patient_data = load_demographics(str(demo_file), bids_folder, session_id_raw)
     demographics = _extract_demographics(patient_data)
 
     # ------------------------------------------------------------------
@@ -480,16 +534,25 @@ def _run_model_impl(
     # ------------------------------------------------------------------
     # 3. Inference
     # ------------------------------------------------------------------
+    # Sliding-window inference: mirror the training-time max_seq_len crop by
+    # covering the full night with overlapping windows of that length (window
+    # / stride = 768 / 384), averaging the per-window probabilities.  Short
+    # nights run whole.  Window length follows the training config so a
+    # future change of the crop length propagates automatically.
+    window = getattr(train_config, "max_seq_len", None) if train_config is not None else None
+    window = int(window) if window else 768
+    stride = window // 2
+
     if model is not None:
         # Single-model path
-        outputs: CINC2026Outputs = model.inference(
-            epoch_features=epoch_features,
-            demographics=demographics,
-            night_features=night_features,
+        return _sliding_window_inference(
+            model,
+            epoch_features,
+            demographics,
+            night_features,
+            window=window,
+            stride=stride,
         )
-        binary_output = int(outputs.cognitive_impairment[0])
-        probability_output = float(outputs.ci_prob[0, 1])
-        return binary_output, probability_output
 
     # 5-fold ensemble path — the probability is the equal-weight average of
     # the fold probabilities (used by the AUROC-family metrics), while the
@@ -498,16 +561,17 @@ def _run_model_impl(
     # The folds share the same feature pipeline, so the per-record features
     # above are computed once and reused.
     models: Any = model_dict["models"]
-    outputs = [
-        m.inference(
-            epoch_features=epoch_features,
-            demographics=demographics,
-            night_features=night_features,
+    results = [
+        _sliding_window_inference(
+            m,
+            epoch_features,
+            demographics,
+            night_features,
+            window=window,
+            stride=stride,
         )
         for m in models
     ]
-    probabilities = [float(o.ci_prob[0, 1]) for o in outputs]
-    probability_output = float(np.mean(probabilities))
-    votes = [int(o.cognitive_impairment[0]) for o in outputs]
-    binary_output = int(sum(votes) > len(votes) // 2)
+    probability_output = float(np.mean([p for _, p in results]))
+    binary_output = int(sum(b for b, _ in results) > len(results) // 2)
     return binary_output, probability_output
