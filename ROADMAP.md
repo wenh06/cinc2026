@@ -527,8 +527,12 @@ Training is balanced (~50% CI positive) but test reflects real-world prevalence 
   per-site.  OOF is a conservative lower bound of the 5-model average the
   official test set measures.
 
-Status: machinery validated via 3-epoch smoke (2 folds) + full test_docker
-suite; full 5×100-epoch run (O5) pending — target: O0 0.833/0.762 or better.
+Status: ✅ full 5-fold run complete (2026-08-04).  Per-fold best age-cond
+0.785/0.704/0.756/0.740/0.747 (folds 0-4); OOF aggregate AUROC 0.8223 /
+age-cond 0.7169 (conservative single-model bound — the test-time 5-model
+probability average is expected to be higher).  fold_0 (0.785) vs O0repro
+(0.758) on the identical split: +0.027, consistent with run-to-run variance.
+Details in the Experiment Log row **O5**.
 
 The older α-weighted top-2-config ensemble idea (below) remains available:
 ```python
@@ -661,7 +665,7 @@ Template for tracking training runs.  Fill in one row per experiment.
 | **O3** | 2026-08-03 | `EpochCRNN_M` pw∈{2,4,8,16} | 21 | pos_weight sweep (P2 calibration; default 12.16 = prevalence-matched) | 3e-4 / 16 / 100 | 0.825–0.827 | pw4 0.761 / pw8 0.755 / pw2 0.750 / pw16 0.731 | ≈0 | ❌ No gain over default. Best pw=4 (0.7607 @ ep74, stop 94) ties O0 Run A (0.762, within noise), below Run B (0.769); pw=16 collapses fast (0.731 @ ep17, stop 36). Per-site pw=4: S0001=0.844, I0006=0.783, I0002=0.751. Default 12.16 stays. Temperature/Platt (analysis-only, `scripts/calibrate.py`): AUROC rank-invariant by construction; Platt ECE 0.033→0.014, mean_p→prevalence. P2 route closed. |
 | **O0repro** | 2026-08-03 | `EpochCRNN_M` | 21 | baseline re-run on the **new multi-factor canonical split (= 5-fold fold_0)** | 3e-4 / 16 / 100 | 0.845 | 0.758 | — | Baseline on the new split (best @ ep42, early stop 62). Same split/config as O5's fold_0 — the reference for all post-2026-08-03 experiments. Per-site: S0001=0.855, I0006=0.795, I0002=0.822. |
 | **O4** | 2026-08-03 | `EpochCRNN_M` + no-age | 21 | zero the age channel in FiLM demographics (age is constant within each age-stratum → cannot help within-stratum ranking) | 3e-4 / 16 / 100 | 0.816 | 0.760 | ≈0 (vs O0repro +0.002, vs O0 −0.002) | ❌ Failed. Best @ ep44 (early stop 65). age-cond ties both baselines within noise; plain AUROC clearly below O0repro (0.816 vs 0.845). Zeroing the age channel neither helps nor hurts ranking — the model's within-stratum ranking was already age-independent (the age input powered only between-stratum shortcuts). Note: O4 trained on the pre-alias multi-factor canonical split (record composition differs slightly from fold_0); conclusion unchanged vs both references. Route closed. |
-| **O5** | 2026-08-03→04 | `EpochCRNN_M` ×5 | 21 | 5-fold CV ensemble (multi-factor stratified split, equal-weight probability average; see §10.4) | 3e-4 / 16 / 100 | — | — | — | ⏳ Training (folds 0-4, ~50 min/fold; fold_0 best age-cond 0.79 @ ep37). Pending: OOF evaluation + fold-0 vs O0repro same-split consistency check. |
+| **O5** | 2026-08-03→04 | `EpochCRNN_M` ×5 | 21 | 5-fold CV ensemble (multi-factor stratified split, equal-weight probability average; see §10.4) | 3e-4 / 16 / 100 | 0.822 | 0.717 | −0.041 (OOF, conservative single-model bound; fold-0 same-split +0.027 vs O0repro) | ✅ Complete. Per-fold best age-cond (monitor): 0.785/0.704/0.756/0.740/0.747 (folds 0-4, @ ep 37/15/48/26/22) — run-to-run spread ≈ 0.08. OOF aggregate (6600 recs, one prediction per record, checkpoints = best-by-monitor): AUROC 0.8223 / age-cond 0.7169; per-site S0001 0.836/0.738, I0002 0.730/0.653, I0006 0.802/0.682. fold_0 (0.785) vs O0repro (0.758, same split): +0.027, within expected init/shuffle variance — no systematic split artifact. OOF is the honest lower bound; the test-time 5-model average should be ≥. |
 
 ### Ablation protocol
 
