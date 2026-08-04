@@ -141,10 +141,20 @@ Unofficial Phase:
 Official Phase:
   submission 1:
     submission ID: 2372
-    submission time: 8/2/2026 6:02:47 ET
+    submission time: 8/2/2026 6:02:48 ET
     challenge_scores:
-      AUROC: ~
-      age_cond_AUROC: ~
+      Reward: 0.027
+      age_cond_AUROC: 0.617
+      age_weighted_AUROC: 0.589
+      AUROC: 0.614
+      AUPRC: 0.194
+      Accuracy: 0.938
+      F-measure: 0.083
+    notes: |
+      scored on validation/large (organizer re-trained on their own split).
+      Large drop vs local val (0.762/0.833) — likely domain shift to the
+      official validation cohort; age-cond ≈ plain AUROC there (0.617 vs 0.614),
+      and accuracy≈0.94 / F1≈0.08 indicate near-always-negative predictions.
     model: EpochCRNN_M
     loss: BCEWithLogitsLoss
     train:
