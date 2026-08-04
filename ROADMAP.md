@@ -499,6 +499,14 @@ Training is balanced (~50% CI positive) but test reflects real-world prevalence 
   `stratified_train_test_split` — each fold mirrors the population on every
   axis (val deviations < 0.8% in the 5-fold report).  Replaces the earlier
   label-only `StratifiedShuffleSplit`.
+- 🔄 **Leave-one-site-out (LO-site) experiment** (running 2026-08-04): train
+  on 2 sites, evaluate on the held-out one (3 runs, one per site) to quantify
+  the site-dependent domain shift behind the sub1 official drop.  Site
+  prevalence: S0001 6.5% (5139 recs) / I0006 9.8% (1142) / I0002 16.3% (319 —
+  2.5× prevalence, prime shift suspect).  OOF per-site reference (O5):
+  S0001 0.738 / I0006 0.682 / I0002 0.653.  Script `/tmp/lo_site/lo_site.py`
+  (patches `dataset.FIXED_DATA_SPLIT_FILE` to a per-site split); results to
+  `Experiment Log` when done.
 - **Domain-adversarial training**: add a site classifier head with gradient reversal to the pooled representation. (deferred — O1 age-adv variant failed; site-adv not yet attempted)
 
 ### 10.4 Ensemble — 5-fold CV (O5, implemented 2026-08-03)
@@ -520,8 +528,16 @@ Training is balanced (~50% CI positive) but test reflects real-world prevalence 
   train one model per fold, saving each to `model_folder/fold_{k}/`.
   `None` (default) keeps the single-model behaviour.
 - **Inference** — `load_model` auto-detects the `fold_*` layout and loads
-  all folds; `run_model` returns the equal-weight average of the fold
-  probabilities.  Official re-training cost: `len(folds) ×` single-fold time.
+  all folds.  Probability = equal-weight average of the fold probabilities
+  (AUROC-family metrics); binary prediction = **majority vote** of per-fold
+  binaries, each thresholded at its fold's **tuned binary threshold**
+  (reward-maximising scan on the val split after training, serialised into
+  the checkpoint's model config; old checkpoints fall back to 0.5).
+  Long nights (> `max_seq_len`=768) are inferred via **sliding windows**
+  (window 768 / stride 384, per-window probability average) to match the
+  training-time sequence-length distribution (measured +0.013 age-cond on
+  fold_0 val vs full-night).  Official re-training cost:
+  `len(folds) ×` single-fold time.
 - **Evaluation** — `utils/evaluate_oof.py` scores each fold on its own val
   fold and aggregates: unbiased out-of-fold AUROC / age-conditioned AUROC /
   per-site.  OOF is a conservative lower bound of the 5-model average the
@@ -539,6 +555,30 @@ The older α-weighted top-2-config ensemble idea (below) remains available:
 final_prob = α · prob_model_a + (1-α) · prob_model_b
 ```
 Optimise α on the validation set.
+
+### 10.5 Submission 1 (ID 2372) + inference-chain fixes (2026-08-04) 🐛
+
+- **sub1 result**: official score on the (unreleased) validation set — age-cond
+  **0.617** / AUROC 0.614 / Reward 0.027 / F1 0.083, far below local val
+  (0.762/0.833).  The organisers re-train with our code on their own split,
+  then score on a hidden validation set (not released).
+- **Root cause found**: a **SessionID type bug** in `run_model` — the
+  demographics CSV stores `SessionID` as int64, but `_run_model_impl` cast it
+  to str, so `load_demographics`' strict-type mask never matched and **every
+  inference demographics vector silently fell back to the defaults
+  `[0.6, 0, 0.5]`** (60 y / female / BMI 25).  Age is the core of the primary
+  metric (FiLM conditioning + official age-matched pairing), so the model
+  lost its age modulation entirely.  Measured impact on O5 fold_0 val (same
+  model/records, only the session_id handling differs): AUROC 0.7444→0.8455,
+  age-cond 0.6960→0.7798.  On the official small set (1103, ⊂ large — leaked
+  for eval, relative comparison only): 0.6863→0.753.
+- **Fix** (`7c1187a`): pass the original SessionID type to
+  `load_demographics`; keep `str()` only for filename assembly.  Together with
+  the sliding-window inference (§10.4), the fixed chain re-evaluates to
+  0.8455/0.7798 on fold_0 val.  **Ready to re-submit as sub2** (training code
+  unchanged — the organisers' re-training is unaffected).
+- **Lesson**: pure-numeric IDs are a classic int-vs-str trap — pandas masks
+  compare strictly typed values and fail silently (no error, just fallback).
 
 ---
 
