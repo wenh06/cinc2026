@@ -33,7 +33,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.metrics import average_precision_score, roc_auc_score
 from torch.nn.parallel import DataParallel as DP
 from torch.utils.data import DataLoader, Dataset
 from torch_ecg.cfg import CFG
@@ -44,7 +43,7 @@ from tqdm.auto import tqdm
 from cfg import ModelCfg, TrainCfg
 from dataset import CINC2026Dataset, collate_fn
 from models import EpochCRNN, EpochTransformer
-from utils.misc import age_conditioned_auroc
+from utils.scoring_metrics import compute_challenge_metrics
 
 __all__ = ["CINC2026Trainer"]
 
@@ -473,32 +472,14 @@ class CINC2026Trainer(BaseTrainer):
                 "Only one class present in evaluation split; AUROC/AUPRC set to chance level.",
                 level=logging.WARNING,
             )
-            auroc = 0.5
-            auprc = float(np.mean(labels_arr)) if len(labels_arr) > 0 else 0.5
-        else:
-            auroc = float(roc_auc_score(labels_arr, probs_arr))
-            auprc = float(average_precision_score(labels_arr, probs_arr))
-        metrics: Dict[str, float] = {"auroc": auroc, "auprc": auprc}
-
-        # Official primary metric: age-conditioned AUROC (positive-negative
-        # pairs within ±2 years of age only).  Falls back to plain AUROC when
-        # no valid age-matched pair exists on this split.
-        auroc_age_cond = age_conditioned_auroc(probs_arr, labels_arr, ages_arr, age_tolerance=2.0)
-        if auroc_age_cond == 0.5 and auroc != 0.5:
-            self.log_manager.log_message(
-                "No valid age-matched positive-negative pairs; age-conditioned AUROC falls back to plain AUROC.",
-                level=logging.WARNING,
-            )
-            auroc_age_cond = auroc
-        metrics["auroc_age_cond"] = auroc_age_cond
-
-        # Per-site AUROC — requires at least two classes present per site
-        if all_site_ids:
-            site_arr = np.array(all_site_ids)
-            for site in sorted(np.unique(site_arr)):
-                mask = site_arr == site
-                if mask.sum() > 1 and len(np.unique(labels_arr[mask])) > 1:
-                    metrics[f"auroc_{site}"] = float(roc_auc_score(labels_arr[mask], probs_arr[mask]))
+        metrics = compute_challenge_metrics(
+            labels_arr,
+            probs_arr,
+            ages_arr,
+            site_ids=np.array(all_site_ids) if all_site_ids else None,
+            age_to_prevalence=None,
+            threshold=getattr(self.model.config, "binary_threshold", 0.5),
+        )
 
         # Log a few sample predictions for a sanity check
         log_n = min(5, len(all_probs))

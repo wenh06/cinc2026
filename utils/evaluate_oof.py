@@ -22,14 +22,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import torch
-from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from cfg import TrainCfg
 from dataset import CINC2026Dataset, collate_fn
 from models import EpochCRNN, EpochTransformer
-from utils.misc import age_conditioned_auroc
+from utils.scoring_metrics import compute_challenge_metrics
 
 _MODEL_CLASS_MAP = {
     "epoch_transformer": EpochTransformer,
@@ -107,9 +106,11 @@ def main() -> None:
         if len(labels) < 2 or len(np.unique(labels)) < 2:
             print(f"  fold_{fold}: only {len(labels)} samples / single class — skipping metrics")
         else:
-            auroc = roc_auc_score(labels, probs)
-            auroc_ac = age_conditioned_auroc(probs, labels, ages)
-            print(f"  fold_{fold} val: AUROC={auroc:.4f}  age-cond={auroc_ac:.4f}  (n={len(labels)})")
+            m = compute_challenge_metrics(labels, probs, ages)
+            print(
+                f"  fold_{fold} val: AUROC={m['auroc']:.4f}  age-cond={m['auroc_age_cond']:.4f}  "
+                f"age-wtd={m['auroc_age_weighted']:.4f}  (n={len(labels)})"
+            )
 
         all_probs.append(probs)
         all_labels.append(labels)
@@ -123,16 +124,19 @@ def main() -> None:
 
     print("\n" + "=" * 60)
     print(f"OOF aggregate ({len(labels)} records, one prediction per record)")
-    print(f"  AUROC          : {roc_auc_score(labels, probs):.4f}")
-    print(f"  age-cond AUROC : {age_conditioned_auroc(probs, labels, ages):.4f}")
+    m = compute_challenge_metrics(labels, probs, ages, site_ids=sites)
+    print(f"  AUROC          : {m['auroc']:.4f}")
+    print(f"  age-cond AUROC : {m['auroc_age_cond']:.4f}")
+    print(f"  age-wtd AUROC  : {m['auroc_age_weighted']:.4f}")
+    print(f"  AUPRC          : {m['auprc']:.4f}")
+    print(f"  accuracy       : {m['accuracy']:.4f}")
+    print(f"  f_measure      : {m['f_measure']:.4f}")
     for site in _SITES:
-        mask = sites == site
-        if mask.sum() < 2 or len(np.unique(labels[mask])) < 2:
+        key = f"auroc_{site}"
+        if key not in m:
             continue
-        print(
-            f"  {site:<6s} (n={mask.sum():5d}): AUROC={roc_auc_score(labels[mask], probs[mask]):.4f}  "
-            f"age-cond={age_conditioned_auroc(probs[mask], labels[mask], ages[mask]):.4f}"
-        )
+        mask = sites == site
+        print(f"  {site:<6s} (n={mask.sum():5d}): AUROC={m[key]:.4f}  " f"age-cond={m[f'auroc_age_cond_{site}']:.4f}")
 
 
 if __name__ == "__main__":
