@@ -108,7 +108,7 @@ def main() -> None:
             print(f"  fold_{fold}: only {len(labels)} samples / single class — skipping metrics")
         else:
             auroc = roc_auc_score(labels, probs)
-            auroc_ac = age_conditioned_auroc(labels, probs, ages)
+            auroc_ac = age_conditioned_auroc(probs, labels, ages)
             print(f"  fold_{fold} val: AUROC={auroc:.4f}  age-cond={auroc_ac:.4f}  (n={len(labels)})")
 
         all_probs.append(probs)
@@ -124,14 +124,14 @@ def main() -> None:
     print("\n" + "=" * 60)
     print(f"OOF aggregate ({len(labels)} records, one prediction per record)")
     print(f"  AUROC          : {roc_auc_score(labels, probs):.4f}")
-    print(f"  age-cond AUROC : {age_conditioned_auroc(labels, probs, ages):.4f}")
+    print(f"  age-cond AUROC : {age_conditioned_auroc(probs, labels, ages):.4f}")
     for site in _SITES:
         mask = sites == site
         if mask.sum() < 2 or len(np.unique(labels[mask])) < 2:
             continue
         print(
             f"  {site:<6s} (n={mask.sum():5d}): AUROC={roc_auc_score(labels[mask], probs[mask]):.4f}  "
-            f"age-cond={age_conditioned_auroc(labels[mask], probs[mask], ages[mask]):.4f}"
+            f"age-cond={age_conditioned_auroc(probs[mask], labels[mask], ages[mask]):.4f}"
         )
 
 
