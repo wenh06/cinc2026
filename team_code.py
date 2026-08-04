@@ -59,13 +59,14 @@ from pyedflib import EdfReader
 
 from cfg import ModelCfg, TrainCfg, sync_feature_config
 from const import BINARY_AROUSAL_FEATURE_SET, resolve_feature_pipeline
-from dataset import build_epoch_features, build_night_features, normalize_epoch_features
+from dataset import CINC2026Dataset, build_epoch_features, build_night_features, normalize_epoch_features
 from helper_code import (
     DEMOGRAPHICS_FILE,
     HEADERS,
     load_demographics,
 )
 from models import EpochCRNN, EpochTransformer
+from utils.scoring_metrics import tune_binary_threshold
 
 # Map TrainCfg.model_name → model class.  Both plain names ("epoch_transformer")
 # and size-suffixed names ("epoch_transformer_M", "epoch_crnn_L") are handled.
@@ -294,6 +295,19 @@ def _train_single_fold(train_config: Any, out_folder: Path, verbose: bool) -> No
     # writes the best-epoch weights, not the final-epoch ones.
     if best_state_dict:
         model.load_state_dict(best_state_dict)
+
+    # Tune the binary threshold on the best checkpoint over the val split and
+    # persist it in the *model* config (serialised into the checkpoint, so
+    # run_model reproduces it).  Full-night features (max_seq_len=None) match
+    # the run_model inference path.  Affects Reward/Accuracy/F1 only.
+    tune_cfg = deepcopy(train_config)
+    tune_cfg.lazy = False
+    tune_cfg.max_seq_len = None
+    tune_ds = CINC2026Dataset(tune_cfg, training=False)
+    best_thr = tune_binary_threshold(model, tune_ds, DEVICE)
+    model.config.binary_threshold = best_thr
+    model_config.binary_threshold = best_thr  # keep the local copy in sync
+
     save_path = out_folder / FINAL_MODEL_NAME
     model.save(str(save_path), train_config=train_config)
 
@@ -477,20 +491,23 @@ def _run_model_impl(
         probability_output = float(outputs.ci_prob[0, 1])
         return binary_output, probability_output
 
-    # 5-fold ensemble path — equal-weight average of the fold probabilities.
+    # 5-fold ensemble path — the probability is the equal-weight average of
+    # the fold probabilities (used by the AUROC-family metrics), while the
+    # binary prediction is a majority vote of the per-fold binaries, each
+    # produced with its own tuned threshold from its checkpoint config.
     # The folds share the same feature pipeline, so the per-record features
     # above are computed once and reused.
     models: Any = model_dict["models"]
-    probabilities = [
-        float(
-            m.inference(
-                epoch_features=epoch_features,
-                demographics=demographics,
-                night_features=night_features,
-            ).ci_prob[0, 1]
+    outputs = [
+        m.inference(
+            epoch_features=epoch_features,
+            demographics=demographics,
+            night_features=night_features,
         )
         for m in models
     ]
+    probabilities = [float(o.ci_prob[0, 1]) for o in outputs]
     probability_output = float(np.mean(probabilities))
-    binary_output = int(probability_output >= 0.5)
+    votes = [int(o.cognitive_impairment[0]) for o in outputs]
+    binary_output = int(sum(votes) > len(votes) // 2)
     return binary_output, probability_output

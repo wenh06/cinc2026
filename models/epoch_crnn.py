@@ -337,7 +337,7 @@ class EpochCRNN(ECG_CRNN):
         ci_logit = self.clf(features).squeeze(-1)  # (B,)
         ci_prob_pos = torch.sigmoid(ci_logit)  # (B,)
         ci_prob = torch.stack([1.0 - ci_prob_pos, ci_prob_pos], dim=-1)  # (B, 2)
-        cognitive_impairment = (ci_prob_pos >= 0.5).long()  # (B,)
+        cognitive_impairment = (ci_prob_pos >= self.config.get("binary_threshold", 0.5)).long()  # (B,)
 
         ci_loss = None
         if "labels" in input_tensors:

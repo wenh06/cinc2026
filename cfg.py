@@ -227,6 +227,11 @@ def _make_epoch_transformer(d_model: int, nhead: int, num_layers: int, dim_feedf
     cfg.nhead = nhead
     cfg.num_layers = num_layers
     cfg.dim_feedforward = dim_feedforward
+    # binary_threshold: P(CI=1) cutoff for the binary prediction.  Lives in the
+    # *model* config (not TrainCfg) so it is serialised into the checkpoint —
+    # ``_train_single_fold`` overwrites it with the val-tuned optimum after
+    # training, and run_model reproduces it.  Affects Reward/Accuracy/F1 only.
+    cfg.binary_threshold = 0.5
     return cfg
 
 
@@ -271,6 +276,11 @@ def _make_epoch_crnn(cnn_name: str, lstm_hidden: list, clf_hidden: list) -> CFG:
     cfg.age_adv = deepcopy(TrainCfg.age_adv)  # disabled by default; toggle at train time
     cfg.night_features = deepcopy(TrainCfg.night_features)  # disabled by default; toggle at train time
     cfg.no_age = deepcopy(TrainCfg.no_age)  # disabled by default; toggle at train time
+    # binary_threshold: P(CI=1) cutoff for the binary prediction.  Lives in the
+    # *model* config (not TrainCfg) so it is serialised into the checkpoint —
+    # ``_train_single_fold`` overwrites it with the val-tuned optimum after
+    # training, and run_model reproduces it.  Affects Reward/Accuracy/F1 only.
+    cfg.binary_threshold = 0.5
     # Select backbone
     cfg.cnn.name = cnn_name
     # Override LSTM hidden sizes for this preset
