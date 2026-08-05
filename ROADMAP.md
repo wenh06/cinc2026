@@ -499,14 +499,21 @@ Training is balanced (~50% CI positive) but test reflects real-world prevalence 
   `stratified_train_test_split` — each fold mirrors the population on every
   axis (val deviations < 0.8% in the 5-fold report).  Replaces the earlier
   label-only `StratifiedShuffleSplit`.
-- 🔄 **Leave-one-site-out (LO-site) experiment** (running 2026-08-04): train
-  on 2 sites, evaluate on the held-out one (3 runs, one per site) to quantify
-  the site-dependent domain shift behind the sub1 official drop.  Site
-  prevalence: S0001 6.5% (5139 recs) / I0006 9.8% (1142) / I0002 16.3% (319 —
-  2.5× prevalence, prime shift suspect).  OOF per-site reference (O5):
-  S0001 0.738 / I0006 0.682 / I0002 0.653.  Script `/tmp/lo_site/lo_site.py`
-  (patches `dataset.FIXED_DATA_SPLIT_FILE` to a per-site split); results to
-  `Experiment Log` when done.
+- ✅ **Leave-one-site-out (LO-site) experiment** (2026-08-04, complete): train
+  on 2 sites, evaluate on the *full* held-out site (3 runs).  Results
+  (held-out age-cond; OOF per-site reference in parens):
+  S0001 **0.552** (0.738, −0.186, n_train=1461) / I0006 **0.562** (0.682,
+  −0.120, n_train=5458) / I0002 **0.742** (0.653, **+0.089**, n_train=6281).
+  → **Cross-site shift is real and asymmetric, but the "I0002 is the sub1
+  drop source" hypothesis is refuted** — a model that never saw I0002 scores
+  it *better* than the in-distribution OOF model.  Caveats: (a) n_train
+  differs across runs (S0001 held-out trains on only 1,461 recs), so the drop
+  ordering (S0001 > I0006 > I0002) partly reflects training-set size, not
+  pure domain shift; (b) all 3 models hit their best by epoch 2–5 with fast
+  early stop; (c) eval used center-crop (not sliding-window, −0.007 scale).
+  Script `/tmp/lo_site/lo_site.py` (patches
+  `dataset.FIXED_DATA_SPLIT_FILE` to a per-site split); results in
+  `/tmp/lo_site/metrics_{site}.json`.  See Experiment Log row **O6**.
 - **Domain-adversarial training**: add a site classifier head with gradient reversal to the pooled representation. (deferred — O1 age-adv variant failed; site-adv not yet attempted)
 
 ### 10.4 Ensemble — 5-fold CV (O5, implemented 2026-08-03)
@@ -706,6 +713,7 @@ Template for tracking training runs.  Fill in one row per experiment.
 | **O0repro** | 2026-08-03 | `EpochCRNN_M` | 21 | baseline re-run on the **new multi-factor canonical split (= 5-fold fold_0)** | 3e-4 / 16 / 100 | 0.845 | 0.758 | — | Baseline on the new split (best @ ep42, early stop 62). Same split/config as O5's fold_0 — the reference for all post-2026-08-03 experiments. Per-site: S0001=0.855, I0006=0.795, I0002=0.822. |
 | **O4** | 2026-08-03 | `EpochCRNN_M` + no-age | 21 | zero the age channel in FiLM demographics (age is constant within each age-stratum → cannot help within-stratum ranking) | 3e-4 / 16 / 100 | 0.816 | 0.760 | ≈0 (vs O0repro +0.002, vs O0 −0.002) | ❌ Failed. Best @ ep44 (early stop 65). age-cond ties both baselines within noise; plain AUROC clearly below O0repro (0.816 vs 0.845). Zeroing the age channel neither helps nor hurts ranking — the model's within-stratum ranking was already age-independent (the age input powered only between-stratum shortcuts). Note: O4 trained on the pre-alias multi-factor canonical split (record composition differs slightly from fold_0); conclusion unchanged vs both references. Route closed. |
 | **O5** | 2026-08-03→04 | `EpochCRNN_M` ×5 | 21 | 5-fold CV ensemble (multi-factor stratified split, equal-weight probability average; see §10.4) | 3e-4 / 16 / 100 | 0.822 | 0.717 | −0.041 (OOF, conservative single-model bound; fold-0 same-split +0.027 vs O0repro) | ✅ Complete. Per-fold best age-cond (monitor): 0.785/0.704/0.756/0.740/0.747 (folds 0-4, @ ep 37/15/48/26/22) — run-to-run spread ≈ 0.08. OOF aggregate (6600 recs, one prediction per record, checkpoints = best-by-monitor): AUROC 0.8223 / age-cond 0.7169; per-site S0001 0.836/0.738, I0002 0.730/0.653, I0006 0.802/0.682. fold_0 (0.785) vs O0repro (0.758, same split): +0.027, within expected init/shuffle variance — no systematic split artifact. OOF is the honest lower bound; the test-time 5-model average should be ≥. |
+| **O6** | 2026-08-04 | `EpochCRNN_M` ×3 | 21 | leave-one-site-out (train 2 sites → eval full held-out site, 3 runs) | 3e-4 / 16 / 100 | 0.636 / 0.627 / 0.769 | **0.552 / 0.562 / 0.742** (S0001/I0006/I0002 held-out) | −0.186 / −0.120 / **+0.089** (vs O5 OOF per-site 0.738/0.682/0.653) | ✅ Complete. Held-out age-cond: S0001 0.552 (n_train=1461, best ep5), I0006 0.562 (n_train=5458, ep2), I0002 0.742 (n_train=6281, ep3). **Refutes the "I0002 (2.5× prevalence) is the sub1 drop source" hypothesis — held-out I0002 *beats* its in-distribution OOF.** Drop ordering tracks n_train (1461/5458/6281), so the S0001/I0006 drops confound domain shift with training-set size; all 3 models best at ep 2–5 with fast early stop; eval used center-crop (not sliding window, −0.007 scale). Implication: cross-site shift is real and asymmetric but not obviously site-identity-driven for I0002; hidden-val site-mix shift remains an uncontrolled risk, and the SessionID-bug fix remains the main lever for sub2. |
 
 ### Ablation protocol
 

@@ -197,6 +197,38 @@ TrainCfg.night_features = CFG(
 # with age_adv (which needs the age channel as its regression target).
 TrainCfg.no_age = False
 
+# O7 (2026-08-05): age-matched pairwise ranking loss — direct optimisation of
+# the official primary metric (age-conditioned AUROC), which ranks CI-positive
+# vs CI-negative records whose ages differ by ≤ tolerance years.  The trainer
+# keeps a rolling memory bank of recent (logit, age, label) samples; on every
+# step it forms age-matched pos/neg pairs across the bank + current batch and
+# adds λ·mean(max(0, margin − (s_pos − s_neg))) to the BCE loss.  Bank logits
+# are stored detached, so gradients flow only through the current batch.
+#   enable      (bool,  False) — toggle (default OFF = O0 baseline unchanged)
+#   lambda_     (float, 1.0)   — weight of the pairwise loss
+#   margin      (float, 0.5)   — ranking margin
+#   tolerance   (float, 2.0)   — max |age diff| (years) for a valid pair;
+#                                matches the official age_conditioned_auroc
+#   bank_size   (int,   512)   — memory-bank capacity (rolling FIFO)
+TrainCfg.age_pairwise = CFG(
+    enable=False,
+    lambda_=1.0,
+    margin=0.5,
+    tolerance=2.0,
+    bank_size=512,
+)
+
+# O7 (2026-08-05): focal loss — FL = (1−pt)^γ·BCE down-weights easy samples
+# (pt = exp(−BCE), BCE with the same pos_weight as the baseline criterion).
+# When enabled, team_code._train_single_fold swaps the model criterion to
+# FocalBCEWithLogitsLoss (models/epoch_crnn.py) with this gamma.
+#   enable  (bool,  False) — toggle (default OFF = O0 baseline unchanged)
+#   gamma   (float, 2.0)
+TrainCfg.focal = CFG(
+    enable=False,
+    gamma=2.0,
+)
+
 # Callbacks & Logging
 TrainCfg.log_step = 20
 TrainCfg.keep_checkpoint_max = 5
@@ -276,6 +308,7 @@ def _make_epoch_crnn(cnn_name: str, lstm_hidden: list, clf_hidden: list) -> CFG:
     cfg.age_adv = deepcopy(TrainCfg.age_adv)  # disabled by default; toggle at train time
     cfg.night_features = deepcopy(TrainCfg.night_features)  # disabled by default; toggle at train time
     cfg.no_age = deepcopy(TrainCfg.no_age)  # disabled by default; toggle at train time
+    cfg.age_pairwise = deepcopy(TrainCfg.age_pairwise)  # disabled by default; toggle at train time
     # binary_threshold: P(CI=1) cutoff for the binary prediction.  Lives in the
     # *model* config (not TrainCfg) so it is serialised into the checkpoint —
     # ``_train_single_fold`` overwrites it with the val-tuned optimum after
