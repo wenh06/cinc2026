@@ -120,9 +120,9 @@ TrainCfg.grad_clip = 1.0  # gradient clipping max norm (0 to disable)
 # Augmentation / Regularisation
 # CAISR features are pre-bounded in [0,1]; PreprocManager is for raw signals only.
 #
-# label_smoothing: targets {0,1} → {ε/2, 1-ε/2}.  0 for the official phase —
-# at 7.6% prevalence smoothing dilutes the rare positive signal.
-TrainCfg.label_smoothing = 0.0
+# label_smoothing: targets {0,1} → {ε/2, 1-ε/2}.  0.05 with focal (O7b) —
+# measured +0.049 age-cond on the full-train eval (0.8018 vs 0.7525).
+TrainCfg.label_smoothing = 0.05
 
 # pos_weight: BCEWithLogitsLoss pos_weight for the minority (CI-positive) class.
 # Official phase prevalence is 7.6% → positive:negative ≈ 1:12, so we up-weight
@@ -192,12 +192,13 @@ TrainCfg.age_pairwise = CFG(
 )
 
 # O7: focal loss — (1−pt)^γ·BCE (pt = exp(−BCE), same pos_weight as baseline)
-# down-weights easy samples.  Enable → team_code swaps the criterion to
-# FocalBCEWithLogitsLoss.
-#   enable  (bool,  False) — toggle (default OFF = O0 baseline)
+# down-weights easy samples; enable → team_code swaps the criterion to
+# FocalBCEWithLogitsLoss.  Sub3: ON — focal + label_smoothing 0.05 measured
+# +0.049 age-cond (full-train 0.8018 vs 0.7525).
+#   enable  (bool,  True)  — toggle
 #   gamma   (float, 2.0)
 TrainCfg.focal = CFG(
-    enable=False,
+    enable=True,
     gamma=2.0,
 )
 
