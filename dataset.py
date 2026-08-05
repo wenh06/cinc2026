@@ -153,6 +153,7 @@ class CINC2026Dataset(Dataset, ReprMixin):
         self._labelled_df = self.reader._df_records[self.reader._df_records["partition"].isin(_train_parts)].copy()
 
         self.records = self._train_test_split()
+        self._filter_missing_caisr()
         self.fdr = FastDataReader(self.reader, self.records, self.config)
 
         self.__cache: Optional[Dict] = None
@@ -162,6 +163,22 @@ class CINC2026Dataset(Dataset, ReprMixin):
     # ------------------------------------------------------------------
     # Dataset interface
     # ------------------------------------------------------------------
+
+    def _filter_missing_caisr(self) -> None:
+        """Drop records whose CAISR (algorithmic) annotations are missing.
+
+        Such records fall back to an empty epoch matrix (n_epochs=0) in
+        :meth:`FastDataReader.__getitem__` — they carry no learning signal,
+        and a whole batch of them would make the collated ``t_max`` 0 and
+        crash the CNN (first conv kernel = 5).  Applied to both the train
+        and the val split right after :meth:`_train_test_split`, so no
+        empty-feature record ever reaches a DataLoader batch.  Inference
+        (``run_model``) is unaffected: it still emits the (0, 0.5) fallback.
+        """
+        missing = [rec for rec in self.records if not os.path.exists(str(self.reader._df_records.loc[rec, "algo_ann_path"]))]
+        if missing:
+            self.records = [rec for rec in self.records if rec not in set(missing)]
+            print(f"[CINC2026Dataset] dropped {len(missing)} record(s) missing CAISR " f"annotations: {missing}")
 
     def __len__(self) -> int:
         if self.__cache is None:
