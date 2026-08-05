@@ -626,15 +626,6 @@ Optimise α on the validation set.
   invalidates the unofficial "smaller is better" finding; single-fold
   controlled run first (~2 h), adopt 5-fold only if it wins.
 
-### 10.8 Data facts (2026-08-05)
-
-- `/Data1/wenh06/physionetchallenge2026data/` is the official **small**
-  (1,103 recs) FULL copy: raw physiological EDFs (214 GB) +
-  `human_annotations` + `algorithmic_annotations`.  P3/P4 (spectral features,
-  Philosopher's Stone) remain infeasible regardless: raw signals exist only
-  for small, the training set is large (6,600), and the Docker submission
-  pipeline carries no raw data.
-
 ---
 
 ## Official Phase Strategy (post-abstract-acceptance)
