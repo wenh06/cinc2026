@@ -587,6 +587,54 @@ Optimise α on the validation set.
 - **Lesson**: pure-numeric IDs are a classic int-vs-str trap — pandas masks
   compare strictly typed values and fail silently (no error, just fallback).
 
+### 10.6 O7 loss experiments + sub3 config (2026-08-05)
+
+- **O7a (age-matched pairwise) failed** — see Experiment Log; the λ=1.0 hinge
+  fights the BCE signal on this small dataset (unstable, −0.04 age-cond).
+- **O7b (focal γ=2 + label_smoothing 0.05) strong gain** — full-train
+  official-flow eval: age-cond **0.8018 vs 0.7525 (+0.049)**, AUROC 0.8670,
+  every site up.  Mechanism: at 7.6% prevalence the abundant easy negatives
+  dominate BCE gradients; focal (1−pt)^γ re-centres them on hard samples.
+  **Adopted as the new default** (cfg: `focal.enable=True`,
+  `label_smoothing=0.05`).
+- **sub3 default config** = 5-fold ensemble (§10.4) × focal+LS:
+  `TrainCfg.folds=[0..4]`.  Local 5-fold × focal validation run in progress;
+  docker-test CI green on the new defaults (sub2 fix + O7 code; master stays
+  at `eec84e0` until the organisers finish processing sub2/ID 2407).
+- **Empty-batch crash found & fixed** (`4f267fb`): 13 records lack CAISR
+  annotations → empty epoch matrix (n_epochs=0).  With batch_size ≤ 13 (CI
+  uses 4), a whole batch of such records makes collate `t_max=0` → CNN first
+  conv (kernel 5) crashes ("padded input size 4").  Official re-training
+  (batch 16) **cannot** hit this (13 < 16), but CI did — a probabilistic
+  crash that cost a CI run.  Fix: `CINC2026Dataset._filter_missing_caisr()`
+  drops annotation-missing records from both train and val splits right
+  after `_train_test_split`; inference (`run_model`) still emits the
+  per-record (0, 0.5) fallback.
+- **Tool**: `scripts/eval_all_models.py` — official-flow full-train eval
+  (`find_patients` → per-record `run_model` → official metric set + per-site)
+  for FAIR cross-model comparison on the (leaked) training data.
+
+### 10.7 Research queue — sub4 candidates (2026-08-05)
+
+- **batch_size 16→32** (√-scale lr 3e-4→~4e-4, re-tune weight decay): a
+  5-fold per-fold trainset is only ~859 recs — bs=64 → 13 steps/epoch, the
+  unofficial sub2 failure regime; bs=32 → ~27 steps/epoch, a reasonable
+  middle ground.  Scaling-law basis: critical batch size scales with dataset
+  size (∝ D^0.4–0.5), largely independent of model size (Kempner 2024;
+  "Power Lines", NeurIPS 2025).
+- **EpochCRNN_M → _L (1.65 M params)**: 8.5× more data (6600 vs 780 recs)
+  invalidates the unofficial "smaller is better" finding; single-fold
+  controlled run first (~2 h), adopt 5-fold only if it wins.
+
+### 10.8 Data facts (2026-08-05)
+
+- `/Data1/wenh06/physionetchallenge2026data/` is the official **small**
+  (1,103 recs) FULL copy: raw physiological EDFs (214 GB) +
+  `human_annotations` + `algorithmic_annotations`.  P3/P4 (spectral features,
+  Philosopher's Stone) remain infeasible regardless: raw signals exist only
+  for small, the training set is large (6,600), and the Docker submission
+  pipeline carries no raw data.
+
 ---
 
 ## Official Phase Strategy (post-abstract-acceptance)
