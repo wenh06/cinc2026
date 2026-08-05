@@ -155,6 +155,8 @@ Official Phase:
       Large drop vs local val (0.762/0.833) — likely domain shift to the
       official validation cohort; age-cond ≈ plain AUROC there (0.617 vs 0.614),
       and accuracy≈0.94 / F1≈0.08 indicate near-always-negative predictions.
+      POSSIBLE BUG: SessionID int/str type bug (demographics fallback in
+      run_model inference, ~+0.08 age-cond locally) — fixed in submission 2.
     model: EpochCRNN_M
     loss: BCEWithLogitsLoss
     train:

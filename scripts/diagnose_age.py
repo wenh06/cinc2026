@@ -13,7 +13,7 @@ Usage:
     python tools/diagnose_age.py \
         -d data/official-phase-large \
         -m saved_models/official_baseline/BestModel_EpochCRNN-epoch51_....pth.tar \
-        -o figs/age_diagnosis/
+        -o images/age_diagnosis/
 """
 
 import argparse
@@ -45,7 +45,7 @@ def parse_args():
     parser.add_argument("-d", "--data-dir", type=str, default="data/official-phase-large", dest="data_dir")
     parser.add_argument("-s", "--split-file", type=str, default="utils/cinc2026-data-split.json", dest="split_file")
     parser.add_argument("-m", "--model-path", type=str, required=True, dest="model_path")
-    parser.add_argument("-o", "--output-dir", type=str, default="figs/age_diagnosis", dest="output_dir")
+    parser.add_argument("-o", "--output-dir", type=str, default="images/age_diagnosis", dest="output_dir")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--batch-size", type=int, default=16, dest="batch_size")
     parser.add_argument("--age-bin-width", type=float, default=5.0, dest="age_bin_width")

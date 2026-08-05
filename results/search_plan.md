@@ -120,7 +120,7 @@ python train_model.py /Data1/wenh06/physionetchallenge2026data/training_set \
 # Analyse all logs and generate plots
 python utils/analyze_logs.py \
     --log-dir saved_models/run/working_dir/log \
-    --out-dir results/plots
+    --out-dir images/analysis
 
 # Quick summary table only
 python utils/analyze_logs.py \

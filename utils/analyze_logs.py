@@ -15,10 +15,10 @@ From the command line::
     # summary table + plots for all runs in a log directory
     python utils/analyze_logs.py --log-dir saved_models/run/working_dir/log
 
-    # compare two specific runs, save plots to results/
+    # compare two specific runs, save plots to images/
     python utils/analyze_logs.py \\
         --log-dir saved_models/run/working_dir/log \\
-        --out-dir results/plots
+        --out-dir images/analysis
 
     # print best-checkpoint table only (no plots)
     python utils/analyze_logs.py --log-dir ... --no-plot
