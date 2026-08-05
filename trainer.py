@@ -281,7 +281,14 @@ class CINC2026Trainer(BaseTrainer):
                     elif self.train_config.early_stopping:
                         if monitor_val >= self.best_metric - self.train_config.early_stopping.min_delta:
                             self.pseudo_best_epoch = self.epoch
-                        elif self.epoch - self.pseudo_best_epoch >= self.train_config.early_stopping.patience:
+                        elif (
+                            self.epoch
+                            - max(
+                                self.pseudo_best_epoch,
+                                self.train_config.early_stopping.get("min_epochs", 0),
+                            )
+                            >= self.train_config.early_stopping.patience
+                        ):
                             self.log_manager.log_message(f"early stopping triggered at epoch {self.epoch}")
                             break
                     self.log_manager.log_message(f"best metric = {self.best_metric:.4f},  obtained at epoch {self.best_epoch}")

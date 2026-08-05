@@ -207,7 +207,10 @@ TrainCfg.log_step = 20
 TrainCfg.keep_checkpoint_max = 5
 TrainCfg.early_stopping = CFG(
     min_delta=0.001,
-    patience=20,  # with 100 epochs; stops ~20 epochs after last improvement
+    patience=15,  # with 100 epochs; stops ~15 epochs after last improvement
+    min_epochs=30,  # early-stop countdown starts at epoch 30 (30% of 100);
+    # prevents early lucky-spike bests (e.g. fold_4 best@ep9) from
+    # triggering a premature stop while the curve is still climbing
 )
 
 
