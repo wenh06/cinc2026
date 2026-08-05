@@ -236,19 +236,11 @@ class AgeMatchedPairwiseLossHinge(torch.nn.Module):
         """
         device, dtype = scores.device, scores.dtype
 
-        # Rolling FIFO bank update — store detached floats so the bank never
-        # carries a stale autograd graph.
-        self._bank.extend(
-            zip(
-                scores.detach().tolist(),
-                ages.detach().tolist(),
-                labels.detach().tolist(),
-            )
-        )
-        if len(self._bank) > self.bank_size:
-            del self._bank[: len(self._bank) - self.bank_size]
-
-        # Assemble pool = current batch (gradient-carrying) + bank (constants)
+        # Pairing pool = current batch (gradient-carrying) + bank (constants).
+        # The bank update happens AFTER pairing — pushing the current batch
+        # into the bank first would duplicate it in the pool (once with
+        # gradients, once detached) and dilute the loss mean with no-gradient
+        # duplicate pairs.
         bank_scores = torch.tensor([t[0] for t in self._bank], device=device, dtype=dtype)
         bank_ages = torch.tensor([t[1] for t in self._bank], device=device, dtype=dtype)
         bank_labels = torch.tensor([t[2] for t in self._bank], device=device, dtype=dtype)
@@ -259,16 +251,42 @@ class AgeMatchedPairwiseLossHinge(torch.nn.Module):
         pos_idx = torch.nonzero(all_labels == 1.0).squeeze(-1)  # (P,)
         neg_idx = torch.nonzero(all_labels == 0.0).squeeze(-1)  # (N,)
         if pos_idx.numel() == 0 or neg_idx.numel() == 0:
+            self._update_bank(scores, ages, labels)
             return scores.sum() * 0.0  # keep differentiable
 
         age_diff = (all_ages[pos_idx][:, None] - all_ages[neg_idx][None, :]).abs()  # (P, N)
         valid = age_diff <= self.tolerance
         if not valid.any():
+            self._update_bank(scores, ages, labels)
             return scores.sum() * 0.0
 
         pos_sel, neg_sel = torch.nonzero(valid, as_tuple=True)
         diff = self.margin - (all_scores[pos_idx[pos_sel]] - all_scores[neg_idx[neg_sel]])
-        return F.relu(diff).mean()
+        loss = F.relu(diff).mean()
+
+        # Rolling FIFO bank update — store detached floats so the bank never
+        # carries a stale autograd graph.  Called on every path (incl. the
+        # early returns) so the bank always accumulates across steps.
+        self._update_bank(scores, ages, labels)
+
+        return loss
+
+    def _update_bank(
+        self,
+        scores: torch.Tensor,
+        ages: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> None:
+        """Push the current batch into the rolling FIFO bank (detached floats)."""
+        self._bank.extend(
+            zip(
+                scores.detach().tolist(),
+                ages.detach().tolist(),
+                labels.detach().tolist(),
+            )
+        )
+        if len(self._bank) > self.bank_size:
+            del self._bank[: len(self._bank) - self.bank_size]
 
 
 class EpochCRNN(ECG_CRNN):
@@ -529,10 +547,15 @@ class EpochCRNN(ECG_CRNN):
             # O7: age-matched pairwise ranking loss (official primary-metric
             # proxy).  Training only — the memory bank must not be polluted
             # by evaluation passes (model.eval() → self.training == False).
+            # Uses the RAW (unsmoothed) labels: run_one_step smooths
+            # ``labels`` when label_smoothing > 0, and the pairing masks
+            # (== 1.0 / == 0.0) would silently match nothing on smoothed
+            # targets.
             if self.age_pairwise is not None and self.training:
+                ap_labels = input_tensors.get("label", labels).to(self.device).to(self.dtype)
                 ap_loss = self.age_pairwise(
                     ci_logit,
-                    labels,
+                    ap_labels,
                     input_tensors["demographics"].to(self.device).to(self.dtype)[:, 0],
                 )
                 ci_loss = ci_loss + self.ap_lambda * ap_loss
