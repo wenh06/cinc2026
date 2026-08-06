@@ -2,14 +2,14 @@
   SUMMARY — official metrics on the full training set
 ============================================================================================
 model                              aurocauroc_age_condauroc_age_weighted       auprc      reward    accuracy   f_measure
-sub3_5fold_focal                  0.8570      0.7948      0.8031      0.4168      0.2561      0.5159      0.2266
+sub3_5fold_focal               0.8632      0.8045      0.8148      0.4305      0.2606      0.5218      0.2284
 
 --- per-site I0002 ---
 model                              auroc    auroc_age_cond      reward
-sub3_5fold_focal                  0.7739            0.7458      1.1985
+sub3_5fold_focal               0.7829            0.7527      0.9242
 --- per-site I0006 ---
 model                              auroc    auroc_age_cond      reward
-sub3_5fold_focal                  0.8471            0.7522      0.3140
+sub3_5fold_focal               0.8536            0.7692      0.3204
 --- per-site S0001 ---
 model                              auroc    auroc_age_cond      reward
-sub3_5fold_focal                  0.8658            0.8166      0.1847
+sub3_5fold_focal               0.8718            0.8244      0.2061
