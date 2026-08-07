@@ -21,6 +21,8 @@ import sys
 from pathlib import Path
 
 import matplotlib
+from pyedflib import EdfReader
+from scipy.stats import gaussian_kde
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -122,8 +124,6 @@ def ks_pairwise(arr_a: np.ndarray, arr_b: np.ndarray, label_a: str, label_b: str
 def raw_signal_stats(edf_path: Path) -> dict | None:
     """Read first 5 channels from an EDF and return their physical range / fs."""
     try:
-        from pyedflib import EdfReader
-
         r = EdfReader(str(edf_path))
         labels = r.getSignalLabels()
         stats = {"n_channels": r.signals_in_file, "duration_s": r.getFileDuration()}
@@ -172,8 +172,6 @@ def plot_boxplots(dfs: dict[str, pd.DataFrame], out_path: Path):
 
 
 def plot_kde_grid(epoch_arrays: dict[str, np.ndarray], out_path: Path):
-    from scipy.stats import gaussian_kde
-
     colors = {"S0001": "#4C72B0", "I0002": "#DD8452", "I0006": "#55A868"}
     selected = [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 17]
     selected_names = [FEATURE_NAMES[j] for j in selected]
@@ -232,7 +230,19 @@ def analyze_supplementary_raw(data_dir: Path, out_dir: Path):
                     }
                 )
 
-    physio_train = data_dir / "training_set" / "physiological_data"
+    # Auto-detect training partition (official phase: training_set_small/large)
+    physio_train = None
+    for part in ["training_set_small", "training_set_large", "training_set"]:
+        candidate = data_dir / part / "physiological_data"
+        if candidate.exists():
+            physio_train = candidate
+            break
+    if physio_train is None:
+        print(
+            "No training partition found; skipping physiological data scan.",
+            file=sys.stderr,
+        )
+        physio_train = Path("/nonexistent")  # empty iterator below
     physio_supp = data_dir / "supplementary_set" / "physiological_data"
 
     for site_dir in sorted(physio_train.iterdir()):

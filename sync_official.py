@@ -12,6 +12,7 @@ official_dir = {
 files = {
     "baseline": [
         "channel_table.csv",
+        "create_labels.py",
         "evaluate_model.py",
         "helper_code.py",
         "run_model.py",

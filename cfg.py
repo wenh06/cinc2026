@@ -9,12 +9,18 @@ import numpy as np
 import torch
 from torch_ecg.cfg import CFG
 
+from const import (
+    BINARY_AROUSAL_FEATURE_SET,
+    NIGHT_FEATURE_DIM,
+    resolve_feature_pipeline,
+)
 from model_configs import EPOCH_CRNN_CONFIG, EPOCH_TRANSFORMER_BASE
 
 __all__ = [
     "BaseCfg",
     "TrainCfg",
     "ModelCfg",
+    "sync_feature_config",
 ]
 
 
@@ -60,7 +66,17 @@ TrainCfg.batch_size = 16
 # train_ratio: fallback 80/20 split used by CINC2026Dataset when the canonical
 # JSON split file (utils/cinc2026-data-split.json) is absent.
 TrainCfg.train_ratio = 0.8
+
+# folds: 5-fold CV ensemble mode.  None (default) trains a single model on
+# the canonical split.  A list of fold indices (e.g. [0, 1, 2, 3, 4]) trains
+# one model per fold on the multi-factor stratified split in
+# utils/cinc2026-5fold-split.json (see utils/make_5fold_split.py) and saves
+# each to model_folder/fold_{k}/; team_code.load_model then loads all folds
+# and team_code.run_model averages their probabilities (equal weight).
+# NOTE: the official re-training will run len(folds) × the single-fold time.
+TrainCfg.folds = None
 TrainCfg.model_name = "epoch_crnn_M"  # best AUROC so far (sub3: 0.555)
+TrainCfg.feature_set = BINARY_AROUSAL_FEATURE_SET  # submission-1~4 feature set; best public run so far
 
 # learning_rate is the canonical name used by BaseTrainer; lr is kept as an alias
 TrainCfg.lr = 3e-4
@@ -69,8 +85,11 @@ TrainCfg.learning_rate = TrainCfg.lr
 # db_dir must be set at training time (e.g. via command-line argument)
 TrainCfg.db_dir = None
 
-# Monitor metric for model selection and early stopping
-TrainCfg.monitor = "auroc"
+# Monitor metric for model selection and early stopping.
+# Official phase primary metric: age-conditioned AUROC ("auroc_age_cond"),
+# computed over positive-negative pairs within ±2 years of age; falls back to
+# plain AUROC when no valid age-matched pair exists on the evaluation split.
+TrainCfg.monitor = "auroc_age_cond"
 
 # Misc training flags
 TrainCfg.debug = False
@@ -84,13 +103,13 @@ TrainCfg.flooding_level = 0  # no flooding regularisation by default
 # full sequence.
 TrainCfg.max_seq_len = 768
 
-# sig_len: raw-signal legacy kept for backwards-compat with models/transformer.py
+# sig_len: raw-signal compatibility knob kept for models/transformer.py
 # prototype.  Not used in the CAISR epoch-feature pipeline.
 TrainCfg.sig_len = 3000  # 30 seconds at 100Hz
 
 # Optimization Configs.
-# 624 train records / batch_size=16 ≈ 39 steps/epoch.
-# 100 epochs × 39 ≈ 3 900 total gradient steps.
+# Official phase: 882 train records / batch_size=16 ≈ 55 steps/epoch.
+# 100 epochs × 55 ≈ 5 500 total gradient steps.
 TrainCfg.n_epochs = 100
 TrainCfg.optimizer = "adamw_amsgrad"
 # weight_decay: BaseTrainer._setup_optimizer reads get_kwargs(AdamW) which uses the
@@ -112,30 +131,71 @@ TrainCfg.grad_clip = 1.0  # gradient clipping max norm (0 to disable)
 # and should only be wired in if a raw-signal model branch is added in the future.
 #
 # label_smoothing: smooths targets {0,1} → {ε/2, 1-ε/2} to discourage over-confident
-# predictions and improve calibration when test prevalence differs from training.
-TrainCfg.label_smoothing = 0.1
+# predictions.  Set to 0 for the official phase — at 7.6% prevalence label smoothing
+# would dilute the already-rare positive signal and hurt recall on the minority class.
+TrainCfg.label_smoothing = 0.0
 
-# pos_weight: BCEWithLogitsLoss pos_weight.
-# Hidden test set appears to have ~6% positive prevalence vs 50% in training.
-# Set to None to disable (balanced training, currently preferred for stability).
-TrainCfg.pos_weight = None  # e.g. 5.0 to upweight positives
+# pos_weight: BCEWithLogitsLoss pos_weight for the minority (CI-positive) class.
+# Official phase prevalence is 7.6% → positive:negative ≈ 1:12, so we up-weight
+# positives by ~12× to keep the loss from being dominated by the negative class.
+TrainCfg.pos_weight = 12.16  # ≈ (1-0.076)/0.076
 
-# Per-record z-score normalization of CAISR epoch features.
-# Each record's epoch feature matrix is normalized independently (mean=0, std=1
-# per feature column across all epochs of that record), which removes systematic
-# site-level baseline differences in feature magnitudes without requiring global
-# training-set statistics at inference time.
-# Note: this is NOT torch_ecg's PreprocManager (which operates on raw signals).
-# The normalization is applied in FastDataReader.__getitem__ and mirrored in
-# team_code._run_model_impl so train and inference are identical.
-# skip_cols is set at the bottom of this file after model_name is known:
-#   CRNN (21-dim, no time encoding) → skip_cols=[]
-#   Transformer (23-dim, time at [21:22]) → skip_cols=[21, 22]
-TrainCfg.normalize = CFG(
-    method="per_record_zscore",
-    eps=1e-8,
-    skip_cols=[21, 22],  # updated below based on model_name
+# The binary-arousal feature set used in unofficial submissions 1-4 did not use
+# per-record normalization, so we
+# keep it disabled by default to match the best public result.  To reproduce the
+# later experimental runs, set e.g.
+#   TrainCfg.feature_set = AROUSAL_PROB_STATS_FEATURE_SET
+#   TrainCfg.normalize = CFG(method="per_record_zscore", eps=1e-8, skip_cols=[])
+# and sync_feature_config(...) will update skip_cols automatically.
+TrainCfg.normalize = None
+
+# Age-adversarial head (gradient reversal) — P0 age-dependence mitigation.
+# When enabled, the pooled backbone representation is fed through a gradient-
+# reversal layer into an age-regression head; the reversed gradient forces the
+# backbone to become age-invariant, leaving FiLM as the only explicit age
+# channel.  Keys mirror the model config (see models/epoch_crnn.py):
+#   enable      (bool,  False) — toggle the branch
+#   alpha       (float, 0.5)   — GRL coefficient
+#   lambda_     (float, 1.0)   — weight of the age MSE in the total loss
+#   hidden_dim  (int,   32)    — age-head MLP width
+#   position    ("before_film" | "after_film")
+TrainCfg.age_adv = CFG(
+    enable=False,
+    alpha=0.5,
+    lambda_=1.0,
+    hidden_dim=32,
+    position="before_film",
 )
+
+# Night-level aggregation features (P1, Phase 9) — per-night 15-dim summary
+# statistics computed from the FULL-night CAISR annotations (independent of
+# the per-epoch matrix, which is cropped to max_seq_len=768).  Fused into the
+# CRNN backbone output via late concatenation: backbone (B, 2·rnn_hidden)
+# → concat MLP(15→32→16) output (B, 16) → FiLM → clf.  Keys mirror the model
+# config (see models/epoch_crnn.py):
+#   enable      (bool,  False)      — toggle the branch (default OFF = O0 baseline)
+#   dim         (int,   15)         — fixed by dataset.build_night_features
+#   hidden_dim  ([int], [32, 16])   — MLP widths; hidden_dim[-1] = fusion dim
+#   activation  (str,   "gelu")
+#   dropouts    (float, 0.1)
+TrainCfg.night_features = CFG(
+    enable=False,
+    dim=NIGHT_FEATURE_DIM,
+    hidden_dim=[32, 16],
+    activation="gelu",
+    dropouts=0.1,
+)
+
+# O4 (2026-08-03): drop the age channel from the FiLM demographic conditioning
+# (demographics [age/100, sex, bmi/50] → [0, sex, bmi/50]).  Rationale: the
+# official metric is the age-conditioned AUROC — age is constant within each
+# stratum, so the age input can only power between-stratum shortcuts and can
+# never help within-stratum ranking.  Zeroing it is informationally equivalent
+# to removing it (a constant channel), and forces the model to rank on sleep
+# features alone.  Age-adversarial training (O1) failed; this is the cheap
+# direct test of the same hypothesis.  EpochCRNN only; mutually exclusive
+# with age_adv (which needs the age channel as its regression target).
+TrainCfg.no_age = False
 
 # Callbacks & Logging
 TrainCfg.log_step = 20
@@ -167,6 +227,11 @@ def _make_epoch_transformer(d_model: int, nhead: int, num_layers: int, dim_feedf
     cfg.nhead = nhead
     cfg.num_layers = num_layers
     cfg.dim_feedforward = dim_feedforward
+    # binary_threshold: P(CI=1) cutoff for the binary prediction.  Lives in the
+    # *model* config (not TrainCfg) so it is serialised into the checkpoint —
+    # ``_train_single_fold`` overwrites it with the val-tuned optimum after
+    # training, and run_model reproduces it.  Affects Reward/Accuracy/F1 only.
+    cfg.binary_threshold = 0.5
     return cfg
 
 
@@ -208,6 +273,14 @@ def _make_epoch_crnn(cnn_name: str, lstm_hidden: list, clf_hidden: list) -> CFG:
     cfg.demographic_dim = 3
     cfg.criterion = "BCEWithLogitsLoss"
     cfg.dem_encoder = CFG(enable=True, input_dim=3, hidden_dim=64, mode="film")
+    cfg.age_adv = deepcopy(TrainCfg.age_adv)  # disabled by default; toggle at train time
+    cfg.night_features = deepcopy(TrainCfg.night_features)  # disabled by default; toggle at train time
+    cfg.no_age = deepcopy(TrainCfg.no_age)  # disabled by default; toggle at train time
+    # binary_threshold: P(CI=1) cutoff for the binary prediction.  Lives in the
+    # *model* config (not TrainCfg) so it is serialised into the checkpoint —
+    # ``_train_single_fold`` overwrites it with the val-tuned optimum after
+    # training, and run_model reproduces it.  Affects Reward/Accuracy/F1 only.
+    cfg.binary_threshold = 0.5
     # Select backbone
     cfg.cnn.name = cnn_name
     # Override LSTM hidden sizes for this preset
@@ -276,10 +349,40 @@ ModelCfg.multibranch.dropout = 0.1
 ModelCfg.multibranch.criterion = "CrossEntropyLoss"
 ModelCfg.multibranch.dem_encoder = deepcopy(ModelCfg.transformer.dem_encoder)
 
-# ── Model-type-dependent feature settings ────────────────────────────────────
-# These must come AFTER all model configs and TrainCfg.model_name is set.
-# CRNN: RNN tracks temporal order internally → no time-position encoding needed.
-# Transformer: permutation-invariant → sin/cos time encoding is necessary.
-_is_crnn = "crnn" in TrainCfg.model_name
-TrainCfg.include_time_encoding = not _is_crnn
-TrainCfg.normalize.skip_cols = [] if _is_crnn else [21, 22]
+
+def sync_feature_config(train_cfg: CFG = TrainCfg, model_cfg: CFG = ModelCfg) -> None:
+    """Synchronize feature-set-dependent dimensions and flags across configs."""
+    pipeline = resolve_feature_pipeline(train_cfg.feature_set, train_cfg.model_name)
+    train_cfg.include_time_encoding = pipeline["include_time_encoding"]
+    train_cfg.caisr_feat_dim = pipeline["feature_dim"]
+
+    if train_cfg.normalize and getattr(train_cfg.normalize, "method", "") == "per_record_zscore":
+        train_cfg.normalize.skip_cols = pipeline["time_cols"]
+
+    transformer_dim = resolve_feature_pipeline(train_cfg.feature_set, "epoch_transformer")["feature_dim"]
+    crnn_dim = resolve_feature_pipeline(train_cfg.feature_set, "epoch_crnn")["feature_dim"]
+
+    for name in [
+        "epoch_transformer_S",
+        "epoch_transformer_M",
+        "epoch_transformer_L",
+        "epoch_transformer",
+    ]:
+        getattr(model_cfg, name).caisr_feat_dim = transformer_dim
+
+    for name in [
+        "epoch_crnn_S",
+        "epoch_crnn_M",
+        "epoch_crnn_L",
+        "epoch_crnn",
+        "epoch_crnn_resnetNC_BNse_S",
+        "epoch_crnn_resnetNC_BNse_M",
+        "epoch_crnn_resnetNC_BNse_L",
+        "epoch_crnn_tresnetE_S",
+        "epoch_crnn_tresnetE_M",
+        "epoch_crnn_tresnetE_L",
+    ]:
+        getattr(model_cfg, name).caisr_feat_dim = crnn_dim
+
+
+sync_feature_config()

@@ -2,7 +2,7 @@
 
 Each PSG night is represented as a variable-length sequence of N × 30-second
 epochs (typically 730-1100 per night). Each epoch is encoded as a
-``CAISR_EPOCH_DIM``-dimensional feature vector derived from the CAISR
+``caisr_feat_dim``-dimensional feature vector derived from the CAISR
 algorithmic annotations (see ``dataset.build_epoch_features``).
 
 A Transformer encoder processes the full-night sequence and produces a single
@@ -100,7 +100,7 @@ class EpochTransformer(nn.Module, SizeMixin, CkptMixin):
         self.classes = self.config.classes
         self.n_classes = len(self.classes)
 
-        caisr_dim = self.config.caisr_feat_dim  # 21
+        caisr_dim = self.config.caisr_feat_dim
         d_model = self.config.d_model  # 128
         nhead = self.config.nhead  # 4
         num_layers = self.config.num_layers  # 4
@@ -192,7 +192,7 @@ class EpochTransformer(nn.Module, SizeMixin, CkptMixin):
         ci_logit = self.clf(pooled).squeeze(-1)  # (B,)
         ci_prob_pos = torch.sigmoid(ci_logit)  # (B,)
         ci_prob = torch.stack([1.0 - ci_prob_pos, ci_prob_pos], dim=-1)  # (B, 2)
-        cognitive_impairment = (ci_prob_pos >= 0.5).long()  # (B,)
+        cognitive_impairment = (ci_prob_pos >= self.config.get("binary_threshold", 0.5)).long()  # (B,)
 
         ci_loss = None
         if "labels" in input_tensors:
@@ -216,6 +216,7 @@ class EpochTransformer(nn.Module, SizeMixin, CkptMixin):
         epoch_features: Union[np.ndarray, torch.Tensor],
         demographics: Union[np.ndarray, torch.Tensor],
         padding_mask: Optional[Union[np.ndarray, torch.Tensor]] = None,
+        night_features: Optional[Union[np.ndarray, torch.Tensor]] = None,
     ) -> CINC2026Outputs:
         """Run inference on a single sample or a batch.
 
@@ -227,6 +228,9 @@ class EpochTransformer(nn.Module, SizeMixin, CkptMixin):
             Normalised demographic features.
         padding_mask : ndarray or BoolTensor, shape ``(T,)`` or ``(B, T)``, optional
             Padding mask (True = padding position).
+        night_features : ignored
+            Accepted for API compatibility with :meth:`EpochCRNN.inference`
+            (P1 night-level aggregation branch; EpochTransformer does not use it).
 
         Returns
         -------

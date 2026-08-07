@@ -10,16 +10,15 @@ env:
   # see the Dockerfile for the definition of some of the following environment variables
   # Lifecycle: pre → alpha → beta → final
   status: alpha
-  # Google Drive file ID for the reduced training dataset (all 780 records, CAISR EDFs +
-  # demographics only, ~380 MB).  Created by create_reduced_dataset.py.
-  # Set to empty string to fall back to the mini dataset (171 records, ~28 MB).
-  # The reduced dataset is shared at:
-  # https://drive.google.com/file/d/1FWrDFicvgmatKUcshHPCWyUfcBQR9kAJ/view?usp=sharing
-  REDUCED_DATASET_GDRIVE_ID: "1FWrDFicvgmatKUcshHPCWyUfcBQR9kAJ"
-  # Google Drive file ID for the mini training subset (171 records, ~28 MB CAISR EDFs only).
-  # Created by create_mini_dataset.py and shared at:
-  # https://drive.google.com/file/d/1KUf1c63fK0YTFwsi3irrBSaR069OYdFB/view?usp=sharing
-  MINI_DATASET_GDRIVE_ID: "1KUf1c63fK0YTFwsi3irrBSaR069OYdFB"
+  # Dataset to download for the action test.  Both archives are CAISR-annotations-only
+  # tarballs (demographics.csv + algorithmic_annotations/, no raw PSG) hosted on MEGA:
+  #   small  → official-phase  (1,103 records, 178 MB)   [default]
+  #   large  → official-phase-large (6,600 records, 1.1 GB)
+  # The download URLs (which embed the decryption key) live in GitHub repository
+  # secrets — never commit them:
+  #   MEGA_CAISR_OFFICIAL_PHASE_SMALL_URL  → small dataset archive (1,103 records)
+  #   MEGA_CAISR_OFFICIAL_PHASE_LARGE_URL  → large dataset archive (6,600 records)
+  dataset_size: small
   CINC2026_REVENGER_TEST: 1
   download_data_dir: ${{ github.workspace }}/download_data
   mount_data_dir: /challenge/data
@@ -96,23 +95,33 @@ jobs:
         tags: |
           ${{ env.DOCKER_HUB_USERNAME }}/${{ env.DOCKER_HUB_REPOSITORY }}:${{ env.DOCKER_IMAGE_TAG }}
 
-    - name: Download training dataset (CAISR annotations only)
+    - name: Download training dataset (CAISR annotations only, MEGA)
       if: ${{ env.status != 'pre' }}
-      # Uses the reduced dataset (all 766 records, ~125 MB) when REDUCED_DATASET_GDRIVE_ID
-      # is set; falls back to the mini dataset (171 records, ~28 MB) otherwise.
-      # Both zips contain only demographics.csv + algorithmic_annotations/ (no raw PSG).
-      # Created by create_reduced_dataset.py / create_mini_dataset.py respectively.
+      # MEGA file links embed the decryption key, so they are stored in GitHub
+      # repository secrets and resolved at runtime — never commit the URLs.
+      # megadl (megatools) is used because mega.nz/file links are not plain
+      # HTTP downloads (a bare curl/wget returns an HTML page).
+      env:
+        MEGA_URL_SMALL: ${{ secrets.MEGA_CAISR_OFFICIAL_PHASE_SMALL_URL }}
+        MEGA_URL_LARGE: ${{ secrets.MEGA_CAISR_OFFICIAL_PHASE_LARGE_URL }}
       run: |
-        pip install -q gdown
-        mkdir -p ${{ env.download_data_dir }}
-        if [ -n "${{ env.REDUCED_DATASET_GDRIVE_ID }}" ]; then
-          echo "Downloading reduced dataset (all records, CAISR only) ..."
-          gdown "${{ env.REDUCED_DATASET_GDRIVE_ID }}" -O /tmp/cinc2026-dataset.zip
+        if [ "${{ env.dataset_size }}" = "large" ]; then
+          MEGA_URL="$MEGA_URL_LARGE"
+          echo "Downloading large dataset (6,600 records, ~1.1 GB) ..."
         else
-          echo "REDUCED_DATASET_GDRIVE_ID not set — falling back to mini dataset (171 records)."
-          gdown "${{ env.MINI_DATASET_GDRIVE_ID }}" -O /tmp/cinc2026-dataset.zip
+          MEGA_URL="$MEGA_URL_SMALL"
+          echo "Downloading small dataset (1,103 records, ~178 MB) ..."
         fi
-        unzip -q /tmp/cinc2026-dataset.zip -d ${{ env.download_data_dir }}
+        if [ -z "$MEGA_URL" ]; then
+          echo "MEGA URL secret not set — cannot download dataset."
+          exit 1
+        fi
+        sudo apt-get update -qq && sudo apt-get install -y -qq megatools
+        mkdir -p ${{ env.download_data_dir }}
+        megadl --path /tmp/cinc2026-dataset.tar.gz "$MEGA_URL"
+        echo "=== archive contents (top level) ==="
+        tar -tzf /tmp/cinc2026-dataset.tar.gz | awk -F/ '{print $1}' | sort -u
+        tar -xzf /tmp/cinc2026-dataset.tar.gz -C ${{ env.download_data_dir }}
         echo "=== dataset contents (first 20 files) ==="
         find ${{ env.download_data_dir }} -type f | sort | head -20
         echo "=== total files ==="

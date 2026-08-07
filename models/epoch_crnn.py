@@ -1,15 +1,15 @@
 """EpochCRNN: ResNet-N backbone + Bidirectional LSTM for CinC 2026.
 
 Each PSG night is represented as a variable-length sequence of T × 30-second
-epochs, each encoded as a :data:`~const.CAISR_EPOCH_DIM`-dimensional CAISR
-feature vector.  The model treats this ``(B, T, 21)`` input as a 1-D signal
-with **21 channels** and **T time-steps** (one per epoch), then applies a
+epochs, each encoded as a CAISR feature vector.  The model treats this
+``(B, T, caisr_feat_dim)`` input as a 1-D signal with **caisr_feat_dim**
+channels and **T time-steps** (one per epoch), then applies a
 :class:`torch_ecg.models.ECG_CRNN` backbone.
 
 Architecture
 ------------
-1. **Transpose**: ``(B, T, 21)`` → ``(B, 21, T)`` — 21 CAISR features become
-   the channel dimension.
+1. **Transpose**: ``(B, T, D)`` → ``(B, D, T)`` — CAISR features become the
+   channel dimension.
 
 2. **ResNet-N CNN** (epoch-scale variant, selected via ``config.cnn.name``):
 
@@ -17,7 +17,7 @@ Architecture
 
    .. code-block:: text
 
-       Stem:    Conv1d(21→32, k=5, stride=1) + BN + ReLU
+        Stem:    Conv1d(D→32, k=5, stride=1) + BN + ReLU
        Block 1: BasicBlock(32→ 32, k=5, stride=2)   T   → T/2
        Block 2: BasicBlock(32→ 64, k=3, stride=2)   T/2 → T/4
        Block 3: BasicBlock(64→128, k=3, stride=2)   T/4 → T/8
@@ -66,11 +66,57 @@ from torch_ecg.models._nets import MLP
 from torch_ecg.models.loss import setup_criterion
 
 from cfg import ModelCfg
+from const import NIGHT_FEATURE_DIM
 from outputs import CINC2026Outputs
 
 from .building_blocks import DemographicEncoder
 
-__all__ = ["EpochCRNN"]
+__all__ = ["EpochCRNN", "GradientReversalFunction", "AgeAdversarialHead"]
+
+
+class GradientReversalFunction(torch.autograd.Function):
+    """Gradient Reversal Layer (GRL) for domain-adversarial training.
+
+    ``forward`` is the identity; ``backward`` negates the incoming gradient
+    (scaled by ``alpha``) so the upstream features are pushed *away* from
+    predicting the adversarial target.
+    """
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, alpha: float) -> torch.Tensor:
+        ctx.alpha = alpha
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return -ctx.alpha * grad_output, None
+
+
+class AgeAdversarialHead(torch.nn.Module):
+    """Age-regression head with gradient reversal.
+
+    Attached to the pooled backbone representation; forces the backbone
+    features to become age-invariant by minimising the *negated* age-loss
+    gradient, so the main (CI) task can no longer exploit age as a shortcut.
+    """
+
+    def __init__(self, feature_dim: int, hidden_dim: int = 32, alpha: float = 0.5) -> None:
+        super().__init__()
+        self.alpha = alpha
+        self.grl = GradientReversalFunction.apply
+        self.head = MLP(
+            in_channels=feature_dim,
+            out_channels=[hidden_dim, 1],
+            activation="gelu",
+            bias=True,
+            dropouts=0.1,
+            skip_last_activation=True,
+        )
+        self.criterion = torch.nn.MSELoss()
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        features = self.grl(features, self.alpha)
+        return self.head(features)  # (B, 1) raw prediction of (age/100)
 
 
 class EpochCRNN(ECG_CRNN):
@@ -145,13 +191,43 @@ class EpochCRNN(ECG_CRNN):
         self.classes = list(self.config.classes)
         self.n_classes = len(self.classes)
 
+        # ── Night-level aggregation features (P1, Phase 9) ────────────────────
+        # Late fusion: the backbone output (B, 2·rnn_hidden) is concatenated
+        # with the night-MLP output (B, hidden_dim[-1]) BEFORE FiLM.  The
+        # age-adv "before_film" tap keeps seeing the raw backbone output, so
+        # its head dim is unchanged.  When disabled, night_out_dim = 0 →
+        # fused_dim == clf_in → the architecture is bit-identical to the O0
+        # baseline.  Config keys (all optional, defaults shown):
+        #   night_features.enable     (bool,  False)   — toggle the branch
+        #   night_features.dim        (int,   15)      — fixed by dataset.build_night_features
+        #   night_features.hidden_dim ([int], [32,16]) — MLP widths; [-1] = fusion dim
+        #   night_features.activation (str,   "gelu")
+        #   night_features.dropouts   (float, 0.1)
+        night_cfg = self.config.get("night_features", None)
+        self.night_encoder: Optional[MLP] = None
+        night_out_dim: int = 0
+        if night_cfg is not None and night_cfg.get("enable", False):
+            night_dim = int(night_cfg.get("dim", 15))
+            assert (
+                night_dim == NIGHT_FEATURE_DIM
+            ), f"night feature dim fixed at {NIGHT_FEATURE_DIM} by build_night_features, got {night_dim}"
+            self.night_encoder = MLP(
+                in_channels=night_dim,
+                out_channels=list(night_cfg.get("hidden_dim", [32, 16])),
+                activation=str(night_cfg.get("activation", "gelu")),
+                bias=True,
+                dropouts=float(night_cfg.get("dropouts", 0.1)),
+            )
+            night_out_dim = list(night_cfg.get("hidden_dim", [32, 16]))[-1]  # e.g. 16
+
         # ── Replace 2-class softmax clf with 1-logit BCE clf ─────────────────
         # ECG_CRNN built a 2-output MLP; swap it for a single-logit head so we
         # train with BCEWithLogitsLoss (consistent with EpochTransformer).
         clf_in: int = self.clf.in_channels  # = 2 × rnn_hidden
+        fused_dim: int = clf_in + night_out_dim  # + night fusion dim when enabled
         clf_hidden: list = list(self.config.clf.out_channels)  # e.g. [64]
         self.clf = MLP(
-            in_channels=clf_in,
+            in_channels=fused_dim,
             out_channels=[*clf_hidden, 1],
             activation=self.config.clf.activation,
             bias=True,
@@ -164,7 +240,7 @@ class EpochCRNN(ECG_CRNN):
         if dem_cfg.enable:
             self.dem_encoder = DemographicEncoder(
                 dem_input_dim=dem_cfg.input_dim,
-                feature_dim=clf_in,
+                feature_dim=fused_dim,
                 mode=dem_cfg.mode,
                 hidden_dim=dem_cfg.hidden_dim,
             )
@@ -173,6 +249,41 @@ class EpochCRNN(ECG_CRNN):
 
         # ── Criterion ─────────────────────────────────────────────────────────
         self.criterion = setup_criterion(self.config.criterion, **self.config.get("criterion_kw", {}))
+
+        # ── Age-adversarial head (gradient reversal) ──────────────────────────
+        # Config keys (all optional, defaults shown):
+        #   age_adv.enable      (bool,  False) — toggle the branch
+        #   age_adv.alpha       (float, 0.5)   — GRL gradient-reversal coefficient
+        #   age_adv.lambda_     (float, 1.0)   — weight of the age MSE in the total loss
+        #   age_adv.hidden_dim  (int,   32)    — age-head MLP width
+        #   age_adv.position    ("before_film" | "after_film") — where the head taps
+        #                          the representation.  "before_film" (default)
+        #                          forces the *backbone* to be age-invariant while
+        #                          FiLM remains the only explicit age channel.
+        age_adv_cfg = self.config.get("age_adv", None)
+        self.age_adv: Optional[AgeAdversarialHead] = None
+        self.age_adv_lambda: float = 1.0
+        self.age_adv_position: str = "before_film"
+        if age_adv_cfg is not None and age_adv_cfg.get("enable", False):
+            self.age_adv = AgeAdversarialHead(
+                feature_dim=clf_in,
+                hidden_dim=int(age_adv_cfg.get("hidden_dim", 32)),
+                alpha=float(age_adv_cfg.get("alpha", 0.5)),
+            )
+            self.age_adv_lambda = float(age_adv_cfg.get("lambda_", 1.0))
+            self.age_adv_position = str(age_adv_cfg.get("position", "before_film"))
+
+        # ── O4: drop the age channel from FiLM demographics ─────────────────────
+        # Config key: no_age (bool, False).  When enabled, demographics
+        # [age/100, sex, bmi/50] become [0, sex, bmi/50] in forward — a constant
+        # channel carries no information, so the FiLM modulator learns a fixed
+        # per-(sex,bmi) modulation and the model cannot exploit age as a
+        # between-stratum shortcut (the official metric is age-conditioned
+        # AUROC).  Mutually exclusive with age_adv, whose regression target is
+        # the age channel.
+        self.no_age = bool(self.config.get("no_age", False))
+        if self.no_age and self.age_adv is not None:
+            raise ValueError("no_age and age_adv are mutually exclusive: age_adv needs the age channel")
 
     # ─── Forward pass ────────────────────────────────────────────────────────
 
@@ -185,33 +296,63 @@ class EpochCRNN(ECG_CRNN):
         # (B, T, caisr_dim) → (B, caisr_dim, T) for Conv1d backbone
         x = input_tensors["epoch_features"].to(self.device).to(self.dtype).transpose(1, 2)
         demographics = input_tensors["demographics"].to(self.device).to(self.dtype)
+        if self.no_age:
+            # O4: constant age channel → informationally equivalent to removing
+            # it; the FiLM modulator sees only (0, sex, bmi/50).
+            demographics = torch.cat([torch.zeros_like(demographics[:, :1]), demographics[:, 1:]], dim=-1)
 
         # ── Backbone: CNN + BiLSTM (via ECG_CRNN) ────────────────────────────
         features = self.extract_features(x)  # (B, 2·rnn_hidden)
         features = self.pool(features)
         features = self.pool_rearrange(features)
 
+        # ── Age-adversarial branch (before FiLM) ──────────────────────────────
+        age_loss = None
+        age_pred = None
+        if self.age_adv is not None and self.age_adv_position == "before_film":
+            age_pred = self.age_adv(features)  # (B, 1)
+            age_target = demographics[:, 0:1]  # age/100
+            age_loss = self.age_adv.criterion(age_pred, age_target)
+
+        # ── Night-level aggregation features (late fusion, before FiLM) ───────
+        # The night-MLP output is concatenated to the backbone output here, so
+        # FiLM modulates the fused vector and the "after_film" age-adv tap (if
+        # selected) sees the night contribution as well.
+        if self.night_encoder is not None:
+            night = self.night_encoder(input_tensors["night_features"].to(self.device).to(self.dtype))  # (B, 16)
+            features = torch.cat([features, night], dim=-1)  # (B, 2·rnn_hidden + 16)
+
         # ── FiLM demographic modulation ───────────────────────────────────────
         if self.dem_encoder is not None:
             scale, shift = self.dem_encoder(demographics)
             features = self.dem_encoder.modulate_features(features, scale, shift)
 
+        # ── Age-adversarial branch (after FiLM) ───────────────────────────────
+        if self.age_adv is not None and self.age_adv_position == "after_film":
+            age_pred = self.age_adv(features)
+            age_target = demographics[:, 0:1]
+            age_loss = self.age_adv.criterion(age_pred, age_target)
+
         # ── Classify (1-logit BCE) ─────────────────────────────────────────────
         ci_logit = self.clf(features).squeeze(-1)  # (B,)
         ci_prob_pos = torch.sigmoid(ci_logit)  # (B,)
         ci_prob = torch.stack([1.0 - ci_prob_pos, ci_prob_pos], dim=-1)  # (B, 2)
-        cognitive_impairment = (ci_prob_pos >= 0.5).long()  # (B,)
+        cognitive_impairment = (ci_prob_pos >= self.config.get("binary_threshold", 0.5)).long()  # (B,)
 
         ci_loss = None
         if "labels" in input_tensors:
             labels = input_tensors["labels"].to(self.device).to(self.dtype)
             ci_loss = self.criterion(ci_logit, labels)
+            if age_loss is not None:
+                ci_loss = ci_loss + self.age_adv_lambda * age_loss
 
         return {
             "ci_logits": ci_logit.unsqueeze(-1),  # (B, 1) for CINC2026Outputs
             "ci_prob": ci_prob,  # (B, 2)
             "cognitive_impairment": cognitive_impairment,
-            "ci_loss": ci_loss,
+            "ci_loss": ci_loss,  # total loss (CI BCE + λ·age MSE) when labels present
+            "age_pred": age_pred,  # (B, 1) or None
+            "age_loss": age_loss,  # scalar or None
         }
 
     # ─── Inference ───────────────────────────────────────────────────────────
@@ -222,6 +363,7 @@ class EpochCRNN(ECG_CRNN):
         epoch_features: Union[np.ndarray, torch.Tensor],
         demographics: Union[np.ndarray, torch.Tensor],
         padding_mask: Optional[Union[np.ndarray, torch.Tensor]] = None,
+        night_features: Optional[Union[np.ndarray, torch.Tensor]] = None,
     ) -> CINC2026Outputs:
         """Run inference on a single sample or a batch.
 
@@ -234,6 +376,10 @@ class EpochCRNN(ECG_CRNN):
         padding_mask : ignored
             Accepted for API compatibility with :meth:`EpochTransformer.inference`
             but not used (see class docstring).
+        night_features : ndarray or Tensor, shape ``(night_feature_dim,)`` or ``(B, night_feature_dim)``, optional
+            Night-level aggregation features (P1).  Only used when the model's
+            night branch is enabled; ignored otherwise (so old checkpoints and
+            disabled models never touch this key).
 
         Returns
         -------
@@ -255,6 +401,11 @@ class EpochCRNN(ECG_CRNN):
             "epoch_features": epoch_features,
             "demographics": demographics,
         }
+        if self.night_encoder is not None and night_features is not None:
+            night = _to_tensor(night_features)
+            if night.ndim == 1:
+                night = night.unsqueeze(0)
+            tensors["night_features"] = night
 
         output_dict = self.forward(tensors)
         return CINC2026Outputs.from_dict(output_dict)

@@ -36,6 +36,8 @@ import shutil
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 SITES = ["S0001", "I0002", "I0006"]
 DEMOGRAPHICS_FILE = "demographics.csv"
 ANN_SUBDIR = "algorithmic_annotations"
@@ -61,10 +63,15 @@ def parse_args():
 def main():
     args = parse_args()
     db_dir = Path(args.db_dir).resolve()
-    train_dir = db_dir / "training_set"
+    train_dir = None
+    for part in ["training_set_small", "training_set_large", "training_set"]:
+        candidate = db_dir / part
+        if candidate.exists():
+            train_dir = candidate
+            break
 
-    if not train_dir.exists():
-        print(f"ERROR: training_set not found at {train_dir}", file=sys.stderr)
+    if train_dir is None:
+        print(f"ERROR: no training partition found at {db_dir}", file=sys.stderr)
         sys.exit(1)
 
     out_root = Path(args.out_dir).resolve() if args.out_dir else db_dir.parent / "cinc2026_reduced_build"
@@ -86,8 +93,6 @@ def main():
     print(f"Copied {DEMOGRAPHICS_FILE}")
 
     # Copy all CAISR EDFs site by site; count missing against demographics.csv
-    import pandas as pd
-
     demo_df = pd.read_csv(src_demo)
     # Build expected (SiteID, filename) pairs from demographics.csv
     expected: dict[str, list[str]] = {site: [] for site in SITES}
@@ -129,7 +134,12 @@ def main():
     # -----------------------------------------------------------------------
     zip_path = Path(args.zip).resolve()
     zip_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=str(out_root), base_dir="training_set")
+    shutil.make_archive(
+        str(zip_path.with_suffix("")),
+        "zip",
+        root_dir=str(out_root),
+        base_dir="training_set",
+    )
     size_mb = zip_path.stat().st_size / 1024 / 1024
     print(f"\nCreated {zip_path}  ({size_mb:.1f} MB)")
     print(

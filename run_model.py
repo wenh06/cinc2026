@@ -6,8 +6,8 @@
 #
 #   python run_model.py -d data -m model -o outputs -v
 #
-# where 'data' is a folder containing the Challenge data, 'model' is a folder containing the your trained model, 'outputs' is a
-# folder for saving your model's outputs, and -v is an optional verbosity flag.
+# where 'data' is a folder containing the Challenge data, 'model' is a folder containing your trained model, 'outputs' is a folder
+#  for saving your model's outputs, and -v is an optional verbosity flag.
 
 import argparse
 import os
@@ -55,7 +55,7 @@ def run(args):
         print('Running the Challenge model on the Challenge data...')
 
     # Initialize a dictionary to hold all results.
-    all_results = {}
+    results = {}
 
     # Iterate over the patients.
     for i in range(num_records):
@@ -71,6 +71,8 @@ def run(args):
         # Allow or disallow the model to fail on parts of the data; this can be helpful for debugging.
         try:
             binary_output, probability_output = run_model(model, record, args.data_folder, args.verbose) ### Teams: Implement this function!!!
+            assert(is_boolean(binary_output) or is_nan(binary_output))
+            assert(is_number(probability_output))
         except:
             if args.allow_failures:
                 if args.verbose:
@@ -79,28 +81,18 @@ def run(args):
             else:
                 raise
 
-        # 2. Store the results in the all_results dictionary
-        # Assuming 1 patient has 1 session
-        all_results[patient_id] = (binary_output, probability_output)
+        # Store the results.
+        results[patient_id] = (binary_output, probability_output)
 
-    # 3. Update demographics table with model outputs
+    # Update the demographics table with the model outputs.
     if args.verbose:
         print('Updating demographics table with model outputs...')
     
     patient_data_file = os.path.join(args.data_folder, DEMOGRAPHICS_FILE)
-    output_table_path = update_demographics_table(patient_data_file, args.output_folder, all_results)
+    output_table_path = update_demographics_table(patient_data_file, args.output_folder, results)
 
     if args.verbose:
         print(f'Results saved to: {output_table_path}')
-        print('Done.')
-
-        # head, tail = os.path.split(patient)
-        # output_path = os.path.join(args.output_folder, head)
-        # os.makedirs(output_path, exist_ok=True)
-        # output_file = os.path.join(args.output_folder, patient + '.csv')
-        # save_outputs(output_file, tail, binary_output, probability_output)
-
-    if args.verbose:
         print('Done.')
 
 if __name__ == '__main__':

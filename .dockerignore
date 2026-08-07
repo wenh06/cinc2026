@@ -157,3 +157,10 @@ saved_models
 images
 results
 .github
+
+##############################################
+# large data / archives (never part of the image)
+##############################################
+data
+*.tar.gz
+*.zip

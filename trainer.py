@@ -12,7 +12,9 @@ Key design decisions vs the generic BaseTrainer
 - ``collate_fn`` from ``dataset`` handles variable-length padding.
 - Gradient clipping (``train_config.grad_clip``) is applied after each
   backward pass for Transformer numerical stability.
-- Primary evaluation metric: AUROC (``train_config.monitor = "auroc"``).
+- Primary evaluation metric: AUROC (``train_config.monitor = "auroc"``);
+  official phase primary metric is the age-conditioned AUROC
+  (``"auroc_age_cond"``), computed in :meth:`evaluate`.
 - Per-site AUROC breakdown (S0001 / I0002 / I0006) is logged every epoch
   for domain-shift monitoring.
 """
@@ -24,12 +26,13 @@ import sys
 import textwrap
 from collections import OrderedDict
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import average_precision_score, roc_auc_score
+import torch.optim as optim
 from torch.nn.parallel import DataParallel as DP
 from torch.utils.data import DataLoader, Dataset
 from torch_ecg.cfg import CFG
@@ -39,7 +42,8 @@ from tqdm.auto import tqdm
 
 from cfg import ModelCfg, TrainCfg
 from dataset import CINC2026Dataset, collate_fn
-from models import EpochTransformer
+from models import EpochCRNN, EpochTransformer
+from utils.scoring_metrics import compute_challenge_metrics
 
 __all__ = ["CINC2026Trainer"]
 
@@ -189,6 +193,10 @@ class CINC2026Trainer(BaseTrainer):
         OrderedDict
             State dict of the best model.
         """
+        # lazy=True defers DataLoader construction; build them now
+        if self.train_loader is None:
+            self._setup_dataloaders()
+
         self._setup_optimizer()
         self._setup_scheduler()
         self._setup_criterion()
@@ -263,7 +271,10 @@ class CINC2026Trainer(BaseTrainer):
                     monitor_val = eval_res.get(self.train_config.monitor, -np.inf)
                     if monitor_val > self.best_metric:
                         self.best_metric = monitor_val
-                        self.best_state_dict = self._model.state_dict()
+                        # Deep-copy: state_dict() returns *references* to the parameter
+                        # tensors, so a shallow snapshot would silently track later
+                        # training updates and the saved "best" weights would drift.
+                        self.best_state_dict = deepcopy(self._model.state_dict())
                         self.best_eval_res = deepcopy(eval_res)
                         self.best_epoch = self.epoch
                         self.pseudo_best_epoch = self.epoch
@@ -307,7 +318,7 @@ class CINC2026Trainer(BaseTrainer):
                     f"BestModel_{self.save_prefix}{self.best_epoch}_{get_date_str()}_metric_{monitor_val:.2f}.pth.tar"
                 )
             save_path = self.train_config.model_dir / save_filename
-            self.save_checkpoint(str(save_path))
+            self.save_checkpoint(str(save_path), state_dict=self.best_state_dict)
             self.log_manager.log_message(f"best model saved at {save_path}")
         elif self.train_config.monitor is None:
             self.log_manager.log_message("no monitor set; saving last model as best model")
@@ -376,7 +387,12 @@ class CINC2026Trainer(BaseTrainer):
                 step_metrics = {"loss": loss.item()}
                 if self.scheduler:
                     step_metrics["lr"] = self.scheduler.get_last_lr()[0]
-                    pbar.set_postfix(**{"loss (batch)": loss.item(), "lr": self.scheduler.get_last_lr()[0]})
+                    pbar.set_postfix(
+                        **{
+                            "loss (batch)": loss.item(),
+                            "lr": self.scheduler.get_last_lr()[0],
+                        }
+                    )
                 else:
                     pbar.set_postfix(**{"loss (batch)": loss.item()})
                 self.log_manager.log_metrics(
@@ -394,9 +410,11 @@ class CINC2026Trainer(BaseTrainer):
     def evaluate(self, data_loader: DataLoader) -> Dict[str, float]:
         """Evaluate the model and return a metrics dict.
 
-        Primary metric is ``"auroc"`` (area under the ROC curve).  Additional
-        metrics include ``"auprc"`` and per-site AUROC values when site IDs
-        are present in the batch.
+        Primary metric is ``"auroc"`` (area under the ROC curve) with
+        ``"auroc_age_cond"`` — the official age-conditioned AUROC over
+        positive-negative pairs within ±2 years of age — computed alongside.
+        Additional metrics include ``"auprc"`` and per-site AUROC values when
+        site IDs are present in the batch.
 
         Parameters
         ----------
@@ -406,12 +424,13 @@ class CINC2026Trainer(BaseTrainer):
         Returns
         -------
         dict
-            ``{"auroc": float, "auprc": float, "auroc_<site>": float, ...}``
+            ``{"auroc": float, "auprc": float, "auroc_age_cond": float, "auroc_<site>": float, ...}``
         """
         self.model.eval()
 
         all_probs: List[float] = []
         all_labels: List[int] = []
+        all_ages: List[float] = []
         all_site_ids: List[str] = []
         all_record_ids: List[str] = []
 
@@ -432,10 +451,13 @@ class CINC2026Trainer(BaseTrainer):
                     epoch_features=batch["epoch_features"],
                     demographics=batch["demographics"],
                     padding_mask=batch.get("padding_mask"),
+                    night_features=batch.get("night_features"),
                 )
 
                 all_probs.extend(outputs.ci_prob[:, 1].tolist())
                 all_labels.extend(labels.tolist())
+                # demographics[:, 0] is Age normalised by /100 (FastDataReader)
+                all_ages.extend((batch["demographics"][:, 0].cpu().numpy() * 100.0).tolist())
                 all_site_ids.extend(site_ids)
                 all_record_ids.extend(record_ids)
 
@@ -443,26 +465,21 @@ class CINC2026Trainer(BaseTrainer):
 
         probs_arr = np.clip(np.nan_to_num(np.array(all_probs), nan=0.5), 0.0, 1.0)
         labels_arr = np.array(all_labels)
+        ages_arr = np.array(all_ages)
 
         if len(np.unique(labels_arr)) < 2:
             self.log_manager.log_message(
                 "Only one class present in evaluation split; AUROC/AUPRC set to chance level.",
                 level=logging.WARNING,
             )
-            auroc = 0.5
-            auprc = float(np.mean(labels_arr)) if len(labels_arr) > 0 else 0.5
-        else:
-            auroc = float(roc_auc_score(labels_arr, probs_arr))
-            auprc = float(average_precision_score(labels_arr, probs_arr))
-        metrics: Dict[str, float] = {"auroc": auroc, "auprc": auprc}
-
-        # Per-site AUROC — requires at least two classes present per site
-        if all_site_ids:
-            site_arr = np.array(all_site_ids)
-            for site in sorted(np.unique(site_arr)):
-                mask = site_arr == site
-                if mask.sum() > 1 and len(np.unique(labels_arr[mask])) > 1:
-                    metrics[f"auroc_{site}"] = float(roc_auc_score(labels_arr[mask], probs_arr[mask]))
+        metrics = compute_challenge_metrics(
+            labels_arr,
+            probs_arr,
+            ages_arr,
+            site_ids=np.array(all_site_ids) if all_site_ids else None,
+            age_to_prevalence=None,
+            threshold=getattr(self.model.config, "binary_threshold", 0.5),
+        )
 
         # Log a few sample predictions for a sanity check
         log_n = min(5, len(all_probs))
@@ -487,11 +504,12 @@ class CINC2026Trainer(BaseTrainer):
         faster, a shorter warm-up (e.g. 0.1) helps.  We pass the value from
         ``train_config.pct_start`` if present, otherwise fall back to 0.3.
         """
-        if self.train_config.get("lr_scheduler", "none").lower() not in ("one_cycle", "onecycle"):
+        if self.train_config.get("lr_scheduler", "none").lower() not in (
+            "one_cycle",
+            "onecycle",
+        ):
             super()._setup_scheduler()
             return
-
-        import torch.optim as optim
 
         pct_start = float(self.train_config.get("pct_start", 0.3))
         self.scheduler = optim.lr_scheduler.OneCycleLR(
@@ -506,11 +524,16 @@ class CINC2026Trainer(BaseTrainer):
         # CAISR feature inputs require no signal augmentation.
         self.augmenter_manager = None
 
-    def save_checkpoint(self, path: str) -> None:
-        """Save model + optimizer state to *path*."""
+    def save_checkpoint(self, path: str, state_dict: Optional[Dict] = None) -> None:
+        """Save model + optimizer state to *path*.
+
+        If *state_dict* is ``None``, the current model state is used.
+        """
+        if state_dict is None:
+            state_dict = self._model.state_dict()
         torch.save(
             {
-                "model_state_dict": self._model.state_dict(),
+                "model_state_dict": state_dict,
                 "optimizer_state_dict": self.optimizer.state_dict(),
                 "model_config": self.model_config,
                 "train_config": self.train_config,
@@ -549,17 +572,171 @@ def get_args(**kwargs: Any) -> CFG:
         dest="keep_checkpoint_max",
     )
     parser.add_argument("--debug", type=str2bool, default=False, dest="debug")
+    parser.add_argument(
+        "-m",
+        "--model-dir",
+        type=str,
+        default=None,
+        dest="model_dir",
+        help="directory to save the final model (default: saved_models/)",
+    )
+    parser.add_argument(
+        "-w",
+        "--working-dir",
+        type=str,
+        default=None,
+        dest="working_dir",
+        help="working directory for logs and checkpoints (default: auto-generated under model_dir)",
+    )
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default=TrainCfg.model_name,
+        dest="model_name",
+        help="model config name from ModelCfg, e.g. epoch_crnn_M, epoch_transformer_M",
+    )
+    # ── Age-adversarial branch (P0 mitigation) ────────────────────────────────
+    parser.add_argument(
+        "--age-adv",
+        action="store_true",
+        default=False,
+        dest="age_adv_enable",
+        help="enable the age-adversarial head (gradient reversal) to reduce age shortcut",
+    )
+    parser.add_argument(
+        "--age-adv-alpha",
+        type=float,
+        default=0.5,
+        dest="age_adv_alpha",
+        help="GRL gradient-reversal coefficient for the age-adversarial head",
+    )
+    parser.add_argument(
+        "--age-adv-lambda",
+        type=float,
+        default=1.0,
+        dest="age_adv_lambda",
+        help="weight of the age MSE in the total loss",
+    )
+    # ── Night-level aggregation features (P1, Phase 9) ─────────────────────────
+    parser.add_argument(
+        "--night-features",
+        action="store_true",
+        default=False,
+        dest="night_features_enable",
+        help="enable the night-level aggregation feature branch (Phase 9 / P1); "
+        "EpochCRNN models only, ignored by EpochTransformer",
+    )
+    # ── O4: drop the age channel from FiLM demographics ───────────────────────
+    parser.add_argument(
+        "--no-age",
+        action="store_true",
+        default=False,
+        dest="no_age",
+        help="zero the age channel in the FiLM demographic conditioning "
+        "(age-conditioned AUROC cannot be helped by age — constant within "
+        "stratum); EpochCRNN models only, mutually exclusive with --age-adv",
+    )
     args = vars(parser.parse_args())
     cfg.update(args)
     return CFG(cfg)
 
 
+# ---------------------------------------------------------------------------
+# Model lookup
+# ---------------------------------------------------------------------------
+
+_MODEL_CLASS_MAP = {
+    "epoch_transformer": EpochTransformer,
+    "epoch_crnn": EpochCRNN,
+}
+
+_MODEL_CONFIG_MAP = {}
+for _name in dir(ModelCfg):
+    if _name.startswith("epoch_transformer") or _name.startswith("epoch_crnn"):
+        _MODEL_CONFIG_MAP[_name] = getattr(ModelCfg, _name)
+
+# ---------------------------------------------------------------------------
+
+
 if __name__ == "__main__":
     train_config = get_args(**TrainCfg)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model_config = deepcopy(ModelCfg.epoch_transformer)
-    model = EpochTransformer(config=model_config)
+    # Resolve model directory
+    if train_config.get("model_dir", None) is not None:
+        train_config.model_dir = Path(train_config.model_dir)
+    else:
+        train_config.model_dir = Path("saved_models")
+    train_config.model_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve working directory
+    if train_config.get("working_dir", None) is not None:
+        train_config.working_dir = Path(train_config.working_dir)
+    else:
+        train_config.working_dir = train_config.model_dir / "working_dir"
+    train_config.working_dir.mkdir(parents=True, exist_ok=True)
+
+    train_config.checkpoints = train_config.working_dir / "checkpoints"
+    train_config.log_dir = train_config.working_dir / "log"
+
+    # Resolve model
+    model_name = train_config.get("model_name", "epoch_crnn_M")
+    # Determine model family: pick the first match in _MODEL_CLASS_MAP by prefix
+    model_family = next(
+        (prefix for prefix in _MODEL_CLASS_MAP if model_name.startswith(prefix)),
+        "epoch_transformer",
+    )
+    model_cls = _MODEL_CLASS_MAP.get(model_family, EpochTransformer)
+    model_config = deepcopy(_MODEL_CONFIG_MAP.get(model_name, ModelCfg.epoch_crnn))
+    # Bridge TrainCfg.age_adv → model config (age-adversarial branch toggle).
+    # CLI flags override the config block.
+    age_adv_cfg = deepcopy(
+        train_config.get(
+            "age_adv",
+            CFG(
+                enable=False,
+                alpha=0.5,
+                lambda_=1.0,
+                hidden_dim=32,
+                position="before_film",
+            ),
+        )
+    )
+    if train_config.get("age_adv_enable", False):
+        age_adv_cfg.enable = True
+        age_adv_cfg.alpha = float(train_config.get("age_adv_alpha", age_adv_cfg.alpha))
+        age_adv_cfg.lambda_ = float(train_config.get("age_adv_lambda", age_adv_cfg.lambda_))
+    model_config.age_adv = age_adv_cfg
+    # write back so the checkpoint's train_config mirrors what was actually trained
+    train_config.age_adv = age_adv_cfg
+    # Bridge TrainCfg.night_features → model config (night-level aggregation branch).
+    night_cfg = deepcopy(
+        train_config.get(
+            "night_features",
+            CFG(
+                enable=False,
+                dim=15,
+                hidden_dim=[32, 16],
+                activation="gelu",
+                dropouts=0.1,
+            ),
+        )
+    )
+    if train_config.get("night_features_enable", False):
+        night_cfg.enable = True
+    model_config.night_features = night_cfg
+    # write back so the checkpoint's train_config mirrors what was actually trained
+    train_config.night_features = night_cfg
+    # Bridge TrainCfg.no_age → model config (O4: drop the age channel from FiLM).
+    no_age = bool(train_config.get("no_age", False))
+    model_config.no_age = no_age
+    # write back so the checkpoint's train_config mirrors what was actually trained
+    train_config.no_age = no_age
+    print(
+        f"Model: {model_name} ({model_cls.__name__}), {sum(p.numel() for p in model_cls(config=model_config).parameters()):,} params"
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model_cls(config=model_config)
 
     if torch.cuda.device_count() > 1:
         model = DP(model)

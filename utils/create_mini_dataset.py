@@ -73,14 +73,20 @@ def parse_args():
 def main():
     args = parse_args()
     db_dir = Path(args.db_dir)
-    train_dir = db_dir / "training_set"
+    train_dir = None
+    for part in ["training_set_small", "training_set_large", "training_set"]:
+        candidate = db_dir / part
+        if candidate.exists():
+            train_dir = candidate
+            break
+
+    if train_dir is None:
+        print(f"ERROR: no training partition found at {db_dir}", file=sys.stderr)
+        sys.exit(1)
+
     out_root = Path(args.out_dir)
     out_train = out_root / "training_set"
     out_ann = out_train / ANN_SUBDIR
-
-    if not train_dir.exists():
-        print(f"ERROR: training_set not found at {train_dir}", file=sys.stderr)
-        sys.exit(1)
 
     demo_path = train_dir / DEMOGRAPHICS_FILE
     df = pd.read_csv(demo_path)

@@ -1,5 +1,6 @@
 """ """
 
+import json
 import os
 import tempfile
 from copy import deepcopy
@@ -9,16 +10,18 @@ from typing import Union
 import numpy as np
 import pandas as pd
 import torch
+from torch_ecg.cfg import CFG
 from torch_ecg.utils.misc import str2bool
 
 from cfg import _BASE_DIR, ModelCfg, TrainCfg
-from const import CAISR_EPOCH_DIM, CAISR_EPOCH_DIM_NO_TIME  # noqa: F401
 from dataset import CINC2026Dataset, collate_fn
 from evaluate_model import evaluate_model as _evaluate_model
 from evaluate_model import run as model_evaluator_func
+from helper_code import DEMOGRAPHICS_FILE
 from models import EpochCRNN, EpochTransformer
 from run_model import run as model_runner_func
-from team_code import _MODEL_CLASS_MAP, _resolve_db_dir, load_model, run_model, train_model  # noqa: F401
+from team_code import _MODEL_CLASS_MAP, _resolve_db_dir, train_model
+from trainer import CINC2026Trainer
 from utils.misc import func_indicator
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -73,10 +76,9 @@ def test_dataset() -> None:
     assert not missing, f"Missing fields in sample: {missing}"
 
     ef = sample["epoch_features"]
+    expected_dim = getattr(ModelCfg, ds_config.model_name).caisr_feat_dim
     assert ef.ndim == 2, f"epoch_features should be 2-D, got shape {ef.shape}"
-    assert (
-        ef.shape[1] == CAISR_EPOCH_DIM_NO_TIME
-    ), f"epoch_features last dim should be {CAISR_EPOCH_DIM_NO_TIME}, got {ef.shape[1]}"
+    assert ef.shape[1] == expected_dim, f"epoch_features last dim should be {expected_dim}, got {ef.shape[1]}"
 
     demo = sample["demographics"]
     assert demo.shape == (3,), f"demographics should be shape (3,), got {demo.shape}"
@@ -126,13 +128,19 @@ def test_models() -> None:
             out = model(input_dict)
 
         assert "ci_logits" in out, f"{model_name}: ci_logits missing from output"
-        assert out["ci_logits"].shape == (B, 1), f"{model_name}: expected ci_logits (B,1), got {out['ci_logits'].shape}"
+        assert out["ci_logits"].shape == (
+            B,
+            1,
+        ), f"{model_name}: expected ci_logits (B,1), got {out['ci_logits'].shape}"
 
         # Inference (single sample, numpy)
         feat_np = np.random.randn(100, D).astype(np.float32)
         demo_np = np.array([0.65, 1.0, 0.5], dtype=np.float32)
         outputs = model.inference(epoch_features=feat_np, demographics=demo_np)
-        assert outputs.ci_prob.shape == (1, 2), f"{model_name}: expected ci_prob (1,2), got {outputs.ci_prob.shape}"
+        assert outputs.ci_prob.shape == (
+            1,
+            2,
+        ), f"{model_name}: expected ci_prob (1,2), got {outputs.ci_prob.shape}"
         prob = outputs.ci_prob[0, 1].item()
         assert 0.0 <= prob <= 1.0, f"{model_name}: probability out of [0,1]: {prob}"
 
@@ -142,10 +150,12 @@ def test_models() -> None:
 
 @func_indicator("testing challenge metrics")
 def test_challenge_metrics() -> None:
-    """Test evaluate_model with synthetic predictions."""
+    """Test evaluate_model with synthetic predictions (official phase API)."""
     rng = np.random.default_rng(42)
     n = 20
     patient_ids = [f"sub-{i:04d}" for i in range(n)]
+    site_ids = ["S0001"] * n
+    ages = rng.integers(40, 90, size=n).astype(float)
     labels = rng.integers(0, 2, size=n)
     probs = rng.uniform(0.1, 0.9, size=n)
     binary_preds = (probs >= 0.5).astype(int)
@@ -153,30 +163,48 @@ def test_challenge_metrics() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         labels_file = os.path.join(tmpdir, "labels.csv")
         preds_file = os.path.join(tmpdir, "predictions.csv")
+        # Prevalence file uses the same format as labels; for testing we
+        # reuse the labels file itself.
+        prev_file = labels_file
 
         pd.DataFrame(
             {
+                "SiteID": site_ids,
                 "BDSPPatientID": patient_ids,
                 "Cognitive_Impairment": labels,
+                "Age": ages,
             }
         ).to_csv(labels_file, index=False)
 
         pd.DataFrame(
             {
+                "SiteID": site_ids,
                 "BDSPPatientID": patient_ids,
                 "Cognitive_Impairment": binary_preds,
                 "Cognitive_Impairment_Probability": probs,
             }
         ).to_csv(preds_file, index=False)
 
-        auroc, auprc, accuracy, f_measure = _evaluate_model(labels_file, preds_file)
+        reward, auroc_age, auroc_weighted, auroc, auprc, accuracy, f_measure, table = _evaluate_model(
+            [labels_file], [preds_file], [prev_file]
+        )
 
-    assert isinstance(auroc, float), f"auroc should be float, got {type(auroc)}"
-    assert 0.0 <= auroc <= 1.0, f"auroc out of [0,1]: {auroc}"
-    assert 0.0 <= auprc <= 1.0, f"auprc out of [0,1]: {auprc}"
-    assert 0.0 <= accuracy <= 1.0, f"accuracy out of [0,1]: {accuracy}"
-    assert 0.0 <= f_measure <= 1.0, f"f_measure out of [0,1]: {f_measure}"
-    print(f"  AUROC={auroc:.3f}  AUPRC={auprc:.3f}  Acc={accuracy:.3f}  F1={f_measure:.3f}")
+    for name, val in [
+        ("auroc", auroc),
+        ("auprc", auprc),
+        ("auroc_age", auroc_age),
+        ("auroc_weighted", auroc_weighted),
+        ("accuracy", accuracy),
+        ("f_measure", f_measure),
+        ("reward", reward),
+    ]:
+        assert isinstance(val, float), f"{name} should be float, got {type(val)}"
+        if name != "reward":
+            assert 0.0 <= val <= 1.0, f"{name} out of [0,1]: {val}"
+    assert isinstance(table, list) and len(table) > 0, "table should be non-empty list"
+    print(
+        f"  AUROC={auroc:.3f}  AUROC_age={auroc_age:.3f}  AUROC_weighted={auroc_weighted:.3f}  AUPRC={auprc:.3f}  Reward={reward:.3f}"
+    )
 
 
 @func_indicator("testing trainer")
@@ -184,8 +212,6 @@ def test_trainer() -> None:
     """Test CINC2026Trainer for 1 epoch (quick smoke test)."""
     echo_write_permission(tmp_data_dir)
     echo_write_permission(tmp_model_dir)
-
-    from trainer import CINC2026Trainer
 
     train_config = deepcopy(TrainCfg)
     train_config.db_dir = _resolve_db_dir(str(tmp_data_dir))
@@ -229,17 +255,18 @@ def test_entry() -> None:
     2. ``run_model.py``    →  ``team_code.load_model`` + ``team_code.run_model``
     3. ``evaluate_model.py`` →  scoring
     """
-    from torch_ecg.cfg import CFG
-
-    from helper_code import DEMOGRAPHICS_FILE
-
     echo_write_permission(tmp_data_dir)
     echo_write_permission(tmp_model_dir)
     echo_write_permission(tmp_output_dir)
 
     db_dir = _resolve_db_dir(str(tmp_data_dir))
-    train_data_dir = db_dir / "training_set"
-    if not train_data_dir.exists():
+    train_data_dir = None
+    for part in ["training_set_small", "training_set_large", "training_set"]:
+        candidate = db_dir / part
+        if candidate.exists():
+            train_data_dir = candidate
+            break
+    if train_data_dir is None:
         train_data_dir = tmp_data_dir
 
     if not (train_data_dir / DEMOGRAPHICS_FILE).exists():
@@ -255,8 +282,6 @@ def test_entry() -> None:
     # 1. Train (short run for speed; CI shrinks batch to avoid OOM)
     # ------------------------------------------------------------------
     print("   Train model   ".center(100, "#"))
-    import json as _json
-    import tempfile as _tempfile
 
     # Build CI-specific config overrides and inject via CINC2026_OVERRIDE_JSON.
     # n_epochs=3 keeps the test fast; batch_size=4 prevents OOM in CI.
@@ -265,8 +290,8 @@ def test_entry() -> None:
         _ci_cfg["batch_size"] = 4
 
     prev_override = os.environ.get("CINC2026_OVERRIDE_JSON")
-    _tmp_override = _tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    _json.dump(_ci_cfg, _tmp_override)
+    _tmp_override = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    json.dump(_ci_cfg, _tmp_override)
     _tmp_override.close()
     os.environ["CINC2026_OVERRIDE_JSON"] = _tmp_override.name
     try:
@@ -300,16 +325,23 @@ def test_entry() -> None:
     # ------------------------------------------------------------------
     print("   Evaluate model (evaluate_model.py)   ".center(100, "#"))
     score_file = entry_output_dir / "score.txt"
+    table_file = entry_output_dir / "table.csv"
+    # Official phase: labels_files, predictions_files, prevalence_files are all
+    # lists; -p defines the population used to compute age-specific prevalence.
     model_evaluator_args = CFG(
-        labels_folder=str(train_data_dir / DEMOGRAPHICS_FILE),
-        predictions_folder=str(predictions_file),
+        labels_files=[str(train_data_dir / DEMOGRAPHICS_FILE)],
+        predictions_files=[str(predictions_file)],
+        prevalence_files=[str(train_data_dir / DEMOGRAPHICS_FILE)],
         score_file=str(score_file),
+        table_file=str(table_file),
     )
     model_evaluator_func(model_evaluator_args)
 
     if score_file.exists():
         print("Score file contents:")
         print(score_file.read_text())
+    if table_file.exists():
+        print(f"Age-breakdown table written to {table_file}")
 
     print("test_entry passed ✓")
 

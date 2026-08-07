@@ -5,23 +5,23 @@ Each sample is one patient's full-night PSG, represented as a sequence of
 (channel-agnostic, identical across all recording sites) so the dataset is
 robust to the signal heterogeneity described in _CINC2026_INFO.
 
-Feature layout per epoch — two variants depending on model type:
+Two feature sets are supported:
 
-Full layout (CAISR_EPOCH_DIM = 23, used by EpochTransformer):
-  [0:6]   stage one-hot          (N3, N2, N1, REM, W, Unknown)
-  [6:11]  stage softmax probs    (n3, n2, n1, r, w; normalised to [0,1])
-  [11]    arousal_prob_mean      mean of caisr_prob_arous over 60 sub-epoch samples (2 Hz)
-  [12]    arousal_prob_std       std  of caisr_prob_arous
-  [13]    arousal_prob_max       max  of caisr_prob_arous
-  [14:19] resp event fractions   fraction of each of OA/CA/MA/HY/RERA per epoch
-  [19:21] limb event fractions   fraction of isolated / periodic limb movement
-  [21]    sin(2pi x t/T)         periodic time-position encoding
-  [22]    cos(2pi x t/T)
+Binary-arousal set (default; used by unofficial submissions 1-4, 21 dims for all models):
+  [0:6]   stage one-hot
+  [6:11]  stage softmax probs
+  [11]    arousal_fraction       mean of binary arousal_caisr over the epoch
+  [12:17] resp event fractions
+  [17:19] limb event fractions
+  [19:21] sin/cos time-position encoding
 
-No-time layout (CAISR_EPOCH_DIM_NO_TIME = 21, used by EpochCRNN):
-  [0:21]  identical to the full layout without [21:23] time-position encoding.
-  The CRNN's recurrent backbone implicitly tracks temporal order, making the
-  explicit sin/cos encoding redundant and a potential source of noise.
+Arousal-probability-statistics set (experimental; used by unofficial submission 5):
+  [0:6]   stage one-hot
+  [6:11]  stage softmax probs
+  [11:14] arousal prob mean/std/max from caisr_prob_arous
+  [14:19] resp event fractions
+  [19:21] limb event fractions
+  [21:23] optional sin/cos time-position encoding (Transformer only)
 
 Note on caisr_prob_* scaling: the EDF physical-range header for the stage
 probability channels was set to [0, 9] instead of [0, 1].  pyedflib faithfully
@@ -32,6 +32,7 @@ then re-normalise each row so the five probabilities sum to 1.
 import json
 import os
 import time
+import warnings
 from copy import deepcopy
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Union
@@ -44,22 +45,31 @@ from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Dataset
 from torch_ecg.cfg import CFG, DEFAULTS
 from torch_ecg.utils.misc import ReprMixin
+from torch_ecg.utils.utils_data import stratified_train_test_split
 from torch_ecg.utils.utils_nn import default_collate_fn
 from tqdm.auto import tqdm
 
 from cfg import TrainCfg
 from const import (  # noqa: F401
+    AROUSAL_PROB_STATS_CAISR_EPOCH_DIM,
+    AROUSAL_PROB_STATS_CAISR_EPOCH_DIM_NO_TIME,
+    AROUSAL_PROB_STATS_FEATURE_SET,
     AROUSAL_SAMPLES_PER_EPOCH,
+    BINARY_AROUSAL_CAISR_EPOCH_DIM,
+    BINARY_AROUSAL_FEATURE_SET,
     CAISR_EPOCH_DIM,
     CAISR_EPOCH_DIM_NO_TIME,
     CAISR_PROB_EDF_SCALE,
     DEMOGRAPHIC_DIM,
+    FIVE_FOLD_SPLIT_FILE,
     FIXED_DATA_SPLIT_FILE,
     LABEL_CACHE_DIR,
     LIMB_SAMPLES_PER_EPOCH,
+    NIGHT_FEATURE_DIM,
     RESP_SAMPLES_PER_EPOCH,
     STAGE_LABEL_TO_IDX,
     STAGE_ONEHOT_DIM,
+    resolve_feature_pipeline,
 )
 from data_reader import CINC2026
 
@@ -68,7 +78,9 @@ __all__ = [
     "FastDataReader",
     "collate_fn",
     "build_epoch_features",
+    "build_night_features",
     "normalize_epoch_features",
+    "NIGHT_FEATURE_NAMES",
 ]
 
 try:
@@ -95,7 +107,7 @@ class CINC2026Dataset(Dataset, ReprMixin):
         If ``False`` (default), the fixed canonical split shipped at
         ``utils/cinc2026-data-split.json`` is used, ensuring fully
         reproducible train/val assignments across runs and machines.
-        If ``True``, the legacy dynamic flow is used: read
+        If ``True``, the historical dynamic flow is used: read
         ``LABEL_CACHE_DIR/cinc2026-data-split.json`` when it exists,
         otherwise generate a fresh stratified split and save it there.
     reader_kwargs : dict, optional
@@ -132,10 +144,13 @@ class CINC2026Dataset(Dataset, ReprMixin):
 
         self.reader = CINC2026(db_dir=self.config.db_dir, **reader_kwargs)
 
-        # Only use the labelled training_set for the train/val split.
+        # Only use the labelled training partition(s) for the train/val split.
+        # Official phase: "training_set_small" / "training_set_large";
+        # unofficial phase: "training_set".  All three contain labels.
         # The supplementary_set (I0004, I0007 examples) has no labels and
         # is kept aside for inspection / domain-adaptation experiments.
-        self._labelled_df = self.reader._df_records[self.reader._df_records["partition"] == "training_set"].copy()
+        _train_parts = {"training_set", "training_set_small", "training_set_large"}
+        self._labelled_df = self.reader._df_records[self.reader._df_records["partition"].isin(_train_parts)].copy()
 
         self.records = self._train_test_split()
         self.fdr = FastDataReader(self.reader, self.records, self.config)
@@ -165,18 +180,42 @@ class CINC2026Dataset(Dataset, ReprMixin):
     def _train_test_split(self) -> List[str]:
         """Return the record list for this split.
 
-        Two modes controlled by ``self.override_data_split``:
+        Three sources, in priority order:
 
-        * ``False`` (default) — load the fixed canonical split from
-          ``utils/cinc2026-data-split.json``.  Falls back to the dynamic
-          flow only when the file is absent (should not happen in a normal
-          installation).
-        * ``True`` — dynamic flow: read
-          ``LABEL_CACHE_DIR/cinc2026-data-split.json`` when present, else
-          generate a fresh stratified split and persist it there.
+        1. **5-fold CV** — when ``self.config.fold`` is an int (set e.g. via
+           ``CINC2026_OVERRIDE_JSON {"fold": k}`` for ensemble training),
+           read ``utils/cinc2026-5fold-split.json`` and use that fold's
+           train/val assignment.
+        2. **Canonical split** — ``self.override_data_split=False`` (default):
+           the fixed split shipped at ``utils/cinc2026-data-split.json``.
+        3. **Dynamic split** — ``self.override_data_split=True`` (or the
+           canonical file is absent): read
+           ``LABEL_CACHE_DIR/cinc2026-data-split.json`` when present, else
+           generate a fresh multi-factor stratified split and persist it.
         """
         part = "train" if self.training else "val"
         available = set(self._labelled_df.index)
+
+        # ------------------------------------------------------------------
+        # 5-fold CV mode (fold via train_config.fold)
+        # ------------------------------------------------------------------
+        fold = self.config.get("fold", None)
+        if fold is not None:
+            fold_file = Path(FIVE_FOLD_SPLIT_FILE)
+            if fold_file.exists():
+                with open(fold_file) as f:
+                    split = json.load(f)
+                records = [r for r in split.get(f"fold_{fold}", {}).get(part, []) if r in available]
+                if records:
+                    if self.training:
+                        DEFAULTS.RNG.shuffle(records)
+                    return records
+            warnings.warn(
+                f"5-fold split file not found at {FIVE_FOLD_SPLIT_FILE}; "
+                f"fold={fold} ignored — falling back to the canonical split.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
 
         if not self.override_data_split:
             # ----------------------------------------------------------
@@ -191,9 +230,6 @@ class CINC2026Dataset(Dataset, ReprMixin):
                     if self.training:
                         DEFAULTS.RNG.shuffle(records)
                     return records
-            # Canonical file missing — warn and fall through to dynamic path
-            import warnings
-
             warnings.warn(
                 f"Fixed data-split file not found at {FIXED_DATA_SPLIT_FILE}. " "Falling back to dynamic split generation.",
                 RuntimeWarning,
@@ -214,17 +250,36 @@ class CINC2026Dataset(Dataset, ReprMixin):
                     DEFAULTS.RNG.shuffle(records)
                 return records
 
-        # Generate a fresh stratified split and cache it
-        from sklearn.model_selection import StratifiedShuffleSplit
-
-        df = self._labelled_df
-        strat_key = df["SiteID"].astype(str) + "_" + df["Cognitive_Impairment"].astype(str)
+        # Generate a fresh multi-factor stratified split and cache it.
+        # Stratification on label × site × sex × age band (not label alone)
+        # keeps the val fold representative on every demographic axis we can
+        # measure — a label-only split lets site/age drift between folds and
+        # would corrupt the age-conditioned AUROC comparison.  Uses torch_ecg's
+        # stratified_train_test_split, which enforces the test_ratio within
+        # each stratum group (DEFAULTS.RNG, seed 42 → reproducible).
+        df = self._labelled_df.copy()
+        df["AgeGroup"] = pd.cut(
+            df["Age"],
+            bins=[49, 55, 60, 65, 70, 75, 80, 85, 100],
+            labels=[
+                "50-54",
+                "55-59",
+                "60-64",
+                "65-69",
+                "70-74",
+                "75-79",
+                "80-84",
+                "85-90",
+            ],
+        )
         train_ratio = self.config.get("train_ratio", 0.8)
-        sss = StratifiedShuffleSplit(n_splits=1, train_size=train_ratio, random_state=42)
-        train_idx, val_idx = next(sss.split(df.index, strat_key))
-
-        train_records = df.index[train_idx].tolist()
-        val_records = df.index[val_idx].tolist()
+        train_df, val_df = stratified_train_test_split(
+            df,
+            stratified_cols=["Cognitive_Impairment", "SiteID", "Sex", "AgeGroup"],
+            test_ratio=1.0 - train_ratio,
+        )
+        train_records = train_df.index.tolist()
+        val_records = val_df.index.tolist()
 
         with open(split_file, "w") as f:
             json.dump({"train": train_records, "val": val_records}, f, indent=2)
@@ -290,7 +345,16 @@ class CINC2026Dataset(Dataset, ReprMixin):
 
     @property
     def data_fields(self) -> Set[str]:
-        return {"epoch_features", "demographics", "label", "padding_mask", "n_epochs", "record_id", "site_id"}
+        return {
+            "epoch_features",
+            "demographics",
+            "label",
+            "padding_mask",
+            "n_epochs",
+            "record_id",
+            "site_id",
+            "night_features",
+        }
 
     @property
     def labels(self) -> np.ndarray:
@@ -322,6 +386,9 @@ class FastDataReader(Dataset, ReprMixin):
     ``demographics``   : np.ndarray, shape ``(DEMOGRAPHIC_DIM,)``
     ``label``          : np.int64   (0 = no CI, 1 = CI)
     ``n_epochs``       : np.int64   actual sequence length before padding
+    ``night_features`` : np.ndarray, shape ``(NIGHT_FEATURE_DIM,)``
+        Full-night aggregates from the complete annotation (independent of the
+        epoch matrix, which may be cropped to max_seq_len).
     """
 
     __name__ = "FastDataReader"
@@ -350,16 +417,26 @@ class FastDataReader(Dataset, ReprMixin):
 
         # Load CAISR (algorithmic) annotations — available for all splits
         ann = self.reader.load_ann(rec, ann_type="algorithmic")
+        feature_set = self.config.get("feature_set", BINARY_AROUSAL_FEATURE_SET)
+        include_time = self.config.get("include_time_encoding", None)
+        if include_time is None:
+            include_time = resolve_feature_pipeline(feature_set, self.config.get("model_name", ""))["include_time_encoding"]
 
         epoch_features = build_epoch_features(
             ann,
             dtype=self.dtype,
-            include_time_encoding=self.config.get("include_time_encoding", True),
+            feature_set=feature_set,
+            include_time_encoding=include_time,
         )
 
         norm_cfg = self.config.get("normalize", None)
         if norm_cfg and getattr(norm_cfg, "method", "") == "per_record_zscore":
             epoch_features = normalize_epoch_features(epoch_features, norm_cfg)
+
+        # Night-level aggregates over the FULL night (before the crop below —
+        # the epoch matrix may be cropped to max_seq_len, night features must
+        # not be).
+        night_features = build_night_features(ann, dtype=self.dtype)
 
         # Optionally crop to max_seq_len
         max_len = self.config.get("max_seq_len", None)
@@ -383,6 +460,7 @@ class FastDataReader(Dataset, ReprMixin):
             "n_epochs": np.int64(len(epoch_features)),
             "record_id": rec,
             "site_id": str(row.get("SiteID", "")),
+            "night_features": night_features,  # (NIGHT_FEATURE_DIM,)
         }
 
     def _extract_demographics(self, rec: str) -> np.ndarray:
@@ -416,6 +494,7 @@ class FastDataReader(Dataset, ReprMixin):
 def build_epoch_features(
     ann: Dict[str, np.ndarray],
     dtype: type = np.float32,
+    feature_set: str = BINARY_AROUSAL_FEATURE_SET,
     include_time_encoding: bool = True,
 ) -> np.ndarray:
     """Build a per-epoch feature matrix from CAISR annotations.
@@ -425,26 +504,42 @@ def build_epoch_features(
     ann : dict
         Annotation dict from ``CINC2026.load_ann(rec, ann_type='algorithmic')``.
     dtype : numpy dtype
+    feature_set : {"binary_arousal", "arousal_prob_stats"}, default "binary_arousal"
+        ``"binary_arousal"`` reproduces the 21-dim feature layout used by
+        unofficial submissions 1-4.  ``"arousal_prob_stats"`` uses the later
+        arousal-probability statistics and model-dependent time encoding from
+        submission 5.
     include_time_encoding : bool, default True
-        When True, appends sin/cos time-position encoding at cols [21:23]
-        (appropriate for EpochTransformer, which is permutation-invariant).
-        When False, returns 21-dim features without time encoding
-        (appropriate for EpochCRNN, whose RNN already tracks order).
+        For ``feature_set="binary_arousal"``, must be True because this
+        21-dim feature definition always includes sin/cos time-position
+        encoding.  For ``feature_set="arousal_prob_stats"``, controls whether
+        the trailing sin/cos
+        encoding is appended.
 
     Returns
     -------
-    np.ndarray, shape ``(N_epochs, CAISR_EPOCH_DIM)`` or
-    ``(N_epochs, CAISR_EPOCH_DIM_NO_TIME)``
+    np.ndarray
         Returns empty array with matching second dim when ``stage_caisr`` is absent.
     """
-    feat_dim = CAISR_EPOCH_DIM if include_time_encoding else CAISR_EPOCH_DIM_NO_TIME
+    if feature_set == BINARY_AROUSAL_FEATURE_SET:
+        if not include_time_encoding:
+            raise ValueError("The binary-arousal CAISR feature set always includes time-position encoding.")
+        feat_dim = BINARY_AROUSAL_CAISR_EPOCH_DIM
+    elif feature_set == AROUSAL_PROB_STATS_FEATURE_SET:
+        feat_dim = AROUSAL_PROB_STATS_CAISR_EPOCH_DIM if include_time_encoding else AROUSAL_PROB_STATS_CAISR_EPOCH_DIM_NO_TIME
+    else:
+        raise ValueError(f"Unsupported feature_set: {feature_set}")
+
     stage = ann.get("stage_caisr", np.array([]))
     n_epochs = len(stage)
 
     if n_epochs == 0:
         return np.zeros((0, feat_dim), dtype=dtype)
 
-    features = np.zeros((n_epochs, CAISR_EPOCH_DIM), dtype=dtype)
+    full_feat_dim = (
+        BINARY_AROUSAL_CAISR_EPOCH_DIM if feature_set == BINARY_AROUSAL_FEATURE_SET else AROUSAL_PROB_STATS_CAISR_EPOCH_DIM
+    )
+    features = np.zeros((n_epochs, full_feat_dim), dtype=dtype)
     stage_int = stage.astype(int)
 
     # [0:6] Stage one-hot (N3, N2, N1, REM, W, Unknown)
@@ -475,46 +570,225 @@ def build_epoch_features(
         # No prob channels in this file; use stage one-hot as a hard distribution
         features[:, 6:11] = features[:, :5]
 
-    # [11:14] Arousal probability features from caisr_prob_arous (2 Hz, 60 samples/epoch).
-    # Using the continuous probability (vs the binary arousal_caisr) retains finer
-    # information about arousal intensity and uncertainty.
-    # Falls back to stats of binary arousal_caisr if prob channel is absent.
-    prob_arous = ann.get("caisr_prob_arous")
     arousal_caisr = ann.get("arousal_caisr")
-    if prob_arous is not None and len(prob_arous) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
-        ar_mat = prob_arous.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).astype(np.float64)
-    elif arousal_caisr is not None and len(arousal_caisr) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
-        ar_mat = arousal_caisr.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).astype(np.float64)
+    if feature_set == BINARY_AROUSAL_FEATURE_SET:
+        # [11] Binary-arousal feature: fraction of 0.5 s arousal-positive samples.
+        if arousal_caisr is not None and len(arousal_caisr) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
+            features[:, 11] = arousal_caisr.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).mean(axis=1)
     else:
-        ar_mat = None
+        # [11:14] Arousal-probability-statistics from caisr_prob_arous (2 Hz, 60 samples/epoch).
+        prob_arous = ann.get("caisr_prob_arous")
+        if prob_arous is not None and len(prob_arous) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
+            ar_mat = prob_arous.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).astype(np.float64)
+        elif arousal_caisr is not None and len(arousal_caisr) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
+            ar_mat = arousal_caisr.reshape(n_epochs, AROUSAL_SAMPLES_PER_EPOCH).astype(np.float64)
+        else:
+            ar_mat = None
 
-    if ar_mat is not None:
-        features[:, 11] = ar_mat.mean(axis=1)
-        features[:, 12] = ar_mat.std(axis=1)
-        features[:, 13] = ar_mat.max(axis=1)
+        if ar_mat is not None:
+            features[:, 11] = ar_mat.mean(axis=1)
+            features[:, 12] = ar_mat.std(axis=1)
+            features[:, 13] = ar_mat.max(axis=1)
 
-    # [14:19] Resp event fractions (1=OA, 2=CA, 3=MA, 4=HY, 5=RERA)
+    # Respiratory events: [12:17] in binary-arousal, [14:19] in arousal-prob-stats
+    resp_offset = 12 if feature_set == BINARY_AROUSAL_FEATURE_SET else 14
     resp = ann.get("resp_caisr")
     if resp is not None and len(resp) == n_epochs * RESP_SAMPLES_PER_EPOCH:
         resp_mat = resp.reshape(n_epochs, RESP_SAMPLES_PER_EPOCH)
         for offset, cls_val in enumerate([1, 2, 3, 4, 5]):
-            features[:, 14 + offset] = (resp_mat == cls_val).mean(axis=1)
+            features[:, resp_offset + offset] = (resp_mat == cls_val).mean(axis=1)
 
-    # [19:21] Limb event fractions (1=isolated, 2=periodic)
+    # Limb events: [17:19] in binary-arousal, [19:21] in arousal-prob-stats
+    limb_offset = 17 if feature_set == BINARY_AROUSAL_FEATURE_SET else 19
     limb = ann.get("limb_caisr")
     if limb is not None and len(limb) == n_epochs * LIMB_SAMPLES_PER_EPOCH:
         limb_mat = limb.reshape(n_epochs, LIMB_SAMPLES_PER_EPOCH)
-        features[:, 19] = (limb_mat == 1).mean(axis=1)
-        features[:, 20] = (limb_mat == 2).mean(axis=1)
+        features[:, limb_offset] = (limb_mat == 1).mean(axis=1)
+        features[:, limb_offset + 1] = (limb_mat == 2).mean(axis=1)
 
-    # [21:23] Periodic time-position encoding (Transformer only)
+    # Time-position encoding: [19:21] in binary-arousal, [21:23] in arousal-prob-stats
+    if feature_set == BINARY_AROUSAL_FEATURE_SET:
+        t = np.linspace(0.0, 1.0, n_epochs, dtype=dtype)
+        features[:, 19] = np.sin(2 * np.pi * t)
+        features[:, 20] = np.cos(2 * np.pi * t)
+        return features.astype(dtype)
+
     if include_time_encoding:
         t = np.linspace(0.0, 1.0, n_epochs, dtype=dtype)
         features[:, 21] = np.sin(2 * np.pi * t)
         features[:, 22] = np.cos(2 * np.pi * t)
         return features.astype(dtype)
 
-    return features[:, :CAISR_EPOCH_DIM_NO_TIME].astype(dtype)
+    return features[:, :AROUSAL_PROB_STATS_CAISR_EPOCH_DIM_NO_TIME].astype(dtype)
+
+
+# ---------------------------------------------------------------------------
+# Night-level aggregation features (P1, Phase 9)
+# ---------------------------------------------------------------------------
+
+
+NIGHT_FEATURE_NAMES = [
+    "total_sleep_time_h",
+    "sleep_efficiency",
+    "nrem3_pct",
+    "rem_pct",
+    "wake_after_sleep_onset_min",
+    "arousal_index",
+    "ahi",
+    "plmi",
+    "nrem3_latency_min",
+    "rem_latency_min",
+    "stage_transitions_per_h",
+    "first_half_nrem3_pct",
+    "nrem_rem_cycle_count",
+    "mean_cycle_length_min",
+    "n3_decay_slope",
+]
+
+
+def _count_rising_edges(sig: np.ndarray) -> int:
+    """Count rising edges of a binary/discrete 1 Hz (or 2 Hz) event signal.
+
+    A rising edge is a transition from 0 to a positive value at the same
+    sample position, i.e. ``sig[i] > 0`` and ``sig[i-1] == 0`` (with
+    ``sig[-1] == 0`` prepended).  This matches the official baseline's
+    ``count_discrete_events`` pattern (``np.diff(..., prepend=0) == 1``).
+    """
+    return int(np.count_nonzero(np.diff(sig.astype(np.int64), prepend=0) == 1))
+
+
+def build_night_features(
+    ann: Dict[str, np.ndarray],
+    dtype: type = np.float32,
+) -> np.ndarray:
+    """Build the per-night aggregation feature vector from CAISR annotations.
+
+    Unlike :func:`build_epoch_features` (which produces one row per 30 s
+    epoch and may be cropped to ``max_seq_len``), these features summarise
+    the **complete** night — they are computed here from the full annotation
+    dict, never from a cropped epoch matrix.  They carry clinical sleep
+    metrics (TST, efficiency, stage shares, event indices, latencies,
+    transitions, NREM-REM cycles) that a physician would read off the
+    hypnogram.
+
+    All normalisation uses **fixed divisors** (never per-record statistics —
+    per-record z-scoring was found to destroy cross-site signal, see
+    Unofficial Phase Feedback in ROADMAP), so values land mostly in [0, 1]
+    with event indices allowed to reach ~5 in severe OSA.
+
+    Feature order is fixed by :data:`NIGHT_FEATURE_NAMES`; do not reorder
+    (models are built with a matching fixed dim).
+
+    Parameters
+    ----------
+    ann : dict
+        Annotation dict from ``CINC2026.load_ann(rec, ann_type='algorithmic')``.
+    dtype : numpy dtype
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(NIGHT_FEATURE_DIM,)``.  Returns zeros when ``stage_caisr``
+        is absent/empty or when no sleep epochs are present (mirrors
+        :func:`build_epoch_features` returning an empty matrix).
+    """
+    stage = ann.get("stage_caisr", np.array([])).astype(np.int64)
+    n_epochs = len(stage)
+
+    if n_epochs == 0:
+        return np.zeros((NIGHT_FEATURE_DIM,), dtype=dtype)
+
+    sleep = (stage >= 1) & (stage <= 4)  # N3, N2, N1, REM
+    tst_epochs = int(sleep.sum())
+    if tst_epochs == 0:
+        return np.zeros((NIGHT_FEATURE_DIM,), dtype=dtype)
+
+    EPOCH_MIN = 0.5  # 30 s per epoch
+    tst_h = tst_epochs * EPOCH_MIN / 60.0
+    features = np.zeros((NIGHT_FEATURE_DIM,), dtype=np.float64)
+
+    # 0: TST [h] / 12 h cap
+    features[0] = tst_h / 12.0
+    # 1: sleep efficiency = sleep epochs / known epochs (excl. Unavailable=9)
+    features[1] = tst_epochs / float(np.count_nonzero(stage != 9))
+    # 2: N3% ; 3: REM%  (of sleep epochs)
+    features[2] = np.count_nonzero(stage == 1) / tst_epochs
+    features[3] = np.count_nonzero(stage == 4) / tst_epochs
+
+    # Sleep onset = first sleep epoch
+    onset = int(np.argmax(sleep))
+    # 4: WASO [min] = wake epochs after onset × 0.5, / 6 h cap
+    features[4] = np.count_nonzero(stage[onset:] == 5) * EPOCH_MIN / 360.0
+
+    # 5: arousal index — rising edges of the 2 Hz binary arousal signal per TST hour
+    arousal = ann.get("arousal_caisr")
+    if arousal is not None and len(arousal) == n_epochs * AROUSAL_SAMPLES_PER_EPOCH:
+        features[5] = _count_rising_edges(arousal) / tst_h / 60.0
+
+    # 6: AHI — rising edges of respiratory events OA+CA+MA+HY (codes 1-4) per
+    #    TST hour; code 5 (RERA) is excluded per AASM convention.
+    resp = ann.get("resp_caisr")
+    if resp is not None and len(resp) == n_epochs * RESP_SAMPLES_PER_EPOCH:
+        ahi_events = sum(_count_rising_edges(resp == c) for c in (1, 2, 3, 4))
+        features[6] = ahi_events / tst_h / 60.0
+
+    # 7: PLMI — rising edges of any limb event (isolated=1, periodic=2) per TST hour.
+    #    The `> 0` matters: limb codes can jump 0 → 2 directly, which
+    #    `diff == 1` alone would miss.
+    limb = ann.get("limb_caisr")
+    if limb is not None and len(limb) == n_epochs * LIMB_SAMPLES_PER_EPOCH:
+        features[7] = _count_rising_edges(limb > 0) / tst_h / 60.0
+
+    # 8: N3 latency [min] — from sleep onset to first N3; fill 240 min if none
+    first_n3 = int(np.argmax(stage[onset:] == 1))
+    features[8] = (first_n3 * EPOCH_MIN if stage[onset + first_n3] == 1 else 240.0) / 240.0
+    # 9: REM latency [min]
+    first_rem = int(np.argmax(stage[onset:] == 4))
+    features[9] = (first_rem * EPOCH_MIN if stage[onset + first_rem] == 4 else 240.0) / 240.0
+
+    # 10: stage transitions per hour — adjacent known epochs (≠9) with a stage change
+    valid_adj = (stage[:-1] != 9) & (stage[1:] != 9)
+    transitions = int(np.count_nonzero(valid_adj & (stage[:-1] != stage[1:])))
+    features[10] = transitions / tst_h / 40.0
+
+    # 11: first-half N3% — N3 share of the first half of the SLEEP epochs
+    half = tst_epochs // 2
+    if half > 0:
+        sleep_idx = np.flatnonzero(sleep)[:half]
+        features[11] = np.count_nonzero(stage[sleep_idx] == 1) / half
+
+    # 12-14: NREM-REM cycles — every REM run whose preceding segment contains
+    #        NREM (N1/N2/N3) evidence terminates one cycle.
+    s = stage[onset:]
+    rem_mask = s == 4
+    cycle_count = 0
+    n3_fracs = []
+    if rem_mask.any():
+        d = np.diff(rem_mask.astype(np.int8))
+        run_starts = np.flatnonzero(d == 1) + 1
+        run_ends = np.flatnonzero(d == -1)  # exclusive
+        if rem_mask[0]:
+            run_starts = np.concatenate(([0], run_starts))
+        if rem_mask[-1]:
+            run_ends = np.concatenate((run_ends, [len(s)]))
+        prev_end = -1
+        for run_start, run_end in zip(run_starts, run_ends):
+            seg = s[prev_end + 1 : run_end]
+            if np.any((seg == 1) | (seg == 2) | (seg == 3)):
+                cycle_count += 1
+                n3_fracs.append(float(np.mean(seg == 1)))
+            prev_end = run_end - 1
+    features[12] = cycle_count / 10.0
+    # 13: mean cycle length [min], / 3 h cap
+    if cycle_count > 0:
+        features[13] = tst_epochs * EPOCH_MIN / cycle_count / 180.0
+    # 14: N3 decay slope — OLS slope of per-cycle N3 fraction vs cycle index,
+    #     / 0.3 (normalised slope units), clipped to [-1, 1]
+    if len(n3_fracs) >= 2:
+        slope = float(np.polyfit(np.arange(1, len(n3_fracs) + 1), n3_fracs, 1)[0])
+        features[14] = float(np.clip(slope / 0.3, -1.0, 1.0))
+
+    return features.astype(dtype)
 
 
 def normalize_epoch_features(
@@ -600,6 +874,7 @@ def collate_fn(
 
     demographics = np.stack([item["demographics"] for item in batch]).astype(np.float32)
     labels = np.array([int(item["label"]) for item in batch], dtype=np.int64)
+    night_features = np.stack([item["night_features"] for item in batch]).astype(np.float32)
 
     return {  # type: ignore
         "epoch_features": torch.from_numpy(epoch_features),  # (B, T, D)
@@ -609,6 +884,7 @@ def collate_fn(
         "n_epochs": torch.tensor(n_epochs_list, dtype=torch.int64),
         "record_id": [item["record_id"] for item in batch],  # list[str]
         "site_id": [item["site_id"] for item in batch],  # list[str]
+        "night_features": torch.from_numpy(night_features),  # (B, NIGHT_FEATURE_DIM)
     }
 
 
@@ -647,4 +923,5 @@ def _merge_batches(
         "n_epochs": torch.tensor(result["n_epochs"], dtype=torch.int64),
         "record_id": result["record_id"],
         "site_id": result["site_id"],
+        "night_features": torch.cat(result["night_features"], dim=0),
     }

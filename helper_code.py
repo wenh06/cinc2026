@@ -9,7 +9,6 @@ import numpy as np
 import os
 import pandas as pd
 import scipy as sp
-import sklearn
 import sys
 
 from typing import Dict, List, Tuple, Any, Union, Tuple, Optional
@@ -147,9 +146,6 @@ def map_valid_channels_rename_only(columns_original: List[str], rename_rules: Di
                 # Stop searching for this standard name once the best match is found
                 break  
     
-    # Note: If needed, you might implement more complex mirror map logic here,
-    # but based on your original simplified code, we skip it for now.
-
     return channel_map
 
 # --- Main standardization function ---
@@ -386,96 +382,94 @@ def load_session(data):
 
 def load_age(data):
     """Extracts age and converts it to a float."""
-    age_val = data.get(HEADERS['age'])
-    try:
-        return float(age_val) if age_val is not None else 0.0
-    except (ValueError, TypeError):
-        return 0.0
+    age = data.get(HEADERS['age'])
+    if is_number(age):
+        return float(age)
+    else:
+        return float('nan')
 
-def load_sex(data):
+def load_sex(data, standardize=True):
     """Extracts and standardizes the sex label."""
-    sex = str(data.get(HEADERS['sex'], '')).lower()
-    if sex.startswith('f'): return 'Female'
-    if sex.startswith('m'): return 'Male'
-    return 'Unknown'
+    sex = str(data.get(HEADERS['sex'], '')).strip()
+    
+    if not standardize:
+        return sex
+        
+    sex_cf = sex.casefold()
+    if sex_cf.startswith('f'):
+        return 'Female'
+    elif sex_cf.startswith('m'):
+        return 'Male'
+    else:
+        return 'Unknown'
 
 def load_bmi(data):
     """Extracts BMI and handles invalid or missing values."""
-    bmi_val = data.get(HEADERS['bmi'])
-    try:
-        bmi_float = float(bmi_val)
-        return bmi_float if not np.isnan(bmi_float) else 0.0
-    except (ValueError, TypeError):
-        return 0.0
+    bmi = data.get(HEADERS['bmi'])
+    if is_number(bmi):
+        return float(bmi)
+    else:
+        return float('nan')
 
 def load_label(data):
     """Extracts the cognitive impairment label from the dictionary (for training)."""
+    # Missing label exception
     val = data.get(HEADERS['label'])
-    if isinstance(val, str):
-        return 1 if val.upper() == 'TRUE' else 0
-    return 1 if val is True else 0
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        raise ValueError("Label is missing from the data.")
+    result = sanitize_boolean_value(val)
+    if np.isnan(result):
+        raise ValueError(f"Label value '{val}' could not be parsed as boolean.")
+    return int(result)
 
-def load_race(data):
-    """Extracts the race label."""
-    return data.get(HEADERS['race'], 'Unavailable')
-
-def load_ethnicity(data):
-    """Extracts the ethnicity label."""
-    return data.get(HEADERS['ethnicity'], 'Unavailable')
-
-def get_standardized_race(data):
-    """
-    Standardizes raw race and ethnicity strings into five canonical categories:
-    Asian, Black, Others, Unavailable, White
-    """
-    # Convert raw inputs to lowercase for case-insensitive matching
-    race_raw = str(data.get(HEADERS['race'], '')).lower()
+def load_race(data, standardize=True):
+    """Extracts and standardizes the race label."""
+    race_raw = str(data.get(HEADERS['race'], '')).strip()
     
-    # Check for keywords
-    if any(word in race_raw for word in ['white', 'caucasian']):
+    if not standardize:
+        return race_raw
+        
+    race_cf = race_raw.casefold()
+    
+    if any(word in race_cf for word in ['white', 'caucasian']):
         return 'White'
-    if any(word in race_raw for word in ['black', 'african american']):
+    if any(word in race_cf for word in ['black', 'african american']):
         return 'Black'
-    if 'asian' in race_raw:
+    if 'asian' in race_cf:
         return 'Asian'
     
-    # Handle Unavailable/Unknown
     unavailable_keywords = ['unknown', 'unavailable', 'declined', 'unreported', 'nan',
-                            'none', 'not specified', 'prefer not to say']
-    if any(word == race_raw or word in race_raw for word in unavailable_keywords):
+                            'none', 'not specified', 'prefer not to say', '']
+                            
+    if any(word == race_cf or word in race_cf for word in unavailable_keywords):
         return 'Unavailable'
-    elif race_raw.strip() == '':
-        return 'Unavailable'
-    
-    # Fallback to Others
+        
     return 'Others'
 
-def get_standardized_ethnicity(data):
-    """
-    Standardizes ethnicity into three categories: Hispanic, Not Hispanic, Unavailable
-    """
-    ethnic_raw = str(data.get(HEADERS['ethnicity'], '')).lower().strip()
+def load_ethnicity(data, standardize=True):
+    """Extracts and standardizes the ethnicity label."""
+    ethnic_raw = str(data.get(HEADERS['ethnicity'], '')).strip()
+    
+    if not standardize:
+        return ethnic_raw
+        
+    ethnic_cf = ethnic_raw.casefold()
 
-    # Prioritize Not Hispanic detection
     not_hispanic_keywords = [
         'not hispanic', 'non-hispanic', 'non hispanic', 'not latino', 'non-latino'
     ]
-    if any(word in ethnic_raw for word in not_hispanic_keywords):
+    if any(word in ethnic_cf for word in not_hispanic_keywords):
         return 'Not Hispanic'
     
-    # Check for Hispanic/Latino keywords
-    if 'hispanic' in ethnic_raw or 'latino' in ethnic_raw:
+    if 'hispanic' in ethnic_cf or 'latino' in ethnic_cf:
         return 'Hispanic'
     
-    # Handle Unavailable
     unavailable_keywords = ['unknown', 'unavailable', 'declined', 'unreported', 'nan', 
-                            'none', 'not specified', 'prefer not to say']
-    if any(word == ethnic_raw or word in ethnic_raw for word in unavailable_keywords):
+                            'none', 'not specified', 'prefer not to say', '']
+                            
+    if any(word == ethnic_cf or word in ethnic_cf for word in unavailable_keywords):
         return 'Unavailable'
-    elif ethnic_raw.strip() == '':
-        return 'Unavailable'
-    
-    # Default if no clear indication
+        
     return 'Unavailable'
 
 # Retrieves the cognitive status/diagnosis label
@@ -485,16 +479,26 @@ def load_diagnoses(metadata_file, patient_id):
     """
     df = pd.read_csv(metadata_file)
     mask = df[HEADERS['bids_folder']] == patient_id
+    
+    if mask.sum() == 0:
+        raise ValueError(f"Patient ID {patient_id} not found in {metadata_file}.")
+        
     val = df.loc[mask, HEADERS['label']].values[0]
+    
+    if pd.isna(val):
+        raise ValueError(f"Cognitive Impairment diagnosis is missing for patient {patient_id}.")
+        
+    if isinstance(val, str):
+        return 1 if str(val).casefold() == 'true' else 0
     return 1 if val else 0
 
 def load_Time_to_Event(data):
     """Extracts Time_to_Event and converts it to a float."""
     tte_val = data.get(HEADERS['time_to_event'])
     try:
-        return float(tte_val) if tte_val is not None else -1.0
+        return float(tte_val) if tte_val is not None else float('nan')
     except (ValueError, TypeError):
-        return -1.0
+        return float('nan')
     
 def load_Last_Known_Visit_Date(data):
     """Extracts Last_Known_Visit_Date."""
@@ -504,9 +508,9 @@ def load_Time_to_Last_Visit(data):
     """Extracts Time_to_Last_Visit and converts it to a float."""
     ttlv_val = data.get(HEADERS['time_to_last_visit'])
     try:
-        return float(ttlv_val) if ttlv_val is not None else -1.0
+        return float(ttlv_val) if ttlv_val is not None else float('nan')
     except (ValueError, TypeError):
-        return -1.0
+        return float('nan')
 
 # ### EDF Handling Functions
 def load_edf(record: str):
@@ -574,79 +578,6 @@ def load_signals_as_array(edf_object: edfio.Edf) -> Optional[np.ndarray]:
         print(f"Error converting signals to array: {e}")
         return None
     
-### Evaluation functions
-
-# Compute the Challenge score.
-def compute_challenge_score(labels, outputs, fraction_capacity = 0.05, num_permutations = 10**4, seed=12345):
-    # Check the data.
-    assert len(labels) == len(outputs)
-    num_instances = len(labels)
-    capacity = int(fraction_capacity * num_instances)
-
-    # Convert the data to NumPy arrays, as needed, for easier indexing.
-    labels = np.asarray(labels, dtype=np.float64)
-    outputs = np.asarray(outputs, dtype=np.float64)
-
-    # Permute the labels and outputs so that we can approximate the expected confusion matrix for "tied" probabilities.
-    tp = np.zeros(num_permutations)
-    fp = np.zeros(num_permutations)
-    fn = np.zeros(num_permutations)
-    tn = np.zeros(num_permutations)
-
-    if seed is not None:
-        np.random.seed(seed)
-
-    for i in range(num_permutations):
-        permuted_idx = np.random.permutation(np.arange(num_instances))
-        permuted_labels = labels[permuted_idx]
-        permuted_outputs = outputs[permuted_idx]
-
-        ordered_idx = np.argsort(permuted_outputs, stable=True)[::-1]
-        ordered_labels = permuted_labels[ordered_idx]
-
-        tp[i] = np.sum(ordered_labels[:capacity] == 1)
-        fp[i] = np.sum(ordered_labels[:capacity] == 0)
-        fn[i] = np.sum(ordered_labels[capacity:] == 1)
-        tn[i] = np.sum(ordered_labels[capacity:] == 0)
-
-    tp = np.mean(tp)
-    fp = np.mean(fp)
-    fn = np.mean(fn)
-    tn = np.mean(tn)
-
-    # Compute the true positive rate.
-    if tp + fn > 0:
-        tpr = tp / (tp + fn)
-    else:
-        tpr = float('nan')
-
-    return tpr
-
-def compute_auc(labels, outputs):
-    import sklearn
-    import sklearn.metrics
-
-    auroc = sklearn.metrics.roc_auc_score(labels, outputs, average='macro', sample_weight=None, max_fpr=None, multi_class='raise', labels=None)
-    auprc = sklearn.metrics.average_precision_score(labels, outputs, average='macro', pos_label=1, sample_weight=None)
-
-    return auroc, auprc
-
-# Compute accuracy.
-def compute_accuracy(labels, outputs):
-    from sklearn.metrics import accuracy_score
-
-    accuracy = accuracy_score(labels, outputs, normalize=True, sample_weight=None)
-
-    return accuracy
-
-# Compute F-measure.
-def compute_f_measure(labels, outputs):
-    from sklearn.metrics import f1_score
-
-    f_measure = f1_score(labels, outputs, pos_label=1, average='binary')
-
-    return f_measure
-
 ### Other helper functions
 
 # Remove any single or double quotes; parentheses, braces, and brackets (for singleton arrays); and spaces and tabs from a string.
