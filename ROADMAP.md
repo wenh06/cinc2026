@@ -326,12 +326,9 @@ If the augmented-feature approach shows headroom, a full end-to-end model can be
 - [x] `sync_official.py`: includes all 6 official scripts.
 - [x] Mini training-set subset: 171 records, ~28 MB (CAISR EDFs only), uploaded to Google Drive.
 - [x] Reduced training-set subset: 766 records, ~125 MB (CAISR EDFs only).
-- [x] `status: alpha` set in CI workflow; strict-test env var active.
 - [x] Official phase data layout support: `data_reader.py` auto-detects `training_set_small` / `training_set_large` / `training_set` partitions; `dataset.py` partition filter broadened accordingly.
 - [x] Official phase training data downloaded and verified.
-- [ ] CI pipeline passes end-to-end (Docker build → dataset download → `docker run` → `test_entry`).
 - [x] Full official-phase training run with new data. → O0 baseline done, AUROC=0.833, age-cond=0.762.
-- [ ] Submit to the official evaluation system.
 
 ---
 
@@ -598,13 +595,18 @@ Optimise α on the validation set.
   **Adopted as the new default** (cfg: `focal.enable=True`,
   `label_smoothing=0.05`).
 - **sub3 default config** = 5-fold ensemble (§10.4) × focal+LS:
-  `TrainCfg.folds=[0..4]`, early-stop floor `min_epochs=30` (30% of 100;
-  countdown starts at ep 30) + patience 20→15 — a fold can't be cut off
-  mid-climb by an early lucky-spike best.  Local 5-fold × focal validation
-  run complete (O8; full-train age-cond **0.8045**, mean per-fold val 0.767)
-  — above O7b single (0.8018) even on the (leaked) full-train eval.
-  docker-test CI green on the new defaults (sub2 fix + O7 code; master
-  stays at `eec84e0` until the organisers finish processing sub2/ID 2407).
+  `TrainCfg.folds=[0..4]`, early-stop floor `min_epochs=30` + patience 20→15.
+  Local 5-fold × focal validation (O8): full-train age-cond **0.8045**, mean
+  per-fold val 0.767 — above O7b single (0.8018).  **Merged to master
+  (`1f84c1c`, PR #15) 2026-08-06 → sub3.**
+- **⚠️ Official val = unseen source `I0004`** (challenge page; hidden).
+  Official sub1/sub2 age-cond 0.617/0.592 ≈ LO-site held-out drops
+  (O6: 0.552–0.742) → local same-site val overestimates cross-site
+  transfer; the official scorer uses its own ages (SessionID fix was a
+  local-eval artifact).  Leaderboard top 0.75–0.77, some teams better
+  trained on *small* (1,103) than *large* (6,600).  **Pivot: LO-site as
+  local proxy; small-set training / regularisation / site-adv / small+large
+  ensemble.**
 - **Empty-batch crash found & fixed** (`4f267fb`): 13 records lack CAISR
   annotations → empty epoch matrix (n_epochs=0).  With batch_size ≤ 13 (CI
   uses 4), a whole batch of such records makes collate `t_max=0` → CNN first
