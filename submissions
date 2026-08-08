@@ -155,6 +155,8 @@ Official Phase:
       Large drop vs local val (0.762/0.833) — likely domain shift to the
       official validation cohort; age-cond ≈ plain AUROC there (0.617 vs 0.614),
       and accuracy≈0.94 / F1≈0.08 indicate near-always-negative predictions.
+      POSSIBLE BUG: SessionID int/str type bug (demographics fallback in
+      run_model inference, ~+0.08 age-cond locally) — fixed in submission 2.
     model: EpochCRNN_M
     loss: BCEWithLogitsLoss
     train:
@@ -179,3 +181,45 @@ Official Phase:
       layout: stage_onehot(6) + stage_probs(5) + arousal_fraction(1) + resp_fractions(5) + limb_fractions(2) + time_encoding(2)
       normalization: none
     hash: 941b0b5
+  submission 2:
+    submission ID: 2407
+    submission time: 8/5/2026 2:36:31 ET
+    challenge_scores:
+      Reward: PENDING
+      age_cond_AUROC: PENDING
+      age_weighted_AUROC: PENDING
+      AUROC: PENDING
+      AUPRC: PENDING
+      Accuracy: PENDING
+      F-measure: PENDING
+    notes: |
+      Inference-chain fix submission: SessionID int/str type bug (demographics
+      fell back to defaults during run_model inference — measured ~+0.08 age-cond
+      impact locally) + sliding-window inference (768/384, +0.013 age-cond).
+      Training code identical to sub1 (organiser re-training unaffected).
+      Same config as sub1: single model (folds=None), EpochCRNN_M,
+      monitor=auroc_age_cond, pos_weight=12.16, label_smoothing=0.0.
+    model: EpochCRNN_M
+    loss: BCEWithLogitsLoss
+    train:
+      n_epochs: 100
+      batch_size: 16
+      optimizer: adamw_amsgrad
+      lr: 0.0003
+      max_lr: 0.001
+      lr_scheduler: one_cycle
+      pct_start: 0.3
+      grad_clip: 1.0
+      weight_decay: 0.01
+      label_smoothing: 0.0
+      early_stopping_patience: 20
+      pos_weight: 12.16
+      monitor: auroc_age_cond
+      age_adv: false
+      data: official-phase-large (6600 records, 5280/1320 split)
+    features:
+      version: binary_arousal_v1
+      dim: 21
+      layout: stage_onehot(6) + stage_probs(5) + arousal_fraction(1) + resp_fractions(5) + limb_fractions(2) + time_encoding(2)
+      normalization: none
+    hash: eec84e0

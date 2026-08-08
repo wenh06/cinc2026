@@ -210,7 +210,7 @@ Total: ~9 runs × 30 min = 4.5 h.
 python utils/analyze_logs.py --log-dir saved_models/run/working_dir/log --no-plot
 
 # Full plots
-python utils/analyze_logs.py --log-dir saved_models/run/working_dir/log --out-dir results/plots
+python utils/analyze_logs.py --log-dir saved_models/run/working_dir/log --out-dir images/analysis
 
 # Check training set size
 python -c "

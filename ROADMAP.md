@@ -499,14 +499,21 @@ Training is balanced (~50% CI positive) but test reflects real-world prevalence 
   `stratified_train_test_split` — each fold mirrors the population on every
   axis (val deviations < 0.8% in the 5-fold report).  Replaces the earlier
   label-only `StratifiedShuffleSplit`.
-- 🔄 **Leave-one-site-out (LO-site) experiment** (running 2026-08-04): train
-  on 2 sites, evaluate on the held-out one (3 runs, one per site) to quantify
-  the site-dependent domain shift behind the sub1 official drop.  Site
-  prevalence: S0001 6.5% (5139 recs) / I0006 9.8% (1142) / I0002 16.3% (319 —
-  2.5× prevalence, prime shift suspect).  OOF per-site reference (O5):
-  S0001 0.738 / I0006 0.682 / I0002 0.653.  Script `/tmp/lo_site/lo_site.py`
-  (patches `dataset.FIXED_DATA_SPLIT_FILE` to a per-site split); results to
-  `Experiment Log` when done.
+- ✅ **Leave-one-site-out (LO-site) experiment** (2026-08-04, complete): train
+  on 2 sites, evaluate on the *full* held-out site (3 runs).  Results
+  (held-out age-cond; OOF per-site reference in parens):
+  S0001 **0.552** (0.738, −0.186, n_train=1461) / I0006 **0.562** (0.682,
+  −0.120, n_train=5458) / I0002 **0.742** (0.653, **+0.089**, n_train=6281).
+  → **Cross-site shift is real and asymmetric, but the "I0002 is the sub1
+  drop source" hypothesis is refuted** — a model that never saw I0002 scores
+  it *better* than the in-distribution OOF model.  Caveats: (a) n_train
+  differs across runs (S0001 held-out trains on only 1,461 recs), so the drop
+  ordering (S0001 > I0006 > I0002) partly reflects training-set size, not
+  pure domain shift; (b) all 3 models hit their best by epoch 2–5 with fast
+  early stop; (c) eval used center-crop (not sliding-window, −0.007 scale).
+  Script `/tmp/lo_site/lo_site.py` (patches
+  `dataset.FIXED_DATA_SPLIT_FILE` to a per-site split); results in
+  `/tmp/lo_site/metrics_{site}.json`.  See Experiment Log row **O6**.
 - **Domain-adversarial training**: add a site classifier head with gradient reversal to the pooled representation. (deferred — O1 age-adv variant failed; site-adv not yet attempted)
 
 ### 10.4 Ensemble — 5-fold CV (O5, implemented 2026-08-03)
@@ -579,6 +586,49 @@ Optimise α on the validation set.
   unchanged — the organisers' re-training is unaffected).
 - **Lesson**: pure-numeric IDs are a classic int-vs-str trap — pandas masks
   compare strictly typed values and fail silently (no error, just fallback).
+
+### 10.6 O7 loss experiments + sub3 config (2026-08-05)
+
+- **O7a (age-matched pairwise) failed** — see Experiment Log; the λ=1.0 hinge
+  fights the BCE signal on this small dataset (unstable, −0.04 age-cond).
+- **O7b (focal γ=2 + label_smoothing 0.05) strong gain** — full-train
+  official-flow eval: age-cond **0.8018 vs 0.7525 (+0.049)**, AUROC 0.8670,
+  every site up.  Mechanism: at 7.6% prevalence the abundant easy negatives
+  dominate BCE gradients; focal (1−pt)^γ re-centres them on hard samples.
+  **Adopted as the new default** (cfg: `focal.enable=True`,
+  `label_smoothing=0.05`).
+- **sub3 default config** = 5-fold ensemble (§10.4) × focal+LS:
+  `TrainCfg.folds=[0..4]`, early-stop floor `min_epochs=30` (30% of 100;
+  countdown starts at ep 30) + patience 20→15 — a fold can't be cut off
+  mid-climb by an early lucky-spike best.  Local 5-fold × focal validation
+  run complete (O8; full-train age-cond **0.8045**, mean per-fold val 0.767)
+  — above O7b single (0.8018) even on the (leaked) full-train eval.
+  docker-test CI green on the new defaults (sub2 fix + O7 code; master
+  stays at `eec84e0` until the organisers finish processing sub2/ID 2407).
+- **Empty-batch crash found & fixed** (`4f267fb`): 13 records lack CAISR
+  annotations → empty epoch matrix (n_epochs=0).  With batch_size ≤ 13 (CI
+  uses 4), a whole batch of such records makes collate `t_max=0` → CNN first
+  conv (kernel 5) crashes ("padded input size 4").  Official re-training
+  (batch 16) **cannot** hit this (13 < 16), but CI did — a probabilistic
+  crash that cost a CI run.  Fix: `CINC2026Dataset._filter_missing_caisr()`
+  drops annotation-missing records from both train and val splits right
+  after `_train_test_split`; inference (`run_model`) still emits the
+  per-record (0, 0.5) fallback.
+- **Tool**: `scripts/eval_all_models.py` — official-flow full-train eval
+  (`find_patients` → per-record `run_model` → official metric set + per-site)
+  for FAIR cross-model comparison on the (leaked) training data.
+
+### 10.7 Research queue — sub4 candidates (2026-08-05)
+
+- **batch_size 16→32** (√-scale lr 3e-4→~4e-4, re-tune weight decay): a
+  5-fold per-fold trainset is only ~859 recs — bs=64 → 13 steps/epoch, the
+  unofficial sub2 failure regime; bs=32 → ~27 steps/epoch, a reasonable
+  middle ground.  Scaling-law basis: critical batch size scales with dataset
+  size (∝ D^0.4–0.5), largely independent of model size (Kempner 2024;
+  "Power Lines", NeurIPS 2025).
+- **EpochCRNN_M → _L (1.65 M params)**: 8.5× more data (6600 vs 780 recs)
+  invalidates the unofficial "smaller is better" finding; single-fold
+  controlled run first (~2 h), adopt 5-fold only if it wins.
 
 ---
 
@@ -706,6 +756,10 @@ Template for tracking training runs.  Fill in one row per experiment.
 | **O0repro** | 2026-08-03 | `EpochCRNN_M` | 21 | baseline re-run on the **new multi-factor canonical split (= 5-fold fold_0)** | 3e-4 / 16 / 100 | 0.845 | 0.758 | — | Baseline on the new split (best @ ep42, early stop 62). Same split/config as O5's fold_0 — the reference for all post-2026-08-03 experiments. Per-site: S0001=0.855, I0006=0.795, I0002=0.822. |
 | **O4** | 2026-08-03 | `EpochCRNN_M` + no-age | 21 | zero the age channel in FiLM demographics (age is constant within each age-stratum → cannot help within-stratum ranking) | 3e-4 / 16 / 100 | 0.816 | 0.760 | ≈0 (vs O0repro +0.002, vs O0 −0.002) | ❌ Failed. Best @ ep44 (early stop 65). age-cond ties both baselines within noise; plain AUROC clearly below O0repro (0.816 vs 0.845). Zeroing the age channel neither helps nor hurts ranking — the model's within-stratum ranking was already age-independent (the age input powered only between-stratum shortcuts). Note: O4 trained on the pre-alias multi-factor canonical split (record composition differs slightly from fold_0); conclusion unchanged vs both references. Route closed. |
 | **O5** | 2026-08-03→04 | `EpochCRNN_M` ×5 | 21 | 5-fold CV ensemble (multi-factor stratified split, equal-weight probability average; see §10.4) | 3e-4 / 16 / 100 | 0.822 | 0.717 | −0.041 (OOF, conservative single-model bound; fold-0 same-split +0.027 vs O0repro) | ✅ Complete. Per-fold best age-cond (monitor): 0.785/0.704/0.756/0.740/0.747 (folds 0-4, @ ep 37/15/48/26/22) — run-to-run spread ≈ 0.08. OOF aggregate (6600 recs, one prediction per record, checkpoints = best-by-monitor): AUROC 0.8223 / age-cond 0.7169; per-site S0001 0.836/0.738, I0002 0.730/0.653, I0006 0.802/0.682. fold_0 (0.785) vs O0repro (0.758, same split): +0.027, within expected init/shuffle variance — no systematic split artifact. OOF is the honest lower bound; the test-time 5-model average should be ≥. |
+| **O6** | 2026-08-04 | `EpochCRNN_M` ×3 | 21 | leave-one-site-out (train 2 sites → eval full held-out site, 3 runs) | 3e-4 / 16 / 100 | 0.636 / 0.627 / 0.769 | **0.552 / 0.562 / 0.742** (S0001/I0006/I0002 held-out) | −0.186 / −0.120 / **+0.089** (vs O5 OOF per-site 0.738/0.682/0.653) | ✅ Complete. Held-out age-cond: S0001 0.552 (n_train=1461, best ep5), I0006 0.562 (n_train=5458, ep2), I0002 0.742 (n_train=6281, ep3). **Refutes the "I0002 (2.5× prevalence) is the sub1 drop source" hypothesis — held-out I0002 *beats* its in-distribution OOF.** Drop ordering tracks n_train (1461/5458/6281), so the S0001/I0006 drops confound domain shift with training-set size; all 3 models best at ep 2–5 with fast early stop; eval used center-crop (not sliding window, −0.007 scale). Implication: cross-site shift is real and asymmetric but not obviously site-identity-driven for I0002; hidden-val site-mix shift remains an uncontrolled risk, and the SessionID-bug fix remains the main lever for sub2. |
+| **O7a** | 2026-08-05 | `EpochCRNN_M` + age-matched pairwise | 21 | age-matched pairwise hinge loss (λ=1.0, margin=0.5, tol=2y, memory bank 512) — direct optimisation proxy of age-cond AUROC | 3e-4 / 16 / 100 | 0.831 (full-train eval) | 0.719 (val best @ep29, stop 49) | −0.039 (val; full-train −0.0185) | ❌ Failed. Full-train official-flow eval (scripts/eval_all_models.py): AUROC 0.8312 / age-cond 0.7340 vs baseline (o0_repro_split) 0.8417/0.7525 — worse on every site. Degrades fast after ep29 (0.719 → 0.65), unstable training. Pairwise (λ=1.0, margin=0.5) fights the BCE signal rather than helping — the BCE already learns age-matched ranking, pairwise adds noise on this small dataset. Route closed unless retried with much smaller λ/margin (low priority). |
+| **O7b** | 2026-08-05 | `EpochCRNN_M` + focal | 21 | focal loss (γ=2.0, FocalBCEWithLogitsLoss, same pos_weight 12.16) + label_smoothing 0.05 | 3e-4 / 16 / 100 | 0.867 (full-train eval) | 0.784 (val best @ep67, stop 87) | **+0.049** (full-train 0.8018 vs 0.7525) | ✅ **Strong gain — new default.** Full-train official-flow eval: AUROC 0.8670 / age-cond 0.8018 / age-wtd 0.8138 / AUPRC 0.4282 (baseline 0.8417/0.7525/0.7666/0.3452); every site improves (S0001 0.7513→0.7989, I0006 0.7393→0.8189, I0002 0.7739→0.8274). Mechanism: at 7.6% prevalence the abundant easy negatives dominate BCE gradients; focal (1−pt)^γ concentrates them on hard samples. Accuracy 0.4141 / F1 0.2009 lower than baseline — the tuned binary threshold shifts (reward +0.2636 vs 0.2206); primary metric unaffected. **Adopted into the default config for sub3: focal ON + label_smoothing 0.05 + folds [0..4].** |
+| **O8** | 2026-08-05 | `EpochCRNN_M` ×5 focal | 21 | sub3 config: 5-fold ensemble × focal+LS (§10.4 + O7b), early-stop floor `min_epochs=30` + patience 20→15 | 3e-4 / 16 / 100 | 0.863 (full-train) | 0.767 (per-fold val mean: 0.773/0.735/0.769/0.737/0.819); full-train 0.8045 | +0.052 (full-train vs baseline 0.7525); +0.0027 (vs O7b single 0.8018) | ✅ **Complete; submission config for sub3.** Full-train official-flow eval: AUROC 0.8632 / age-cond 0.8045 / age-wtd 0.8148 / AUPRC 0.4305. Per-site age-cond: S0001 0.8244, I0006 0.7692, I0002 0.7527. The early-stop floor (countdown starts at ep 30) exists so an early lucky-spike best can't cut a fold off mid-climb — fold_4, which suffered exactly that in the pre-floor run (best 0.708@ep9, stop@29), now trains to ep 59 with best 0.7364@ep44 (+0.028, the largest single-fold gain). Enough to put the ensemble *above* O7b single even on the leaked full-train eval — the single-vs-ensemble tradeoff is resolved in the ensemble's favour. |
 
 ### Ablation protocol
 

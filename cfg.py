@@ -59,22 +59,19 @@ BaseCfg.demographic_features = ["Age", "Sex", "BMI"]
 TrainCfg = deepcopy(BaseCfg)
 
 # Data Loader Configs
-# batch_size=16: 624 train records / 16 ≈ 39 steps/epoch — enough gradient noise for
-# regularisation and sufficient steps for OneCycleLR to anneal properly.
-# (batch_size=64 collapses to ~10 steps/epoch which hurt CRNN convergence in run 04-04.)
+# batch_size=16 balances gradient noise and OneCycleLR step count.
 TrainCfg.batch_size = 16
 # train_ratio: fallback 80/20 split used by CINC2026Dataset when the canonical
 # JSON split file (utils/cinc2026-data-split.json) is absent.
 TrainCfg.train_ratio = 0.8
 
-# folds: 5-fold CV ensemble mode.  None (default) trains a single model on
-# the canonical split.  A list of fold indices (e.g. [0, 1, 2, 3, 4]) trains
-# one model per fold on the multi-factor stratified split in
-# utils/cinc2026-5fold-split.json (see utils/make_5fold_split.py) and saves
-# each to model_folder/fold_{k}/; team_code.load_model then loads all folds
-# and team_code.run_model averages their probabilities (equal weight).
-# NOTE: the official re-training will run len(folds) × the single-fold time.
-TrainCfg.folds = None
+# folds: 5-fold CV ensemble.  None = single model on the canonical split;
+# [0..4] = one model per fold (utils/cinc2026-5fold-split.json) saved to
+# model_folder/fold_{k}/; probabilities averaged at inference (binary =
+# majority vote).  Official re-training runs len(folds) × single-fold time.
+# Sub3: default = 5-fold — fits the official 72-h budget, averages out the
+# ~0.08 per-fold age-cond spread.
+TrainCfg.folds = [0, 1, 2, 3, 4]
 TrainCfg.model_name = "epoch_crnn_M"  # best AUROC so far (sub3: 0.555)
 TrainCfg.feature_set = BINARY_AROUSAL_FEATURE_SET  # submission-1~4 feature set; best public run so far
 
@@ -108,8 +105,6 @@ TrainCfg.max_seq_len = 768
 TrainCfg.sig_len = 3000  # 30 seconds at 100Hz
 
 # Optimization Configs.
-# Official phase: 882 train records / batch_size=16 ≈ 55 steps/epoch.
-# 100 epochs × 55 ≈ 5 500 total gradient steps.
 TrainCfg.n_epochs = 100
 TrainCfg.optimizer = "adamw_amsgrad"
 # weight_decay: BaseTrainer._setup_optimizer reads get_kwargs(AdamW) which uses the
@@ -117,36 +112,25 @@ TrainCfg.optimizer = "adamw_amsgrad"
 TrainCfg.weight_decay = 1e-2
 TrainCfg.lr_scheduler = "one_cycle"
 TrainCfg.max_lr = 1e-3  # OneCycleLR peak
-# pct_start: fraction of total steps used for LR warm-up (OneCycleLR).
-# 0.3 (default) is good for Transformer; use 0.1 for CRNN which converges faster.
+# pct_start: OneCycleLR warm-up fraction (0.3 Transformer / 0.1 CRNN).
 TrainCfg.pct_start = 0.3
 TrainCfg.betas = (0.9, 0.999)
 TrainCfg.grad_clip = 1.0  # gradient clipping max norm (0 to disable)
 
 # Augmentation / Regularisation
-# CAISR epoch features are pre-bounded in [0,1] by construction (one-hot stages,
-# softmax probs, event fractions, sin/cos position encoding, scaled demographics).
-# No z-score or amplitude normalisation is needed or appropriate here.
-# PreprocManager (BandPass / ZScoreNormalize / Resample) is designed for raw signals
-# and should only be wired in if a raw-signal model branch is added in the future.
+# CAISR features are pre-bounded in [0,1]; PreprocManager is for raw signals only.
 #
-# label_smoothing: smooths targets {0,1} → {ε/2, 1-ε/2} to discourage over-confident
-# predictions.  Set to 0 for the official phase — at 7.6% prevalence label smoothing
-# would dilute the already-rare positive signal and hurt recall on the minority class.
-TrainCfg.label_smoothing = 0.0
+# label_smoothing: targets {0,1} → {ε/2, 1-ε/2}.  0.05 with focal (O7b) —
+# measured +0.049 age-cond on the full-train eval (0.8018 vs 0.7525).
+TrainCfg.label_smoothing = 0.05
 
 # pos_weight: BCEWithLogitsLoss pos_weight for the minority (CI-positive) class.
 # Official phase prevalence is 7.6% → positive:negative ≈ 1:12, so we up-weight
 # positives by ~12× to keep the loss from being dominated by the negative class.
 TrainCfg.pos_weight = 12.16  # ≈ (1-0.076)/0.076
 
-# The binary-arousal feature set used in unofficial submissions 1-4 did not use
-# per-record normalization, so we
-# keep it disabled by default to match the best public result.  To reproduce the
-# later experimental runs, set e.g.
-#   TrainCfg.feature_set = AROUSAL_PROB_STATS_FEATURE_SET
-#   TrainCfg.normalize = CFG(method="per_record_zscore", eps=1e-8, skip_cols=[])
-# and sync_feature_config(...) will update skip_cols automatically.
+# Per-record z-score normalization; off by default (submission-5 regression).
+# Enable via TrainCfg.normalize = CFG(method="per_record_zscore", ...).
 TrainCfg.normalize = None
 
 # Age-adversarial head (gradient reversal) — P0 age-dependence mitigation.
@@ -186,23 +170,47 @@ TrainCfg.night_features = CFG(
     dropouts=0.1,
 )
 
-# O4 (2026-08-03): drop the age channel from the FiLM demographic conditioning
-# (demographics [age/100, sex, bmi/50] → [0, sex, bmi/50]).  Rationale: the
-# official metric is the age-conditioned AUROC — age is constant within each
-# stratum, so the age input can only power between-stratum shortcuts and can
-# never help within-stratum ranking.  Zeroing it is informationally equivalent
-# to removing it (a constant channel), and forces the model to rank on sleep
-# features alone.  Age-adversarial training (O1) failed; this is the cheap
-# direct test of the same hypothesis.  EpochCRNN only; mutually exclusive
-# with age_adv (which needs the age channel as its regression target).
+# O4: zero the age channel in FiLM demographics (age is constant within each
+# stratum → can only power between-stratum shortcuts).  EpochCRNN only;
+# mutually exclusive with age_adv (needs the age channel).
 TrainCfg.no_age = False
+
+# O7: age-matched pairwise ranking loss — direct age-cond AUROC proxy:
+# λ·hinge(margin − (s_pos − s_neg)) over pos/neg pairs with |age diff| ≤
+# tolerance, via a rolling memory bank (see AgeMatchedPairwiseLossHinge).
+#   enable     (bool,  False) — toggle (default OFF = O0 baseline)
+#   lambda_    (float, 1.0)   — pairwise weight
+#   margin     (float, 0.5)   — hinge margin
+#   tolerance  (float, 2.0)   — max |age diff| years (matches the official metric)
+#   bank_size  (int,   512)   — memory-bank capacity
+TrainCfg.age_pairwise = CFG(
+    enable=False,
+    lambda_=1.0,
+    margin=0.5,
+    tolerance=2.0,
+    bank_size=512,
+)
+
+# O7: focal loss — (1−pt)^γ·BCE (pt = exp(−BCE), same pos_weight as baseline)
+# down-weights easy samples; enable → team_code swaps the criterion to
+# FocalBCEWithLogitsLoss.  Sub3: ON — focal + label_smoothing 0.05 measured
+# +0.049 age-cond (full-train 0.8018 vs 0.7525).
+#   enable  (bool,  True)  — toggle
+#   gamma   (float, 2.0)
+TrainCfg.focal = CFG(
+    enable=True,
+    gamma=2.0,
+)
 
 # Callbacks & Logging
 TrainCfg.log_step = 20
 TrainCfg.keep_checkpoint_max = 5
 TrainCfg.early_stopping = CFG(
     min_delta=0.001,
-    patience=20,  # with 100 epochs; stops ~20 epochs after last improvement
+    patience=15,  # with 100 epochs; stops ~15 epochs after last improvement
+    min_epochs=30,  # early-stop countdown starts at epoch 30 (30% of 100);
+    # prevents early lucky-spike bests (e.g. fold_4 best@ep9) from
+    # triggering a premature stop while the curve is still climbing
 )
 
 
@@ -227,10 +235,8 @@ def _make_epoch_transformer(d_model: int, nhead: int, num_layers: int, dim_feedf
     cfg.nhead = nhead
     cfg.num_layers = num_layers
     cfg.dim_feedforward = dim_feedforward
-    # binary_threshold: P(CI=1) cutoff for the binary prediction.  Lives in the
-    # *model* config (not TrainCfg) so it is serialised into the checkpoint —
-    # ``_train_single_fold`` overwrites it with the val-tuned optimum after
-    # training, and run_model reproduces it.  Affects Reward/Accuracy/F1 only.
+    # binary_threshold: P(CI=1) cutoff for binary predictions; serialised into
+    # the checkpoint and overwritten with the val-tuned optimum after training.
     cfg.binary_threshold = 0.5
     return cfg
 
@@ -276,10 +282,9 @@ def _make_epoch_crnn(cnn_name: str, lstm_hidden: list, clf_hidden: list) -> CFG:
     cfg.age_adv = deepcopy(TrainCfg.age_adv)  # disabled by default; toggle at train time
     cfg.night_features = deepcopy(TrainCfg.night_features)  # disabled by default; toggle at train time
     cfg.no_age = deepcopy(TrainCfg.no_age)  # disabled by default; toggle at train time
-    # binary_threshold: P(CI=1) cutoff for the binary prediction.  Lives in the
-    # *model* config (not TrainCfg) so it is serialised into the checkpoint —
-    # ``_train_single_fold`` overwrites it with the val-tuned optimum after
-    # training, and run_model reproduces it.  Affects Reward/Accuracy/F1 only.
+    cfg.age_pairwise = deepcopy(TrainCfg.age_pairwise)  # disabled by default; toggle at train time
+    # binary_threshold: P(CI=1) cutoff for binary predictions; serialised into
+    # the checkpoint and overwritten with the val-tuned optimum after training.
     cfg.binary_threshold = 0.5
     # Select backbone
     cfg.cnn.name = cnn_name

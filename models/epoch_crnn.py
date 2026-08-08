@@ -60,6 +60,7 @@ from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch_ecg.cfg import CFG
 from torch_ecg.models import ECG_CRNN
 from torch_ecg.models._nets import MLP
@@ -71,7 +72,13 @@ from outputs import CINC2026Outputs
 
 from .building_blocks import DemographicEncoder
 
-__all__ = ["EpochCRNN", "GradientReversalFunction", "AgeAdversarialHead"]
+__all__ = [
+    "EpochCRNN",
+    "GradientReversalFunction",
+    "AgeAdversarialHead",
+    "FocalBCEWithLogitsLoss",
+    "AgeMatchedPairwiseLossHinge",
+]
 
 
 class GradientReversalFunction(torch.autograd.Function):
@@ -117,6 +124,172 @@ class AgeAdversarialHead(torch.nn.Module):
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         features = self.grl(features, self.alpha)
         return self.head(features)  # (B, 1) raw prediction of (age/100)
+
+
+class FocalBCEWithLogitsLoss(torch.nn.Module):
+    """Focal loss on top of :class:`~torch.nn.BCEWithLogitsLoss`.
+
+    ``FL = (1 - p_t)^gamma * BCE`` with ``p_t = exp(-BCE)``, where BCE uses
+    the same ``pos_weight`` as the baseline criterion.  Keeps the
+    ``pos_weight`` semantics of the O0 baseline (class imbalance handled by
+    the existing bridge in ``team_code._train_single_fold``); the ``gamma``
+    down-weights easy samples so the loss focuses on hard positives/negatives.
+
+    Parameters
+    ----------
+    gamma : float, default 2.0
+        Focusing parameter; larger values down-weight easy samples more.
+    pos_weight : torch.Tensor or float, optional
+        Weight for the positive class (BCEWithLogitsLoss semantics).
+    reduction : {"mean", "sum", "none"}, default "mean"
+
+    """
+
+    __name__ = "FocalBCEWithLogitsLoss"
+
+    def __init__(
+        self,
+        gamma: float = 2.0,
+        pos_weight: Optional[Union[torch.Tensor, float]] = None,
+        reduction: str = "mean",
+    ) -> None:
+        super().__init__()
+        self.gamma = float(gamma)
+        self.reduction = reduction
+        if pos_weight is not None and not isinstance(pos_weight, torch.Tensor):
+            pos_weight = torch.tensor(pos_weight)
+        self.register_buffer("pos_weight", pos_weight)
+
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        ce = F.binary_cross_entropy_with_logits(
+            input,
+            target,
+            pos_weight=self.pos_weight,
+            reduction="none",
+        )  # (B,)
+        p_t = torch.exp(-ce)  # "probability" of being correct per BCE
+        fl = (1.0 - p_t).pow(self.gamma) * ce
+        if self.reduction == "mean":
+            return fl.mean()
+        if self.reduction == "sum":
+            return fl.sum()
+        return fl
+
+
+class AgeMatchedPairwiseLossHinge(torch.nn.Module):
+    """Age-matched pairwise margin loss — direct optimisation proxy of the
+    official primary metric (age-conditioned AUROC).
+
+    Forms positive-negative pairs whose ages differ by ≤ ``tolerance`` years
+    (the same pairing rule as the official ``age_conditioned_auroc``) across
+    the current batch and a rolling FIFO memory bank of recent samples, and
+    minimises ``mean(max(0, margin - (s_pos - s_neg)))``.  Bank logits are
+    stored detached, so gradients flow only through the current batch.
+
+    Parameters
+    ----------
+    margin : float, default 0.5
+        Hinge margin.
+    tolerance : float, default 2.0
+        Max |age difference| in *years* for a valid pair (ages are fed in
+        ``age/100`` units, matching ``demographics[:, 0]``).
+    bank_size : int, default 512
+        Memory-bank capacity (rolling FIFO).  With the official-phase 7.6 %
+        prevalence and batch_size 16, batch-internal pairing yields ~1
+        positive per batch — the bank supplies the negative (and positive)
+        mass that makes age-matched pairing meaningful.
+
+    """
+
+    __name__ = "AgeMatchedPairwiseLossHinge"
+
+    def __init__(self, margin: float = 0.5, tolerance: float = 2.0, bank_size: int = 512) -> None:
+        super().__init__()
+        self.margin = float(margin)
+        self.tolerance = float(tolerance) / 100.0  # years → age/100 units
+        self.bank_size = int(bank_size)
+        self._bank: list = []  # rolling FIFO of (logit, age/100, label) floats
+
+    def forward(
+        self,
+        scores: torch.Tensor,
+        labels: torch.Tensor,
+        ages: torch.Tensor,
+    ) -> torch.Tensor:
+        """Forward pass.
+
+        Parameters
+        ----------
+        scores : torch.Tensor
+            Raw logits (B,), gradient-carrying for the current batch.
+        labels : torch.Tensor
+            Binary labels (B,), float 0/1.
+        ages : torch.Tensor
+            Ages in ``age/100`` units (B,), matching ``demographics[:, 0]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean hinge loss over all valid age-matched pairs; zero (but
+            differentiable) when no valid pair exists.
+
+        """
+        device, dtype = scores.device, scores.dtype
+
+        # Pairing pool = current batch (gradient-carrying) + bank (constants).
+        # The bank update happens AFTER pairing — pushing the current batch
+        # into the bank first would duplicate it in the pool (once with
+        # gradients, once detached) and dilute the loss mean with no-gradient
+        # duplicate pairs.
+        bank_scores = torch.tensor([t[0] for t in self._bank], device=device, dtype=dtype)
+        bank_ages = torch.tensor([t[1] for t in self._bank], device=device, dtype=dtype)
+        bank_labels = torch.tensor([t[2] for t in self._bank], device=device, dtype=dtype)
+        all_scores = torch.cat([scores, bank_scores])
+        all_ages = torch.cat([ages, bank_ages])
+        all_labels = torch.cat([labels, bank_labels])
+
+        # Threshold rather than exact == 1.0 / == 0.0: with label smoothing
+        # the trainer feeds 0.95/0.05 targets here, and exact matches would
+        # silently find nothing — zeroing the pairwise term every step.
+        pos_idx = torch.nonzero(all_labels >= 0.5).squeeze(-1)  # (P,)
+        neg_idx = torch.nonzero(all_labels < 0.5).squeeze(-1)  # (N,)
+        if pos_idx.numel() == 0 or neg_idx.numel() == 0:
+            self._update_bank(scores, ages, labels)
+            return scores.sum() * 0.0  # keep differentiable
+
+        age_diff = (all_ages[pos_idx][:, None] - all_ages[neg_idx][None, :]).abs()  # (P, N)
+        valid = age_diff <= self.tolerance
+        if not valid.any():
+            self._update_bank(scores, ages, labels)
+            return scores.sum() * 0.0
+
+        pos_sel, neg_sel = torch.nonzero(valid, as_tuple=True)
+        diff = self.margin - (all_scores[pos_idx[pos_sel]] - all_scores[neg_idx[neg_sel]])
+        loss = F.relu(diff).mean()
+
+        # Rolling FIFO bank update — store detached floats so the bank never
+        # carries a stale autograd graph.  Called on every path (incl. the
+        # early returns) so the bank always accumulates across steps.
+        self._update_bank(scores, ages, labels)
+
+        return loss
+
+    def _update_bank(
+        self,
+        scores: torch.Tensor,
+        ages: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> None:
+        """Push the current batch into the rolling FIFO bank (detached floats)."""
+        self._bank.extend(
+            zip(
+                scores.detach().tolist(),
+                ages.detach().tolist(),
+                labels.detach().tolist(),
+            )
+        )
+        if len(self._bank) > self.bank_size:
+            del self._bank[: len(self._bank) - self.bank_size]
 
 
 class EpochCRNN(ECG_CRNN):
@@ -248,7 +421,13 @@ class EpochCRNN(ECG_CRNN):
             self.dem_encoder = None
 
         # ── Criterion ─────────────────────────────────────────────────────────
-        self.criterion = setup_criterion(self.config.criterion, **self.config.get("criterion_kw", {}))
+        # FocalBCEWithLogitsLoss is a local custom loss (keeps the baseline
+        # pos_weight semantics); everything else goes through torch_ecg's
+        # setup_criterion (BCEWithLogitsLoss, FocalLoss, ...).
+        if self.config.criterion == "FocalBCEWithLogitsLoss":
+            self.criterion = FocalBCEWithLogitsLoss(**self.config.get("criterion_kw", {}))
+        else:
+            self.criterion = setup_criterion(self.config.criterion, **self.config.get("criterion_kw", {}))
 
         # ── Age-adversarial head (gradient reversal) ──────────────────────────
         # Config keys (all optional, defaults shown):
@@ -284,6 +463,31 @@ class EpochCRNN(ECG_CRNN):
         self.no_age = bool(self.config.get("no_age", False))
         if self.no_age and self.age_adv is not None:
             raise ValueError("no_age and age_adv are mutually exclusive: age_adv needs the age channel")
+
+        # ── O7: age-matched pairwise ranking loss ──────────────────────────────
+        # Direct optimisation proxy of the official primary metric (age-
+        # conditioned AUROC): adds λ·mean(max(0, margin − (s_pos − s_neg)))
+        # over positive-negative pairs with |age diff| ≤ tolerance, assembled
+        # across the current batch + a rolling memory bank (see
+        # AgeMatchedPairwiseLossHinge).  Config keys (all optional):
+        #   enable     (bool,  False) — toggle the branch
+        #   lambda_    (float, 1.0)   — weight of the pairwise loss
+        #   margin     (float, 0.5)   — hinge margin
+        #   tolerance  (float, 2.0)   — max |age diff| (years), matches the
+        #                              official age_conditioned_auroc
+        #   bank_size  (int,   512)   — memory-bank capacity
+        ap_cfg = self.config.get("age_pairwise", None)
+        self.age_pairwise: Optional[AgeMatchedPairwiseLossHinge] = None
+        self.ap_lambda: float = 0.0
+        if ap_cfg is not None and ap_cfg.get("enable", False):
+            if self.no_age:
+                raise ValueError("age_pairwise and no_age are mutually exclusive: pairwise needs the age channel")
+            self.age_pairwise = AgeMatchedPairwiseLossHinge(
+                margin=float(ap_cfg.get("margin", 0.5)),
+                tolerance=float(ap_cfg.get("tolerance", 2.0)),
+                bank_size=int(ap_cfg.get("bank_size", 512)),
+            )
+            self.ap_lambda = float(ap_cfg.get("lambda_", 1.0))
 
     # ─── Forward pass ────────────────────────────────────────────────────────
 
@@ -343,6 +547,21 @@ class EpochCRNN(ECG_CRNN):
         if "labels" in input_tensors:
             labels = input_tensors["labels"].to(self.device).to(self.dtype)
             ci_loss = self.criterion(ci_logit, labels)
+            # O7: age-matched pairwise ranking loss (official primary-metric
+            # proxy).  Training only — the memory bank must not be polluted
+            # by evaluation passes (model.eval() → self.training == False).
+            # run_one_step pops ``label`` and feeds smoothed ``labels`` here
+            # when label_smoothing > 0 — the pairing masks threshold at
+            # >= 0.5 / < 0.5 inside the loss, so smoothed targets (0.95/0.05)
+            # pair just like raw ones.
+            if self.age_pairwise is not None and self.training:
+                ap_labels = input_tensors.get("label", labels).to(self.device).to(self.dtype)
+                ap_loss = self.age_pairwise(
+                    ci_logit,
+                    ap_labels,
+                    input_tensors["demographics"].to(self.device).to(self.dtype)[:, 0],
+                )
+                ci_loss = ci_loss + self.ap_lambda * ap_loss
             if age_loss is not None:
                 ci_loss = ci_loss + self.age_adv_lambda * age_loss
 
