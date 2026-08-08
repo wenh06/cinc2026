@@ -248,8 +248,11 @@ class AgeMatchedPairwiseLossHinge(torch.nn.Module):
         all_ages = torch.cat([ages, bank_ages])
         all_labels = torch.cat([labels, bank_labels])
 
-        pos_idx = torch.nonzero(all_labels == 1.0).squeeze(-1)  # (P,)
-        neg_idx = torch.nonzero(all_labels == 0.0).squeeze(-1)  # (N,)
+        # Threshold rather than exact == 1.0 / == 0.0: with label smoothing
+        # the trainer feeds 0.95/0.05 targets here, and exact matches would
+        # silently find nothing — zeroing the pairwise term every step.
+        pos_idx = torch.nonzero(all_labels >= 0.5).squeeze(-1)  # (P,)
+        neg_idx = torch.nonzero(all_labels < 0.5).squeeze(-1)  # (N,)
         if pos_idx.numel() == 0 or neg_idx.numel() == 0:
             self._update_bank(scores, ages, labels)
             return scores.sum() * 0.0  # keep differentiable
@@ -547,10 +550,10 @@ class EpochCRNN(ECG_CRNN):
             # O7: age-matched pairwise ranking loss (official primary-metric
             # proxy).  Training only — the memory bank must not be polluted
             # by evaluation passes (model.eval() → self.training == False).
-            # Uses the RAW (unsmoothed) labels: run_one_step smooths
-            # ``labels`` when label_smoothing > 0, and the pairing masks
-            # (== 1.0 / == 0.0) would silently match nothing on smoothed
-            # targets.
+            # run_one_step pops ``label`` and feeds smoothed ``labels`` here
+            # when label_smoothing > 0 — the pairing masks threshold at
+            # >= 0.5 / < 0.5 inside the loss, so smoothed targets (0.95/0.05)
+            # pair just like raw ones.
             if self.age_pairwise is not None and self.training:
                 ap_labels = input_tensors.get("label", labels).to(self.device).to(self.dtype)
                 ap_loss = self.age_pairwise(

@@ -173,10 +173,13 @@ def main() -> None:
         all_results[label] = _evaluate(labels, probs, preds, ages, site_ids, age_to_prevalence, args.no_site)
 
     # ── Summary table ──────────────────────────────────────────────────────
+    # Column width fits the longest metric name (e.g. ``auroc_age_weighted``),
+    # so the header doesn't run into the next column.
+    col_width = max(len(k) for k in _METRIC_ORDER) + 2
     lines = ["=" * 92, "  SUMMARY — official metrics on the full training set", "=" * 92]
-    lines.append(f"{'model':<28s}" + "".join(f"{k:>12s}" for k in _METRIC_ORDER))
+    lines.append(f"{'model':<28s}" + "".join(f"{k:>{col_width}s}" for k in _METRIC_ORDER))
     for label, metrics in all_results.items():
-        lines.append(f"{label:<28s}" + "".join(f"{metrics.get(k, float('nan')):>12.4f}" for k in _METRIC_ORDER))
+        lines.append(f"{label:<28s}" + "".join(f"{metrics.get(k, float('nan')):>{col_width}.4f}" for k in _METRIC_ORDER))
     if not args.no_site:
         lines.append("")
         for site in sorted(np.unique(site_ids)):

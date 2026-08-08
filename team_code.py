@@ -267,9 +267,12 @@ def _train_single_fold(train_config: Any, out_folder: Path, verbose: bool) -> No
     # Bridge TrainCfg.focal → model criterion (O7: focal loss on top of BCE).
     # Must run after the pos_weight bridge above — criterion_kw then carries
     # both pos_weight (imbalance) and gamma (easy-sample down-weighting).
+    # Merge rather than assign blindly: criterion_kw only exists when
+    # pos_weight was set, so focal-on-without-pos_weight must not KeyError.
     focal_cfg = train_config.get("focal", None)
     if focal_cfg is not None and focal_cfg.get("enable", False):
         model_config.criterion = "FocalBCEWithLogitsLoss"
+        model_config.criterion_kw = dict(model_config.get("criterion_kw") or {})
         model_config.criterion_kw["gamma"] = float(focal_cfg.get("gamma", 2.0))
 
     # Bridge TrainCfg.age_pairwise → model config (age-matched pairwise loss)

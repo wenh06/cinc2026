@@ -177,7 +177,8 @@ class CINC2026Dataset(Dataset, ReprMixin):
         """
         missing = [rec for rec in self.records if not os.path.exists(str(self.reader._df_records.loc[rec, "algo_ann_path"]))]
         if missing:
-            self.records = [rec for rec in self.records if rec not in set(missing)]
+            missing_set = set(missing)
+            self.records = [rec for rec in self.records if rec not in missing_set]
             print(f"[CINC2026Dataset] dropped {len(missing)} record(s) missing CAISR " f"annotations: {missing}")
 
     def __len__(self) -> int:
