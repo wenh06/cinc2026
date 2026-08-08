@@ -10,19 +10,25 @@
 
 | Fact | Unofficial Phase | Official Phase |
 |------|:---------------:|:--------------:|
-| Training records (total) | 780 | 1,103 (small set) |
-| Records with CAISR | 766 (14 missing: 8 I0006, 6 S0001) | 1,090 (13 missing: S0001:10, I0002:1, I0006:2) |
-| CI positive (training) | 392 / 780 (50.3%) — artificially balanced | 84 / 1,103 (7.6%) — prevalence-matched |
-| Estimated CI rate (hidden test) | ~6% (inferred from AUPRC) | ~5–15% (real-world) |
-| Age (mean ± std, range) | 70.4 ± 8.3, [50, 89] | 62.0 ± 8.5, [50, 88] |
-| Sex (M / F) | 471 / 309 (60% / 40%) | 585 / 518 (53% / 47%) |
-| Site distribution | S0001: 572 (73%), I0006: 154 (20%), I0002: 54 (7%) | S0001: 857, I0006: 192, I0002: 54 |
+| Training records (total) | 780 | 1,103 (small) / **6,600 (large)** |
+| Records with CAISR | 766 (14 missing: 8 I0006, 6 S0001) | 1,090 small / 6,587 large (13 missing: S0001:10, I0002:1, I0006:2) |
+| CI positive (training) | 392 / 780 (50.3%) — artificially balanced | 84 / 1,103 (7.6%) small / 498 / 6,600 (7.5%) large — prevalence-matched |
+| Estimated CI rate (hidden test) | ~6% (inferred from AUPRC) | **5–15% (challenge page, confirmed)** |
+| Age (mean ± std, range) | 70.4 ± 8.3, [50, 89] | 62.0 ± 8.5, [50, 88] (small = large, same distribution) |
+| Sex (M / F) | 471 / 309 (60% / 40%) | small 585 / 518; large 3,501 / 3,099 (53% / 47%) |
+| Site distribution | S0001: 572 (73%), I0006: 154 (20%), I0002: 54 (7%) | small: S0001 857, I0006 192, I0002 54; large: **S0001 5,139 (78%), I0006 1,142 (17%), I0002 319 (5%)** |
 | CI time window | 3–7 years post-PSG | **1–6 years** post-PSG |
 | Primary metric | AUROC | **Age-conditioned AUROC** |
 | Secondary metric | AUPRC, Accuracy, F1 | Prevalence-based reward, AUPRC |
-| Local val size (80/20 split) | ~156 samples | ~220 samples |
+| Local val size | ~156 (80/20) | 1,320 (canonical 5-fold val, large) |
+| **Official validation cohort** | — | **I0004 — a single unseen source, hidden** (not S0001/I0002/I0006; CAISR-held-out; 5–15% CI; no human annotations) |
 
 > **Dataset continuity**: Only 116 records (BidsFolder IDs) are shared between the unofficial and official training sets — 987 records are new, 664 were removed.  The official phase is effectively a fresh dataset, not an expansion.  On the 116 shared records, CI labels, Age, and Sex are **100% consistent** (only 3 records show minor age deltas of ±1–2 years, likely data corrections).  The CI rate change (50% → 7.6%) is therefore entirely driven by dataset re-composition — adding 987 younger, predominantly CI-negative records and removing 664 older, CI-heavy records — not by label redefinition.  Contributing factors: (1) prevalence-matching to the real population instead of artificial balancing, (2) a narrower CI time window (1–6 years post-PSG instead of 3–7), and (3) a younger average age (62 vs 70).
+>
+> **EEG montage & CAISR domain heterogeneity (verified 2026-08-06)** — the cross-site mechanism behind the official-val gap:
+> - Montage: S0001 & I0002 record **bipolar mastoid-referenced** derivations (`F3-M2, C3-M2, O1-M2`); I0006 records **monopolar** (`C3, O1, F3` + separate M1/M2 channels).  Verified on raw EDFs at `/Data1/.../physiological_data/`.
+> - CAISR was trained on **S0001 (MGH) + MESA/MrOS/SHHS** (CAISR paper, *Sleep* 2025) — S0001 is CAISR in-distribution; **I0002/I0004/I0006 (and the test source I0007) are CAISR-held-out**, with the additional montage/hardware differences (I0004: mixed Grass/SD32+/Sandman/SOMNOmedics generations; I0007: a different lower-bandwidth system).
+> - Consequence: the "canonical" CAISR feature space still shifts by site, and our model (78% S0001 training weight) is calibrated to the S0001 feature regime.  This is why LO-site I0006-holdout (0.562, monopolar+CAISR-OOD) ≈ official scores (0.59–0.62) while I0002-holdout (0.742, mastoid) transfers far better.
 
 ---
 
@@ -30,11 +36,11 @@
 
 We use **CAISR-annotation-based epoch-sequence models**.
 
-The current locked baseline is **`EpochCRNN_M` + the binary-arousal 21-dim CAISR feature set** (submission 3, AUROC = 0.555). Each PSG night is decomposed into N × 30-second epochs (≈ 730–1100 epochs per night). Each epoch is represented as a compact CAISR-derived feature vector, and an epoch-sequence model (CRNN or Transformer) outputs a single binary CI prediction.
+The current official-phase baseline is **`EpochCRNN_M` + the binary-arousal 21-dim CAISR feature set** on the large training set (6,600 records): O0 = 0.762 same-site age-cond; current default config = **O8 5-fold focal+LS ensemble** (0.8045 same-site full-train).  Each PSG night is decomposed into N × 30-second epochs (≈ 730–1100 epochs per night). Each epoch is represented as a compact CAISR-derived feature vector, and an epoch-sequence model (CRNN or Transformer) outputs a single binary CI prediction.  *(Unofficial-phase best was sub3, AUROC 0.555 on 780 records — see Unofficial Phase Submission History.)*
 
 **Why CAISR-derived features?**
 
-- **Site-agnostic**: CAISR outputs a canonical feature space regardless of the underlying hardware differences across S0001 / I0002 / I0006.  No need for per-site channel name normalisation, montage conversion, or sampling-rate harmonisation.
+- **Site-agnostic — assumed, partially refuted (2026-08-06)**: CAISR outputs a canonical feature space regardless of the underlying hardware differences across S0001 / I0002 / I0006, and needs no channel-name normalisation, montage conversion, or sampling-rate harmonisation.  **However, CAISR was trained on S0001 (MGH) + MESA/MrOS/SHHS only** — I0006 and the hidden sources (I0004, I0007) are CAISR-out-of-distribution, with different EEG montages (bipolar vs monopolar) and hardware generations.  The "canonical" space still shifts by site (see Data Facts); cross-site robustness of the features themselves is now a first-class problem, not an assumption.
 - **Available for all splits**: The challenge organisers pre-ran CAISR on training, validation, and test sets; annotation EDF files ship alongside the physiological data.
 - **Memory-efficient**: 21 floats per epoch vs. ≈ 36 M raw EEG samples per night.  A full night fits in ~30 KB for CAISR features vs. ~144 MB for the raw EEG alone.
 
@@ -114,6 +120,18 @@ Clinical sleep metrics (sleep efficiency, N3%, WASO, arousal index, AHI) are the
 | AUROC | 0.555 | 102 / 244 | Top half of leaderboard |
 | AUPRC | 0.076 | — | Consistent with ~6% test prevalence |
 | Accuracy | 0.059 | — | Model predicts positive for most cases but is mostly wrong (F=0.075) |
+
+---
+
+## Official Phase Submission History
+
+| # | ID | Date | Config | Training set | Age-cond AUROC | Reward | Notes |
+|:--:|:---:|------|-------|:------------:|:-------------:|:------:|-------|
+| 1 | 2372 | 2026-08-02 | `EpochCRNN_M` single, BCE, pos_weight 12.16, LS 0.0 | large | 0.617 | 0.027 | SessionID int/str bug in run_model (local-eval artefact only — see §10.5 correction) |
+| 2 | 2407 | 2026-08-05 | sub1 training + SessionID fix + sliding-window inference | large | 0.592 | −0.013 | ≈ sub1 within noise — official scorer uses its own ages, so the fix was officially irrelevant |
+| 3 | 2471 | 2026-08-08 | 5-fold focal+LS ensemble, early-stop floor (O8) | large | PENDING | PENDING | first cross-site-aware submission |
+
+> Official val = unseen source **I0004**; leaderboard top ≈ 0.773 (large-trained) / 0.75 (small-trained).  Full details in `submissions` file.
 
 ---
 
@@ -358,6 +376,8 @@ Per-epoch raw EEG (30 s × 200 Hz = 6000 samples)
 ### Cross-site harmonisation (prerequisite)
 
 - [ ] **Before using any spectral feature**, compute and plot C3 power spectra separately for S0001, I0002, I0006.  If systematic site-level differences are visible, apply site-level ComBat harmonisation or per-site z-score.
+- [x] **Montage heterogeneity confirmed (2026-08-06)**: S0001/I0002 bipolar mastoid-referenced (`F3-M2...`), I0006 monopolar (`C3, O1, F3` + separate M1/M2) — the bipolar-derivation step for I0006 is mandatory, and the hidden sources (I0004/I0007) add further montage + hardware variation.  Per-site spectra comparison is a hard prerequisite for any spectral feature.
+- [x] **Raw-signal access at official inference confirmed (2026-08-06)**: the official python-example-2026 baseline computes physiological (raw-signal) statistics in `run_model` — the inference environment mounts raw PSG + `channel_table.csv` aliasing.  This unblocks Phase 8/P5-10.
 
 ### Potential extension (only after delta validates)
 
@@ -583,6 +603,15 @@ Optimise α on the validation set.
   unchanged — the organisers' re-training is unaffected).
 - **Lesson**: pure-numeric IDs are a classic int-vs-str trap — pandas masks
   compare strictly typed values and fail silently (no error, just fallback).
+- **⚠️ 2026-08-06 correction — local-eval artefact, not the official driver**:
+  the official scorer reads ages from **its own labels file**
+  (`evaluate_model.py: df_labels[...id_age]`), never from our predictions — so
+  the demographics fallback could not have moved the *official* age-cond
+  metric.  sub2 (with the fix) scored 0.592 ≈ sub1's 0.617 within run-to-run
+  noise.  The real sub1/sub2 drop driver is the **unseen-source validation
+  cohort (I0004)** — see Data Facts (montage/CAISR-domain note) and §10.6.
+  The root-cause analysis above remains correct *as a local-evaluation
+  artefact* (it silently inflated our own val estimates).
 
 ### 10.6 O7 loss experiments + sub3 config (2026-08-05)
 
@@ -598,15 +627,21 @@ Optimise α on the validation set.
   `TrainCfg.folds=[0..4]`, early-stop floor `min_epochs=30` + patience 20→15.
   Local 5-fold × focal validation (O8): full-train age-cond **0.8045**, mean
   per-fold val 0.767 — above O7b single (0.8018).  **Merged to master
-  (`1f84c1c`, PR #15) 2026-08-06 → sub3.**
-- **⚠️ Official val = unseen source `I0004`** (challenge page; hidden).
-  Official sub1/sub2 age-cond 0.617/0.592 ≈ LO-site held-out drops
-  (O6: 0.552–0.742) → local same-site val overestimates cross-site
-  transfer; the official scorer uses its own ages (SessionID fix was a
-  local-eval artifact).  Leaderboard top 0.75–0.77, some teams better
-  trained on *small* (1,103) than *large* (6,600).  **Pivot: LO-site as
-  local proxy; small-set training / regularisation / site-adv / small+large
-  ensemble.**
+  (`1f84c1c`, PR #15) 2026-08-06; submitted 2026-08-08 (ID 2471, training
+  set = large).**
+- **⚠️ Official val = unseen source `I0004`** (challenge page; hidden; test
+  set = another unseen source `I0007`).  Official sub1/sub2 age-cond
+  0.617/0.592 ≈ LO-site held-out drops (O6: 0.552–0.742) → local same-site
+  val overestimates cross-site transfer; the official scorer uses its own
+  ages (SessionID fix was a local-eval artifact).  Mechanism (verified):
+  CAISR is S0001-in-distribution only; I0004 is CAISR-held-out with
+  monopolar EEG + mixed hardware generations (see Data Facts).  The closest
+  local proxy = **I0006-holdout** (0.562, monopolar + CAISR-OOD) ≈ official
+  (0.59–0.62).  Leaderboard top 0.75–0.77, some teams better trained on
+  *small* (1,103) than *large* (6,600).  **Pivot (2026-08-06): LO-site as
+  local proxy; candidates = small-set training / per-record normalisation /
+  mixup / regularisation / ComBat harmonisation / multi-arch ensemble /
+  test-time adaptation — see §P5.**
 - **Empty-batch crash found & fixed** (`4f267fb`): 13 records lack CAISR
   annotations → empty epoch matrix (n_epochs=0).  With batch_size ≤ 13 (CI
   uses 4), a whole batch of such records makes collate `t_max=0` → CNN first
@@ -621,6 +656,12 @@ Optimise α on the validation set.
   for FAIR cross-model comparison on the (leaked) training data.
 
 ### 10.7 Research queue — sub4 candidates (2026-08-05)
+
+> **2026-08-06 update**: both items below are same-site tuning (validated on
+> the S0001-dominated local val) — **deprioritised** by the cross-site pivot
+> (§P5), which supersedes them for the remaining submissions.  Kept as
+> reference; a winning cross-site config should be re-tested with bs=32 / _L
+> only if capacity gains remain after the pivot experiments.
 
 - **batch_size 16→32** (√-scale lr 3e-4→~4e-4, re-tune weight decay): a
   5-fold per-fold trainset is only ~859 recs — bs=64 → 13 steps/epoch, the
@@ -637,6 +678,56 @@ Optimise α on the validation set.
 ## Official Phase Strategy (post-abstract-acceptance)
 
 > **Strategic priority shift**: The official phase metric is **age-conditioned AUROC**, which penalises models that rely on raw age as a predictive signal.  Our Unofficial Phase Feedback §3 noted a prevalence-shift calibration gap (train 50% → test ~6%), but the metric change is even more fundamental.  The following priorities were refined after an internal review (2026-07-30) against this constraint.
+
+### P5 — Cross-site robustness (current priority, 2026-08-06) 🔴
+
+> **Why this supersedes P0–P4**: official sub1/sub2 (0.617/0.592) and the
+> leaderboard show the real task is generalising from the 3 training sources
+> to **unseen sources** (val = I0004, test = I0007) under CAISR-domain +
+> montage/hardware shift.  Same-site val numbers (0.76–0.80) do not transfer.
+> Local evaluation proxy = **LO-site, I0006-holdout configuration first**
+> (monopolar + CAISR-OOD ≈ I0004's profile; 0.562 ≈ official 0.59–0.62),
+> with n_train held constant across holdout runs for comparability.
+
+Candidate interventions, ranked by evidence × cost (full research notes in
+the 2026-08-06 analysis; sources: cross-center PSG studies, sleep-domain
+domain-adaptation literature):
+
+1. **Small-set (1,103) training** — leaderboard evidence (DKAW 0.75 small vs
+   0.63 large; MATLAB baseline 0.578 vs 0.545) + O6 n_train effect.  Cheap
+   (~40 min single-fold).  Test against large on the I0006-holdout proxy.
+2. **Per-record z-score normalisation** — direct cross-center PSG evidence
+   (+11–20% F1 on CAP detection, EMBC 2023).  ⚠️ unofficial sub5 bundled it
+   with other changes and failed — must be a single-factor ablation now.
+3. **Mixup / feature-noise / epoch-masking augmentation** — sleep evidence
+   (XSleepFormer; BEETL 2021; EEG augmentation +5.8% staging acc).
+4. **Model selection on the LO-site proxy** (early-stop/checkpoint by
+   held-out-site metric instead of same-site val) — directly optimises the
+   cross-site objective.
+5. **Stronger regularisation** (weight decay / dropout / smaller capacity) —
+   cross-institutional EHR: simple models + site control ≥ deep nets.
+6. **ComBat / NeuroHarmonize feature harmonisation** (site as batch;
+   NM-ComBat variant for unseen sites) — 5-site EEG spectral-feature evidence.
+7. **Multi-architecture soft voting** (CRNN + Transformer + seed diversity) —
+   SOMNUS: soft voting beats every single model in 94.9% of comparisons.
+8. **Test-time adaptation on the 10 supplementary I0004 examples** (feature
+   statistics matching / light BN-affine adaptation) — needs re-downloading
+   the supplementary set (Kaggle, 4.6 GB); TTA evidence in sleep is mixed
+   (PSDNorm positive; general TTA transfers poorly to EEG — must test).
+9. **Site-adversarial GRL** — mixed evidence (ADG-RANet still needs
+   fine-tuning; some imaging studies report degradation).  O1 (age-adv)
+   failed; treat as last resort.
+10. **Raw-PSG spectral features** (relative delta power etc.) — the CAISR
+    information bottleneck (strongest missing biomarkers); the official
+    baseline already computes raw-signal statistics at inference, so raw
+    access in the official environment is confirmed.  Highest cost; Phase 8
+    scope + /Data1 raw data available.
+
+**Not recommended**: site-ID as input (useless for unseen sites + shortcut
+hazard); BBSE/prior-shift correction (rank-invariant; official prevalence
+shift is mild); SAM (no sleep evidence).
+
+---
 
 ### P0 — Diagnose age dependence; add age-conditioned AUROC monitoring
 
@@ -741,6 +832,14 @@ Cols [19:21] (sin/cos positional encoding) were designed for the Transformer var
 
 `normalize_epoch_features()` added to `dataset.py`; applied in `FastDataReader.__getitem__` and mirrored in `team_code._run_model_impl`.  ⚠️ Per-record z-score normalization was part of submission 5 and is hypothesised to have destroyed between-site distributional signal.  If retrying, test as a single-factor ablation and monitor per-site AUROC before/after.
 
+> **2026-08-06 update**: cross-center PSG literature gives per-record
+> z-scoring direct evidence **for** cross-site robustness (+11–20% F1 on CAP
+> A-phase detection when train/test populations differ, EMBC 2023; standard
+> practice in a 8-database cross-center study).  Submission 5's failure was
+> confounded (3 changes bundled, unofficial 50%-prevalence regime, S0001
+> dominated everything).  **Re-ranked as P5-2: single-factor ablation on the
+> I0006-holdout proxy.**
+
 ---
 
 ## Experiment Log
@@ -758,7 +857,7 @@ Template for tracking training runs.  Fill in one row per experiment.
 | **O0repro** | 2026-08-03 | `EpochCRNN_M` | 21 | baseline re-run on the **new multi-factor canonical split (= 5-fold fold_0)** | 3e-4 / 16 / 100 | 0.845 | 0.758 | — | Baseline on the new split (best @ ep42, early stop 62). Same split/config as O5's fold_0 — the reference for all post-2026-08-03 experiments. Per-site: S0001=0.855, I0006=0.795, I0002=0.822. |
 | **O4** | 2026-08-03 | `EpochCRNN_M` + no-age | 21 | zero the age channel in FiLM demographics (age is constant within each age-stratum → cannot help within-stratum ranking) | 3e-4 / 16 / 100 | 0.816 | 0.760 | ≈0 (vs O0repro +0.002, vs O0 −0.002) | ❌ Failed. Best @ ep44 (early stop 65). age-cond ties both baselines within noise; plain AUROC clearly below O0repro (0.816 vs 0.845). Zeroing the age channel neither helps nor hurts ranking — the model's within-stratum ranking was already age-independent (the age input powered only between-stratum shortcuts). Note: O4 trained on the pre-alias multi-factor canonical split (record composition differs slightly from fold_0); conclusion unchanged vs both references. Route closed. |
 | **O5** | 2026-08-03→04 | `EpochCRNN_M` ×5 | 21 | 5-fold CV ensemble (multi-factor stratified split, equal-weight probability average; see §10.4) | 3e-4 / 16 / 100 | 0.822 | 0.717 | −0.041 (OOF, conservative single-model bound; fold-0 same-split +0.027 vs O0repro) | ✅ Complete. Per-fold best age-cond (monitor): 0.785/0.704/0.756/0.740/0.747 (folds 0-4, @ ep 37/15/48/26/22) — run-to-run spread ≈ 0.08. OOF aggregate (6600 recs, one prediction per record, checkpoints = best-by-monitor): AUROC 0.8223 / age-cond 0.7169; per-site S0001 0.836/0.738, I0002 0.730/0.653, I0006 0.802/0.682. fold_0 (0.785) vs O0repro (0.758, same split): +0.027, within expected init/shuffle variance — no systematic split artifact. OOF is the honest lower bound; the test-time 5-model average should be ≥. |
-| **O6** | 2026-08-04 | `EpochCRNN_M` ×3 | 21 | leave-one-site-out (train 2 sites → eval full held-out site, 3 runs) | 3e-4 / 16 / 100 | 0.636 / 0.627 / 0.769 | **0.552 / 0.562 / 0.742** (S0001/I0006/I0002 held-out) | −0.186 / −0.120 / **+0.089** (vs O5 OOF per-site 0.738/0.682/0.653) | ✅ Complete. Held-out age-cond: S0001 0.552 (n_train=1461, best ep5), I0006 0.562 (n_train=5458, ep2), I0002 0.742 (n_train=6281, ep3). **Refutes the "I0002 (2.5× prevalence) is the sub1 drop source" hypothesis — held-out I0002 *beats* its in-distribution OOF.** Drop ordering tracks n_train (1461/5458/6281), so the S0001/I0006 drops confound domain shift with training-set size; all 3 models best at ep 2–5 with fast early stop; eval used center-crop (not sliding window, −0.007 scale). Implication: cross-site shift is real and asymmetric but not obviously site-identity-driven for I0002; hidden-val site-mix shift remains an uncontrolled risk, and the SessionID-bug fix remains the main lever for sub2. |
+| **O6** | 2026-08-04 | `EpochCRNN_M` ×3 | 21 | leave-one-site-out (train 2 sites → eval full held-out site, 3 runs) | 3e-4 / 16 / 100 | 0.636 / 0.627 / 0.769 | **0.552 / 0.562 / 0.742** (S0001/I0006/I0002 held-out) | −0.186 / −0.120 / **+0.089** (vs O5 OOF per-site 0.738/0.682/0.653) | ✅ Complete. Held-out age-cond: S0001 0.552 (n_train=1461, best ep5), I0006 0.562 (n_train=5458, ep2), I0002 0.742 (n_train=6281, ep3). **Refutes the "I0002 (2.5× prevalence) is the sub1 drop source" hypothesis — held-out I0002 *beats* its in-distribution OOF.** Drop ordering tracks n_train (1461/5458/6281), so the S0001/I0006 drops confound domain shift with training-set size; all 3 models best at ep 2–5 with fast early stop; eval used center-crop (not sliding window, −0.007 scale). Implication: cross-site shift is real and asymmetric but not obviously site-identity-driven for I0002; hidden-val site-mix shift remains an uncontrolled risk, and the SessionID-bug fix remains the main lever for sub2. *(2026-08-06 update: the SessionID fix did NOT move the official score — sub2 0.592 ≈ sub1 0.617; official sub1/sub2 match the **I0006-holdout** profile (monopolar + CAISR-OOD ≈ unseen source I0004), so I0006-holdout, not S0001-holdout, is the primary local proxy going forward; n_train must be held constant across holdout runs.)* |
 | **O7a** | 2026-08-05 | `EpochCRNN_M` + age-matched pairwise | 21 | age-matched pairwise hinge loss (λ=1.0, margin=0.5, tol=2y, memory bank 512) — direct optimisation proxy of age-cond AUROC | 3e-4 / 16 / 100 | 0.831 (full-train eval) | 0.719 (val best @ep29, stop 49) | −0.039 (val; full-train −0.0185) | ❌ Failed. Full-train official-flow eval (scripts/eval_all_models.py): AUROC 0.8312 / age-cond 0.7340 vs baseline (o0_repro_split) 0.8417/0.7525 — worse on every site. Degrades fast after ep29 (0.719 → 0.65), unstable training. Pairwise (λ=1.0, margin=0.5) fights the BCE signal rather than helping — the BCE already learns age-matched ranking, pairwise adds noise on this small dataset. Route closed unless retried with much smaller λ/margin (low priority). |
 | **O7b** | 2026-08-05 | `EpochCRNN_M` + focal | 21 | focal loss (γ=2.0, FocalBCEWithLogitsLoss, same pos_weight 12.16) + label_smoothing 0.05 | 3e-4 / 16 / 100 | 0.867 (full-train eval) | 0.784 (val best @ep67, stop 87) | **+0.049** (full-train 0.8018 vs 0.7525) | ✅ **Strong gain — new default.** Full-train official-flow eval: AUROC 0.8670 / age-cond 0.8018 / age-wtd 0.8138 / AUPRC 0.4282 (baseline 0.8417/0.7525/0.7666/0.3452); every site improves (S0001 0.7513→0.7989, I0006 0.7393→0.8189, I0002 0.7739→0.8274). Mechanism: at 7.6% prevalence the abundant easy negatives dominate BCE gradients; focal (1−pt)^γ concentrates them on hard samples. Accuracy 0.4141 / F1 0.2009 lower than baseline — the tuned binary threshold shifts (reward +0.2636 vs 0.2206); primary metric unaffected. **Adopted into the default config for sub3: focal ON + label_smoothing 0.05 + folds [0..4].** |
 | **O8** | 2026-08-05 | `EpochCRNN_M` ×5 focal | 21 | sub3 config: 5-fold ensemble × focal+LS (§10.4 + O7b), early-stop floor `min_epochs=30` + patience 20→15 | 3e-4 / 16 / 100 | 0.863 (full-train) | 0.767 (per-fold val mean: 0.773/0.735/0.769/0.737/0.819); full-train 0.8045 | +0.052 (full-train vs baseline 0.7525); +0.0027 (vs O7b single 0.8018) | ✅ **Complete; submission config for sub3.** Full-train official-flow eval: AUROC 0.8632 / age-cond 0.8045 / age-wtd 0.8148 / AUPRC 0.4305. Per-site age-cond: S0001 0.8244, I0006 0.7692, I0002 0.7527. The early-stop floor (countdown starts at ep 30) exists so an early lucky-spike best can't cut a fold off mid-climb — fold_4, which suffered exactly that in the pre-floor run (best 0.708@ep9, stop@29), now trains to ep 59 with best 0.7364@ep44 (+0.028, the largest single-fold gain). Enough to put the ensemble *above* O7b single even on the leaked full-train eval — the single-vs-ensemble tradeoff is resolved in the ensemble's favour. |
