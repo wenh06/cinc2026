@@ -41,7 +41,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.multiprocessing as mp
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 from torch.utils.data.dataset import Dataset
 from torch_ecg.cfg import CFG, DEFAULTS
 from torch_ecg.utils.misc import ReprMixin
@@ -381,6 +381,108 @@ class CINC2026Dataset(Dataset, ReprMixin):
 
     def extra_repr_keys(self) -> List[str]:
         return ["reader", "training"]
+
+
+class AgeStratifiedBatchSampler(Sampler):
+    """Build every batch from a ±``tolerance``-year age window with forced
+    positive records (batch_sampler semantics — yields full batches).
+
+    Rationale (O7c): the official primary metric (age-conditioned AUROC)
+    ranks positives against *age-matched* negatives (|Δage| ≤ 2 y).  With
+    the official-phase 7.6 % prevalence and batch_size 16 a plain shuffle
+    yields ~1 positive per batch and essentially zero internally age-matched
+    pairs, so a pairwise training signal needs either a memory bank (O7a,
+    whose detached bank pairs diluted the gradient mean) or batches that are
+    internally age-matched — this sampler provides the latter, so every
+    (pos, neg) pair inside the batch obeys the official pairing rule and
+    carries real gradients.
+
+    Composition per batch: pick a random anchor record, take its
+    ±``tolerance``-year window, draw ``n_pos`` positives and
+    ``batch_size − n_pos − n_mixed_neg`` negatives from the window, then mix
+    in ``n_mixed_neg`` globally-random negatives.  Two consequences:
+
+    * the age-matched (pos, neg) pairs inside the batch are guaranteed and
+      abundant (≈ ``n_pos`` × window negatives), carrying real gradients;
+    * the mixed negatives keep the batch age span wide, so the FiLM
+      demographic conditioning still sees age variation every step —
+      all-same-age batches would leave the age channel untrainable.
+
+    Positives are over-sampled: batch positive rate ≈ ``n_pos / batch_size``
+    (≈ 25 % at the default) vs the global 7.6 % — pair
+    ``pos_weight = pw · p_global / p_batch`` in the training config to
+    preserve the BCE balance.
+
+    Epoch length equals ``len(dataset)`` (rounded up), so OneCycleLR step
+    counts are unchanged.  The age mask inside the pairwise losses remains
+    necessary: window-edge pairs can differ by up to 2·``tolerance`` years.
+    """
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        batch_size: int,
+        n_pos: Optional[int] = None,
+        n_mixed_neg: int = 0,
+        tolerance: float = 2.0,
+        seed: Optional[int] = None,
+    ) -> None:
+        super().__init__(dataset)
+        self.dataset = dataset
+        self.batch_size = int(batch_size)
+        self.n_pos = int(n_pos) if n_pos else max(2, int(0.25 * self.batch_size))
+        self.n_mixed_neg = int(n_mixed_neg)
+        self.tolerance = float(tolerance)
+        self._rng = np.random.default_rng(seed)
+
+        # Ages/labels keyed by dataset index (post-_filter_missing_caisr).
+        df = dataset.reader._df_records
+        recs = dataset.records
+        self._ages = df.loc[recs, "Age"].astype(float).values  # years
+        self._labels = df.loc[recs, "Cognitive_Impairment"].astype(int).values
+        self._n = len(recs)
+        self._pos_idx = np.nonzero(self._labels == 1)[0]
+        self._neg_idx = np.nonzero(self._labels == 0)[0]
+
+    def __iter__(self):
+        for _ in range(len(self)):
+            yield self._make_batch()
+
+    def __len__(self) -> int:
+        return int(np.ceil(self._n / self.batch_size))
+
+    def _make_batch(self) -> List[int]:
+        anchor = int(self._rng.integers(self._n))
+        a = self._ages[anchor]
+        win = np.nonzero(np.abs(self._ages - a) <= self.tolerance)[0]
+        pos_win = win[self._labels[win] == 1]
+        neg_win = win[self._labels[win] == 0]
+
+        n_pos = min(self.n_pos, pos_win.size)
+        pos = self._rng.choice(pos_win, size=n_pos, replace=False) if n_pos else np.empty(0, dtype=int)
+        n_win_neg = min(self.batch_size - n_pos - self.n_mixed_neg, neg_win.size)
+        neg = self._rng.choice(neg_win, size=n_win_neg, replace=False) if n_win_neg else np.empty(0, dtype=int)
+        batch = np.concatenate([pos, neg])
+
+        # Mixed-age negatives for diversity (FiLM conditioning needs age
+        # variation; the loss's age mask filters their cross-age pairs).
+        if self.n_mixed_neg > 0:
+            avail = np.setdiff1d(self._neg_idx, batch)
+            n_mix = min(self.n_mixed_neg, avail.size)
+            if n_mix > 0:
+                batch = np.concatenate([batch, self._rng.choice(avail, size=n_mix, replace=False)])
+
+        # Pad from the global pools when the window is short (extreme ages);
+        # such padded records may sit outside the window — the loss's age
+        # mask filters their (pos, neg) pairs.
+        need = self.batch_size - batch.size
+        if need > 0:
+            pool = self._pos_idx if self._rng.random() < 0.25 else self._neg_idx
+            avail = np.setdiff1d(pool, batch)
+            if avail.size:
+                pad = self._rng.choice(avail, size=min(need, avail.size), replace=False)
+                batch = np.concatenate([batch, pad])
+        return batch.tolist()
 
 
 # ---------------------------------------------------------------------------
