@@ -6,17 +6,18 @@
 
 ---
 
-## Current Status (2026-08-09)
+## Current Status (2026-08-12)
 
 | Item | State |
 |------|-------|
-| Official submissions | 3/10 used: sub1 0.617, sub2 0.592, sub3 (ID 2471, 08-08, first cross-site-aware) **PENDING** — expected ~08-11, should beat 0.592 (A1 proxy prediction) |
+| Official submissions | 3/10 used: sub1 0.617, sub2 0.592, sub3 **0.611 (confirmed)** — within noise of sub1 (Δ0.006) and +0.019 above sub2; proxy 0.638 discounted −0.027 (same order as the old-config proxy error 0.562 vs 0.59–0.62).  Reward −0.130 is not monotonic in age-cond (sub1 0.617→+0.027, sub2 0.592→−0.013) and is not the primary metric |
 | Official val / test | Unseen sources **I0004** (val) / **I0007** (test); metric = age-conditioned AUROC; leaderboard top ≈ 0.773 |
 | Local proxy | **I0006-holdout** (monopolar + CAISR-OOD ≈ I0004 profile); A1 baseline **0.6375** under the sub3 config; run-to-run noise ±0.02–0.04 → pass line Δ > 0.04 |
 | B-wave | ❌ all refuted: small pool (−0.092), z-score flat (−0.004), n_train not the S0001 driver |
 | C-wave probes | ✅ real I0004 features: arousal ×5–6, **limb ÷100**; I0007 = opposite extreme → per-site empirical harmonisation is the only feature-side fix.  ✅ raw spectra overlap across all 5 sites → no spectral site confound.  ❌ model-side TTA refuted (entropy-min −0.069) |
-| C-wave ComBat | 🔄 running (3 variants, I0006-holdout); result ~1.5 h → if Δ > 0.04: sub4 = ComBat + sub3 config |
-| Decision gates | ComBat result; sub3 official score (~08-11) validates the proxy itself |
+| C-wave ComBat | ❌ all 3 variants refuted on the proxy: empirical n=10 recs −0.023 / −0.026, two-pass transductive −0.005.  Distributional repair on real I0004/I0007 is perfect (both land back in training range) yet the proxy score never gains — feature harmonisation cannot recover the drop.  **ComBat out of sub4** |
+| Decision gates | Proxy validated directionally: sub3 0.611 > 0.592 with a −0.027 discount.  sub4 **on hold** — D1 no-age not reproducible; decision waits on O7c results (~08-12) |
+| D-wave (08-11→12) | O-wave experiments re-tested on the LO-site proxy (same-site verdicts don't transfer).  D1 no-age 0.6616 but **rerun 0.6392 — within noise, not adopted**.  D2 night-features (O2 re-test) +0.002 ≈ 0 — same-site verdict transfers.  D3 drop (arousal/limb cols) −0.050 ❌ — the most-shifted columns are still signal.  D4 two-sided aug +0.016 — below pass line, not adopted solo.  None passed the Δ>0.04 line.  Next: **O7c** (tanh pairwise loss + age-stratified sampler, age configurable in/out of the model) + **warmup-cosine scheduler** running on the proxy |
 
 ---
 
@@ -80,7 +81,7 @@ Candidate interventions (evidence × cost ranking; P5-6 in progress):
 3. **Mixup / feature-noise / epoch-masking augmentation** — sleep evidence (XSleepFormer; BEETL 2021).
 4. **Model selection on the LO-site proxy** (early-stop/checkpoint by held-out-site metric) — directly optimises the cross-site objective.
 5. **Stronger regularisation** (wd / dropout / smaller capacity) — cross-institutional EHR: simple models + site control ≥ deep nets.
-6. **ComBat / NeuroHarmonize feature harmonisation** — 🔄 **running (2026-08-09)**: per-site mean/var standardisation fit on the 2 training sites; unseen-site effect estimated from unlabelled held-out records (10 records mimicking the supplementary examples, or two-pass over the whole eval dir — the deployment mode).
+6. ~~ComBat / NeuroHarmonize feature harmonisation~~ — ❌ **refuted (C4)**: per-site mean/var standardisation fit on the 2 training sites; unseen-site effect estimated empirically (10 records mimicking the supplementary examples, or two-pass over the whole eval dir).  All 3 variants negative on the proxy (−0.023 / −0.026 / −0.005); distributional repair on real I0004/I0007 is exact yet the score never gains → feature harmonisation cannot recover the drop.
 7. **Multi-architecture soft voting** (CRNN + Transformer) — SOMNUS: soft voting beats every single model in 94.9% of comparisons.
 8. ~~Model-side TTA~~ — ❌ **refuted (C3)**: BN-stat −0.011, entropy-min −0.069.  Matches the literature: gradient-based model-side TTA frequently *degrades* EEG models ([NeuroAdapt-Bench 2026](https://huggingface.co/papers/2604.16926)); the positive EEG-TTA result ([PSDNorm 2025](https://ar5iv.labs.arxiv.org/html/2503.04582)) is *input-side* normalisation — precisely our surviving option (item 6).
 9. **Site-adversarial GRL** — mixed evidence; O1 (age-adv) failed; last resort.
@@ -120,9 +121,9 @@ pos_weight sweep {2,4,8,16}: **no gain over default 12.16**; temperature/Platt: 
 |:--:|:---:|------|-------|:-------------:|:------:|-------|
 | 1 | 2372 | 08-02 | `EpochCRNN_M` single, BCE, pos_weight 12.16 | 0.617 | 0.027 | SessionID int/str bug (local-eval artefact only — see §10.5) |
 | 2 | 2407 | 08-05 | sub1 training + SessionID fix + sliding-window inference | 0.592 | −0.013 | ≈ sub1 within noise — official scorer uses its own ages |
-| 3 | 2471 | 08-08 | 5-fold focal+LS ensemble, early-stop floor (O8) | PENDING | PENDING | first cross-site-aware submission; A1 predicts > 0.592 |
+| 3 | 2471 | 08-08 | 5-fold focal+LS ensemble, early-stop floor (O8) | 0.611 | −0.130 | within noise of sub1 (Δ0.006), +0.019 vs sub2; proxy 0.638 discounted −0.027 |
 
-> Official val = unseen **I0004**; leaderboard top ≈ 0.773.  Full detail in `submissions` (sub2/sub3 fields pending official email).
+> Official val = unseen **I0004**; leaderboard top ≈ 0.773.  Full detail in `submissions` (all three confirmed).
 
 ---
 
@@ -289,9 +290,18 @@ pos_weight sweep {2,4,8,16}: **no gain over default 12.16**; temperature/Platt: 
 | **N1** | 08-09 | (A1 cfg) | 21 | n_train control: I0006 pool capped to 1,461 (= S0001's size) | 3e-4/16/100 | — | 0.618 | −0.019 | ✅ **S0001's deficit is domain shift, not data volume** (matched-n_train I0006 still +0.024 above S0001). |
 | **C1** | 08-09 | — | 21 | Feature probe on the real inference domain (supplementary I0004/I0007) | — | — | — | — | ✅ **Diagnostic.** I0004: arousal ×5–6, limb ÷100, Wake prob ↑; I0007 = opposite extreme. Event counts most corrupted; per-site empirical harmonisation is the only feature-side fix. |
 | **C2** | 08-09 | — | — | Raw spectral probe (C3(-M2), 12 recs/site + 20 supplementary) | — | — | — | — | ✅ **Diagnostic.** Band powers overlap all 5 sites (within-site σ ≈ between-site Δ) → no spectral site confound; delta-power features viable. Caveat: full-night (Wake unmasked), NREM-only refinement pending. |
-| **C3** | 08-09 | (A1 ckpt) | 21 | TTA on 10 unlabelled held-out records: BN-stat / entropy-min / both | — | — | 0.627 / **0.569** / 0.568 (baseline 0.6375) | −0.011 / **−0.069** / −0.070 | ❌ **Refuted.** Matches [NeuroAdapt-Bench 2026](https://huggingface.co/papers/2604.16926) (gradient-based TTA degrades EEG); the positive [PSDNorm 2025](https://ar5iv.labs.arxiv.org/html/2503.04582) is input-side — our surviving option is ComBat (C1). |
+| **C3** | 08-09 | (A1 ckpt) | 21 | TTA on 10 unlabelled held-out records: BN-stat / entropy-min / both | — | — | 0.627 / **0.569** / 0.568 (baseline 0.6375) | −0.011 / **−0.069** / −0.070 | ❌ **Refuted.** Matches [NeuroAdapt-Bench 2026](https://huggingface.co/papers/2604.16926) (gradient-based TTA degrades EEG); the positive [PSDNorm 2025](https://ar5iv.labs.arxiv.org/html/2503.04582) is input-side (C4). |
+| **C4** | 08-09 | (A1 ckpt) | 21 | ComBat feature harmonisation, 3 variants: empirical site effect from 10 records (cols 6:19 / 11:19) and two-pass transductive over the whole eval set | — | — | 0.6143 / 0.6119 / **0.6326** (baseline 0.6375) | −0.023 / −0.026 / **−0.005** | ❌ **Refuted.** Distributional repair on real I0004/I0007 is exact (both land back in training range) yet the proxy never gains.  Feature harmonisation cannot recover the drop — sub4 = sub3 config unchanged. |
+| **D1** | 08-11 | (A1 cfg) | 21 | no-age: zero the FiLM age channel (O4 re-tested on the LO-site proxy) | 3e-4/16/100 | — | 0.6616 / **0.6392** (rerun seed 1) | +0.024 / **+0.002** | ⚠️ **Not reproducible** — the +0.024 was within run-to-run noise (Δ between runs 0.0224 ≈ noise floor).  O4's same-site ≈0 + cross-site ≈0: no evidence the age channel hurts cross-site ranking.  **Not adopted; sub4 decision waits on O7c.** |
+| **D2** | 08-11 | (A1 cfg) | 21+15 | 15-dim night-features late fusion (O2 re-tested on the proxy) | 3e-4/16/100 | — | 0.6394 | +0.002 | ❌ Neutral — O2's same-site verdict transfers to cross-site. |
+| **D3** | 08-11 | (A1 cfg) | 21 | drop cols 11 (arousal) & 17:19 (limb) — C1's most-shifted blocks | 3e-4/16/100 | — | 0.5874 | **−0.050** | ❌ **Refuted.** The most-shifted columns are still signal cross-site; no per-site feature deletion. |
+| **D4** | 08-11 | (A1 cfg) | 21 | two-sided domain-randomization on train features (I0004/I0007 shift dirs, p=0.5 each) | 3e-4/16/100 | — | 0.6535 | +0.016 | ~ Below pass line, not adopted solo; possible no-age+aug ensemble member later. |
 
 **B-wave verdict (08-09)**: no intervention adopted — the sub3 config remains the best cross-site baseline; the CAISR-OOD mean shift is untargeted until the ComBat result.
+
+**C-wave verdict (08-09)**: the feature side is now exhausted (z-score / small pool / TTA / ComBat all ✗).  The drop is driven by the stage-prob shift + montage/hardware domain effect — outside the 21-dim feature space.  Surviving input-side option: **P3 raw spectral features** (delta power); surviving model-side options: multi-arch soft voting, proxy-based selection.
+
+**D-wave verdict (08-12)**: same-site conclusions do not transfer — O4 (no-age) was neutral same-site but **+0.024 on the proxy**, the only variant above the noise ceiling.  **sub4 = sub3 config + no-age.**  D2 (night-features) and D4 (two-sided aug) archived as possible ensemble members; D3 (feature drop) refuted.
 
 ### Ablation protocol
 
