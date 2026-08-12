@@ -16,8 +16,8 @@
 | B-wave | ❌ all refuted: small pool (−0.092), z-score flat (−0.004), n_train not the S0001 driver |
 | C-wave probes | ✅ real I0004 features: arousal ×5–6, **limb ÷100**; I0007 = opposite extreme → per-site empirical harmonisation is the only feature-side fix.  ✅ raw spectra overlap across all 5 sites → no spectral site confound.  ❌ model-side TTA refuted (entropy-min −0.069) |
 | C-wave ComBat | ❌ all 3 variants refuted on the proxy: empirical n=10 recs −0.023 / −0.026, two-pass transductive −0.005.  Distributional repair on real I0004/I0007 is perfect (both land back in training range) yet the proxy score never gains — feature harmonisation cannot recover the drop.  **ComBat out of sub4** |
-| Decision gates | Proxy validated directionally: sub3 0.611 > 0.592 with a −0.027 discount.  sub4 **on hold** — D1 no-age not reproducible; decision waits on O7c results (~08-12) |
-| D-wave (08-11→12) | O-wave experiments re-tested on the LO-site proxy (same-site verdicts don't transfer).  D1 no-age 0.6616 but **rerun 0.6392 — within noise, not adopted**.  D2 night-features (O2 re-test) +0.002 ≈ 0 — same-site verdict transfers.  D3 drop (arousal/limb cols) −0.050 ❌ — the most-shifted columns are still signal.  D4 two-sided aug +0.016 — below pass line, not adopted solo.  None passed the Δ>0.04 line.  Next: **O7c** (tanh pairwise loss + age-stratified sampler, age configurable in/out of the model) + **warmup-cosine scheduler** running on the proxy |
+| Decision gates | sub4 pending **O7c λ=0.05 rerun** (first run +0.029; D1's rerun lesson — confirm before adopting).  If stable: sub4 = O7c λ=0.05; else fall back to sub3 config unchanged |
+| D-wave (08-11→12) | O-wave re-tests on the proxy: D1 no-age 0.6616 → rerun 0.6392 (noise, not adopted); D2 night +0.002 ≈ 0; D3 drop −0.050 ❌; D4 aug +0.016 ~.  **O7c** (tanh pairwise + age-stratified sampler): λ=0.05 **+0.029**, λ=0.1 −0.031, λ=0.3 −0.022, λ=0.1×no-age −0.004 — pairwise helps only at minimal weight (consistent with O7a's λ=1 failure).  **warmup-cosine scheduler** +0.009 (0.6469, noise-adjacent).  Rerun of λ=0.05 in flight |
 
 ---
 
@@ -296,12 +296,14 @@ pos_weight sweep {2,4,8,16}: **no gain over default 12.16**; temperature/Platt: 
 | **D2** | 08-11 | (A1 cfg) | 21+15 | 15-dim night-features late fusion (O2 re-tested on the proxy) | 3e-4/16/100 | — | 0.6394 | +0.002 | ❌ Neutral — O2's same-site verdict transfers to cross-site. |
 | **D3** | 08-11 | (A1 cfg) | 21 | drop cols 11 (arousal) & 17:19 (limb) — C1's most-shifted blocks | 3e-4/16/100 | — | 0.5874 | **−0.050** | ❌ **Refuted.** The most-shifted columns are still signal cross-site; no per-site feature deletion. |
 | **D4** | 08-11 | (A1 cfg) | 21 | two-sided domain-randomization on train features (I0004/I0007 shift dirs, p=0.5 each) | 3e-4/16/100 | — | 0.6535 | +0.016 | ~ Below pass line, not adopted solo; possible no-age+aug ensemble member later. |
+| **O7c** | 08-12 | (A1 cfg) | 21 | age-stratified sampler (4 pos + 8 win-neg + 4 mixed-neg per batch) + tanh pairwise on logits, bank_size=0; λ sweep | 3e-4/16/100 | — | 0.6664 / 0.6065 / 0.6154 / 0.6335 (λ=0.05/0.1/0.3/0.1×no-age) | **+0.029** / −0.031 / −0.022 / −0.004 | ~ **λ=0.05 positive, λ≥0.1 negative** — pairwise helps only at minimal weight (consistent with O7a λ=1 failure).  Rerun in flight; sampler's age-mixing (n_mixed_neg) preserves FiLM conditioning. |
+| **S1** | 08-12 | (A1 cfg) | 21 | lr_scheduler swap: OneCycle (max 1e-3, pct 0.3) → warmup 5% + cosine (peak base lr 3e-4) | 3e-4/16/100 | — | 0.6469 | +0.009 | ~ Noise-adjacent; plain AUROC 0.7036 vs baseline 0.7171.  Not adopted alone; could stack with O7c. |
 
 **B-wave verdict (08-09)**: no intervention adopted — the sub3 config remains the best cross-site baseline; the CAISR-OOD mean shift is untargeted until the ComBat result.
 
 **C-wave verdict (08-09)**: the feature side is now exhausted (z-score / small pool / TTA / ComBat all ✗).  The drop is driven by the stage-prob shift + montage/hardware domain effect — outside the 21-dim feature space.  Surviving input-side option: **P3 raw spectral features** (delta power); surviving model-side options: multi-arch soft voting, proxy-based selection.
 
-**D-wave verdict (08-12)**: same-site conclusions do not transfer — O4 (no-age) was neutral same-site but **+0.024 on the proxy**, the only variant above the noise ceiling.  **sub4 = sub3 config + no-age.**  D2 (night-features) and D4 (two-sided aug) archived as possible ensemble members; D3 (feature drop) refuted.
+**D-wave verdict (08-12)**: same-site conclusions do not transfer — O4 (no-age) was neutral same-site but appeared +0.024 on the proxy; **rerun 0.6392 → within noise, not adopted.**  The reproducible candidate is **O7c λ=0.05 (+0.029, rerun in flight)**; pairwise helps only at minimal weight (λ=0.1/0.3 negative).  warmup-cosine scheduler +0.009 (noise-adjacent).  sub4 decision: O7c λ=0.05 if the rerun confirms, else sub3 config unchanged.
 
 ### Ablation protocol
 
