@@ -412,11 +412,15 @@ def test_phi_cache() -> None:
 
 @func_indicator("testing Philosopher's Stone inference")
 def test_phi_inference() -> None:
-    """Run Phi latent extraction on ONE raw record (CPU; opt-in, slow).
+    """Run Phi latent extraction on ONE raw record (CPU; opt-in).
 
-    Gated by ``CINC2026_TEST_PHI=1`` because it adds 10-30 minutes on a
-    2-core CI runner.  The checkpoint is baked into the image at build time by
-    post_docker_build.py (MODEL_CACHE_DIR/philosophers-stone/model_files/).
+    Gated by ``CINC2026_TEST_PHI=1`` because it adds several minutes on the
+    2-core / 7 GB CI runner.  The record is truncated to 30 minutes for the
+    wavelet stage: the full-night transform alone needs ~9-18 GB of intermediate
+    arrays, which OOMs the runner.  The spectrogram is then padded back to the
+    canonical 11 h so the model forward, head weights, etc. still run end to end
+    exactly as in production.  The checkpoint is baked into the image at build
+    time by post_docker_build.py (MODEL_CACHE_DIR/philosophers-stone/model_files/).
     """
     import subprocess
     import sys
@@ -447,14 +451,30 @@ def test_phi_inference() -> None:
             "1",
             "--limit",
             "1",
+            "--max-seconds",
+            "1800",
             "--no-collect-heads",
         ],
         capture_output=True,
         text=True,
         timeout=5400,
     )
+    if result.returncode != 0:
+        print("--- phi extract stdout ---")
+        print(result.stdout)
+        print("--- phi extract stderr ---")
+        print(result.stderr)
     assert result.returncode == 0, result.stderr[-2000:]
     npzs = sorted(cache_dir.glob("*/*.npz"))
+    if len(npzs) != 1:
+        print("--- phi extract stdout ---")
+        print(result.stdout)
+        print("--- phi extract stderr ---")
+        print(result.stderr)
+        failures = cache_dir / "failures.csv"
+        if failures.exists():
+            print("--- failures.csv ---")
+            print(failures.read_text())
     assert len(npzs) == 1, f"expected 1 npz, got {npzs}"
     print(f"  phi latent cached: {npzs[0]}")
     print("test_phi_inference passed ✓")

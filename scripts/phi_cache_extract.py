@@ -54,7 +54,7 @@ def _worker_init(checkpoint: str, device_id: int) -> None:
 
 
 def _process_one(args):
-    row, cache_dir, collect_heads = args
+    row, cache_dir, collect_heads, max_seconds = args
     cache_dir = Path(cache_dir)
     out_path = cache_path_for_row(cache_dir, row)
     if out_path.exists():
@@ -68,6 +68,8 @@ def _process_one(args):
     signal, fs = resolved
     if not np.isfinite(signal).all():
         return ("fail", record_key(row), "non-finite EEG")
+    if max_seconds is not None:
+        signal = signal[: int(max_seconds * fs)]
 
     from philosophers_stone.philosopher_utils import infer_brain_health
 
@@ -109,6 +111,15 @@ def main() -> None:
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--max-seconds",
+        type=float,
+        default=None,
+        help=(
+            "truncate each signal to at most this many seconds (smoke/CI use only; "
+            "results are NOT comparable to full-night latents)"
+        ),
+    )
     parser.add_argument("--collect-heads", action="store_true", default=True)
     parser.add_argument("--no-collect-heads", dest="collect_heads", action="store_false")
     args = parser.parse_args()
@@ -122,11 +133,18 @@ def main() -> None:
         lambda r: str(data_root / "physiological_data" / r["SiteID"] / f"{r['BidsFolder']}_ses-{r['SessionID']}.edf"),
         axis=1,
     )
+    missing = ~demo["edf_path"].apply(lambda p: Path(p).exists())
+    if missing.any():
+        print(
+            f"dropping {int(missing.sum())} row(s) with missing EDF files " "(partial data-root?)",
+            flush=True,
+        )
+        demo = demo[~missing].reset_index(drop=True)
     if args.limit:
         demo = demo.head(args.limit)
     print(f"records: {len(demo)}, workers: {args.workers}, cache: {cache_dir}", flush=True)
 
-    tasks = [(row, str(cache_dir), args.collect_heads) for _, row in demo.iterrows()]
+    tasks = [(row, str(cache_dir), args.collect_heads, args.max_seconds) for _, row in demo.iterrows()]
     n_ok = n_skip = 0
     failures = []
     if args.workers > 1 and len(tasks) > 1:
