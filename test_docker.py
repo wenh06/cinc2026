@@ -410,6 +410,56 @@ def test_phi_cache() -> None:
     print("test_phi_cache passed ✓")
 
 
+@func_indicator("testing Philosopher's Stone inference")
+def test_phi_inference() -> None:
+    """Run Phi latent extraction on ONE raw record (CPU; opt-in, slow).
+
+    Gated by ``CINC2026_TEST_PHI=1`` because it adds 10-30 minutes on a
+    2-core CI runner.  The checkpoint is baked into the image at build time by
+    post_docker_build.py (MODEL_CACHE_DIR/philosophers-stone/model_files/).
+    """
+    import subprocess
+    import sys
+
+    if not str2bool(os.environ.get("CINC2026_TEST_PHI", "0")):
+        print("  CINC2026_TEST_PHI not set — skipping.")
+        return
+    raw_dir = tmp_data_dir / "physiological_data"
+    edfs = sorted(raw_dir.glob("*/*.edf")) if raw_dir.exists() else []
+    if not edfs:
+        print("  No raw PSG subset present — skipping.")
+        return
+    model_cache = Path(os.environ.get("MODEL_CACHE_DIR", "/challenge/cache/revenger_model_dir"))
+    checkpoint = model_cache / "philosophers-stone" / "model_files" / "SleepPhilosophersStone.ckpt"
+    assert checkpoint.exists(), f"checkpoint missing at {checkpoint}"
+    cache_dir = tmp_model_dir / "phi_cache"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "scripts" / "phi_cache_extract.py"),
+            "--data-root",
+            str(tmp_data_dir),
+            "--checkpoint",
+            str(checkpoint),
+            "--cache-dir",
+            str(cache_dir),
+            "--workers",
+            "1",
+            "--limit",
+            "1",
+            "--no-collect-heads",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5400,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    npzs = sorted(cache_dir.glob("*/*.npz"))
+    assert len(npzs) == 1, f"expected 1 npz, got {npzs}"
+    print(f"  phi latent cached: {npzs[0]}")
+    print("test_phi_inference passed ✓")
+
+
 if __name__ == "__main__":
     TEST_FLAG = os.environ.get("CINC2026_REVENGER_TEST", False)
     TEST_FLAG = str2bool(TEST_FLAG)
@@ -438,5 +488,6 @@ if __name__ == "__main__":
     test_challenge_metrics()
     test_spectral_features()
     test_phi_cache()
+    test_phi_inference()
     # test_trainer()  # passed, and overriden by test_entry
     test_entry()

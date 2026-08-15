@@ -23,6 +23,9 @@ env:
   #   MEGA_RAW_ACTION_TEST_URL             → raw PSG subset (3 records, ~400 MB)
   dataset_size: small
   CINC2026_REVENGER_TEST: 1
+  # Set to "1" to also run the Philosopher's Stone inference test on one raw
+  # record.  It adds ~10-30 min on the 2-core runner (CPU-only inference).
+  CINC2026_TEST_PHI: 0
   download_data_dir: ${{ github.workspace }}/download_data
   mount_data_dir: /challenge/data
   revenger_data_dir: /challenge/cache/revenger_data_dir
@@ -170,6 +173,7 @@ jobs:
         docker run \
           -e PYTHONUNBUFFERED=1 \
           -e CINC2026_REVENGER_TEST=${{ env.CINC2026_REVENGER_TEST }} \
+          -e CINC2026_TEST_PHI=${{ env.CINC2026_TEST_PHI }} \
           -e revenger_data_dir=${{ env.revenger_data_dir }} \
           -e revenger_model_dir=${{ env.revenger_model_dir }} \
           -e revenger_test_dir=${{ env.revenger_test_dir }} \
