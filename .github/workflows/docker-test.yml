@@ -25,7 +25,7 @@ env:
   CINC2026_REVENGER_TEST: 1
   # Set to "1" to also run the Philosopher's Stone inference test on one raw
   # record.  It adds ~10-30 min on the 2-core runner (CPU-only inference).
-  CINC2026_TEST_PHI: 0
+  CINC2026_TEST_PHI: 1
   download_data_dir: ${{ github.workspace }}/download_data
   mount_data_dir: /challenge/data
   revenger_data_dir: /challenge/cache/revenger_data_dir
