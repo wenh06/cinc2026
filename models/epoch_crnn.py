@@ -292,6 +292,133 @@ class AgeMatchedPairwiseLossHinge(torch.nn.Module):
             del self._bank[: len(self._bank) - self.bank_size]
 
 
+class AgeMatchedPairwiseLossTanh(torch.nn.Module):
+    """Age-matched tanh-surrogate pairwise loss — O7c: O7a's ranking proxy
+    with a saturating surrogate on *logits*.
+
+    Same pairing rule as :class:`AgeMatchedPairwiseLossHinge` (|Δage| ≤
+    ``tolerance``, batch + optional rolling memory bank), but the hinge
+    ``max(0, margin − (s_pos − s_neg))`` is replaced by
+
+        tanh(k · [s_neg − s_pos + margin]_+)
+
+    Two deliberate differences from O7a:
+
+    1. **Logit space.**  The sigmoid compresses probabilities non-linearly:
+       a logit margin of 1.0 is a probability gap of only ~0.011 near the
+       extremes but ~0.24 mid-range — probability-space differences
+       mis-measure the model's true internal ranking margin, so ``s`` is
+       the raw logit.
+    2. **Saturating surrogate.**  The hinge gives every inverted pair the
+       same gradient no matter how far inverted; ``tanh`` decays the
+       gradient of far-inverted pairs (``tanh'(u) → 0``), so training
+       focuses on pairs that are *about to flip* instead of letting a few
+       grossly-inverted outliers dominate — focal-loss philosophy applied
+       at the pair level.
+
+    ``bank_size=0`` disables the memory bank: with
+    :class:`~dataset.AgeStratifiedBatchSampler` every batch is internally
+    age-matched (≈ ``n_pos`` × ``batch_size − n_pos`` valid pairs), and the
+    detached bank pairs that dominated O7a's loss mean (diluting the real
+    gradients) are gone.
+    """
+
+    __name__ = "AgeMatchedPairwiseLossTanh"
+
+    def __init__(
+        self,
+        margin: float = 0.25,
+        tolerance: float = 2.0,
+        bank_size: int = 512,
+        k: float = 2.0,
+    ) -> None:
+        super().__init__()
+        self.margin = float(margin)
+        self.tolerance = float(tolerance) / 100.0  # years → age/100 units
+        self.bank_size = int(bank_size)
+        self.k = float(k)
+        self._bank: list = []  # rolling FIFO of (logit, age/100, label) floats
+
+    def forward(
+        self,
+        scores: torch.Tensor,
+        labels: torch.Tensor,
+        ages: torch.Tensor,
+    ) -> torch.Tensor:
+        """Forward pass.
+
+        Parameters
+        ----------
+        scores : torch.Tensor
+            Raw logits (B,), gradient-carrying for the current batch.
+        labels : torch.Tensor
+            Binary labels (B,), float 0/1 (or 0.95/0.05 with label smoothing;
+            pairing thresholds at ≥ 0.5 / < 0.5).
+        ages : torch.Tensor
+            Ages in ``age/100`` units (B,), matching ``demographics[:, 0]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean tanh pair loss over all valid age-matched pairs; zero (but
+            differentiable) when no valid pair exists.
+
+        """
+        device, dtype = scores.device, scores.dtype
+
+        # Pairing pool = current batch (+ detached bank when enabled).
+        if self.bank_size > 0:
+            bank_scores = torch.tensor([t[0] for t in self._bank], device=device, dtype=dtype)
+            bank_ages = torch.tensor([t[1] for t in self._bank], device=device, dtype=dtype)
+            bank_labels = torch.tensor([t[2] for t in self._bank], device=device, dtype=dtype)
+            all_scores = torch.cat([scores, bank_scores])
+            all_ages = torch.cat([ages, bank_ages])
+            all_labels = torch.cat([labels, bank_labels])
+        else:
+            all_scores, all_ages, all_labels = scores, ages, labels
+
+        pos_idx = torch.nonzero(all_labels >= 0.5).squeeze(-1)  # (P,)
+        neg_idx = torch.nonzero(all_labels < 0.5).squeeze(-1)  # (N,)
+        if pos_idx.numel() == 0 or neg_idx.numel() == 0:
+            self._update_bank(scores, ages, labels)
+            return scores.sum() * 0.0  # keep differentiable
+
+        age_diff = (all_ages[pos_idx][:, None] - all_ages[neg_idx][None, :]).abs()  # (P, N)
+        valid = age_diff <= self.tolerance
+        if not valid.any():
+            self._update_bank(scores, ages, labels)
+            return scores.sum() * 0.0
+
+        pos_sel, neg_sel = torch.nonzero(valid, as_tuple=True)
+        # d = s_neg − s_pos + margin; hinge's sparse margin region becomes a
+        # dense saturating push (gradients exist from the moment d > 0 and
+        # decay to zero as the pair gets grossly inverted).
+        d = all_scores[neg_idx[neg_sel]] - all_scores[pos_idx[pos_sel]] + self.margin
+        loss = torch.tanh(self.k * F.relu(d)).mean()
+
+        self._update_bank(scores, ages, labels)
+        return loss
+
+    def _update_bank(
+        self,
+        scores: torch.Tensor,
+        ages: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> None:
+        """Push the current batch into the rolling FIFO bank (detached floats)."""
+        if self.bank_size <= 0:
+            return
+        self._bank.extend(
+            zip(
+                scores.detach().tolist(),
+                ages.detach().tolist(),
+                labels.detach().tolist(),
+            )
+        )
+        if len(self._bank) > self.bank_size:
+            del self._bank[: len(self._bank) - self.bank_size]
+
+
 class EpochCRNN(ECG_CRNN):
     """ResNet-N + BiLSTM CRNN for the CinC 2026 Challenge.
 
@@ -477,16 +604,25 @@ class EpochCRNN(ECG_CRNN):
         #                              official age_conditioned_auroc
         #   bank_size  (int,   512)   — memory-bank capacity
         ap_cfg = self.config.get("age_pairwise", None)
-        self.age_pairwise: Optional[AgeMatchedPairwiseLossHinge] = None
+        self.age_pairwise: Optional[Union[AgeMatchedPairwiseLossHinge, AgeMatchedPairwiseLossTanh]] = None
         self.ap_lambda: float = 0.0
         if ap_cfg is not None and ap_cfg.get("enable", False):
-            if self.no_age:
-                raise ValueError("age_pairwise and no_age are mutually exclusive: pairwise needs the age channel")
-            self.age_pairwise = AgeMatchedPairwiseLossHinge(
+            # no_age is orthogonal to the pairwise loss: the pairwise branch
+            # reads the *original* ``input_tensors["demographics"]`` for age
+            # pairing (see forward), which the no_age zeroing never touches —
+            # so ``no_age=True`` + ``age_pairwise`` = age used ONLY as the
+            # pairing rule of the loss, never as a model input.
+            _ap_kw = dict(
                 margin=float(ap_cfg.get("margin", 0.5)),
                 tolerance=float(ap_cfg.get("tolerance", 2.0)),
                 bank_size=int(ap_cfg.get("bank_size", 512)),
             )
+            if ap_cfg.get("variant", "hinge") == "tanh":
+                # O7c: saturating surrogate on logits (see class docstring)
+                _ap_kw["k"] = float(ap_cfg.get("k", 2.0))
+                self.age_pairwise = AgeMatchedPairwiseLossTanh(**_ap_kw)
+            else:
+                self.age_pairwise = AgeMatchedPairwiseLossHinge(**_ap_kw)
             self.ap_lambda = float(ap_cfg.get("lambda_", 1.0))
 
     # ─── Forward pass ────────────────────────────────────────────────────────

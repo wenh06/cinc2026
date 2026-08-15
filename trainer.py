@@ -41,7 +41,7 @@ from torch_ecg.utils.misc import get_date_str, str2bool
 from tqdm.auto import tqdm
 
 from cfg import ModelCfg, TrainCfg
-from dataset import CINC2026Dataset, collate_fn
+from dataset import AgeStratifiedBatchSampler, CINC2026Dataset, collate_fn
 from models import EpochCRNN, EpochTransformer
 from utils.scoring_metrics import compute_challenge_metrics
 
@@ -144,15 +144,34 @@ class CINC2026Trainer(BaseTrainer):
                 lazy=True,
             )
 
-        self.train_loader = DataLoader(
-            dataset=train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-            pin_memory=True,
-            drop_last=False,
-            collate_fn=collate_fn,
-        )
+        strat = self.train_config.get("age_stratified", None)
+        if strat is not None and strat.get("enable", False):
+            # O7c: internally age-matched batches (|Δage| ≤ tolerance) with
+            # forced positives — every (pos, neg) pair obeys the official
+            # pairing rule with real gradients (no detached memory bank).
+            self.train_loader = DataLoader(
+                dataset=train_dataset,
+                batch_sampler=AgeStratifiedBatchSampler(
+                    train_dataset,
+                    batch_size=self.batch_size,
+                    n_pos=int(strat.get("n_pos", 0)) or None,
+                    tolerance=float(strat.get("tolerance", 2.0)),
+                    seed=strat.get("seed", None),
+                ),
+                num_workers=num_workers,
+                pin_memory=True,
+                collate_fn=collate_fn,
+            )
+        else:
+            self.train_loader = DataLoader(
+                dataset=train_dataset,
+                batch_size=self.batch_size,
+                shuffle=True,
+                num_workers=num_workers,
+                pin_memory=True,
+                drop_last=False,
+                collate_fn=collate_fn,
+            )
         self.val_loader = DataLoader(
             dataset=val_dataset,
             batch_size=self.batch_size,
@@ -504,17 +523,35 @@ class CINC2026Trainer(BaseTrainer):
         pass
 
     def _setup_scheduler(self) -> None:
-        """Override to pass ``pct_start`` to OneCycleLR.
+        """Override to pass ``pct_start`` to OneCycleLR and to support the
+        modern warmup+cosine schedule.
 
         torch_ecg's base implementation builds OneCycleLR without ``pct_start``,
         defaulting to 0.3 (30 % warm-up).  For CRNN-style models that converge
         faster, a shorter warm-up (e.g. 0.1) helps.  We pass the value from
         ``train_config.pct_start`` if present, otherwise fall back to 0.3.
+
+        ``lr_scheduler = "warmup_cosine"`` builds the 2023+ community default
+        (AdamW + linear warmup + cosine decay): ``warmup_frac`` of the total
+        steps linearly ramps the base lr from ``warmup_frac`` × 1e-2 to the
+        base lr, then a cosine decay to 0.  Unlike OneCycleLR there is no
+        fast-ramp segment, so early stopping (patience 15) never truncates
+        the model mid-ramp.
         """
-        if self.train_config.get("lr_scheduler", "none").lower() not in (
-            "one_cycle",
-            "onecycle",
-        ):
+        lrs = self.train_config.get("lr_scheduler", "none").lower()
+        if lrs in ("warmup_cosine", "warmupcosine"):
+            total_steps = self.n_epochs * len(self.train_loader)
+            warmup_steps = max(1, int(total_steps * float(self.train_config.get("warmup_frac", 0.05))))
+            self.scheduler = optim.lr_scheduler.SequentialLR(
+                optimizer=self.optimizer,
+                schedulers=[
+                    optim.lr_scheduler.LinearLR(self.optimizer, start_factor=0.01, total_iters=warmup_steps),
+                    optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=total_steps - warmup_steps),
+                ],
+                milestones=[warmup_steps],
+            )
+            return
+        if lrs not in ("one_cycle", "onecycle"):
             super()._setup_scheduler()
             return
 

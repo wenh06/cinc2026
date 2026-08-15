@@ -185,13 +185,13 @@ Official Phase:
     submission ID: 2407
     submission time: 8/5/2026 2:36:31 ET
     challenge_scores:
-      Reward: PENDING
-      age_cond_AUROC: PENDING
-      age_weighted_AUROC: PENDING
-      AUROC: PENDING
-      AUPRC: PENDING
-      Accuracy: PENDING
-      F-measure: PENDING
+      Reward: -0.013
+      age_cond_AUROC: 0.592
+      age_weighted_AUROC: 0.630
+      AUROC: 0.804
+      AUPRC: 0.247
+      Accuracy: 0.715
+      F-measure: 0.231
     notes: |
       Inference-chain fix submission: SessionID int/str type bug (demographics
       fell back to defaults during run_model inference — measured ~+0.08 age-cond
@@ -199,6 +199,11 @@ Official Phase:
       Training code identical to sub1 (organiser re-training unaffected).
       Same config as sub1: single model (folds=None), EpochCRNN_M,
       monitor=auroc_age_cond, pos_weight=12.16, label_smoothing=0.0.
+      OFFICIAL RESULT: age-cond 0.592, down 0.025 vs sub1 despite the local
+      +0.08 fix — local same-site eval again fails to transfer.  Plain AUROC
+      0.614→0.804 & F1 0.083→0.231: the fix produced far more balanced
+      predictions, yet age-conditioned AUROC fell — the age-cond drop is
+      driven by the cross-site cohort, not by calibration.
     model: EpochCRNN_M
     loss: BCEWithLogitsLoss
     train:
@@ -223,3 +228,58 @@ Official Phase:
       layout: stage_onehot(6) + stage_probs(5) + arousal_fraction(1) + resp_fractions(5) + limb_fractions(2) + time_encoding(2)
       normalization: none
     hash: eec84e0
+  submission 3:
+    submission ID: 2471
+    submission time: 8/8/2026 6:48:53 ET
+    challenge_scores:
+      Reward: -0.130
+      age_cond_AUROC: 0.611
+      age_weighted_AUROC: 0.640
+      AUROC: 0.806
+      AUPRC: 0.271
+      Accuracy: 0.496
+      F-measure: 0.175
+    notes: |
+      First cross-site-aware submission.  Config switch: 5-fold ensemble ×
+      focal+LS (O8), early-stop floor (min_epochs=30, patience 20→15),
+      training set = large.  Local same-site eval 0.8045 age-cond (leaked
+      full-train) — but the official val is an unseen source (I0004), and
+      official sub1/sub2 (0.617/0.592) match the LO-site held-out drops,
+      so the local number is not predictive; this submission probes how the
+      ensemble/focal config transfers cross-site.
+      OFFICIAL RESULT: age-cond 0.611 — within noise of sub1 (0.617, Δ0.006)
+      and +0.019 above sub2; proxy 0.638 discounted −0.027, same order as the
+      old-config proxy error (0.562 vs 0.59–0.62).  Full scores: age-weighted
+      0.640 > age-cond (age-cond is the harder pairing); AUROC 0.806 ≈ sub2
+      0.804 (focal+LS+ensemble did not move plain ranking); Accuracy 0.496 /
+      F1 0.175 / Reward −0.130 — the threshold side is WORSE than sub2
+      (0.715 / 0.231 / −0.013): the 5-fold majority-vote thresholds misalign
+      deeper on OOD.  Reward stays non-monotonic in age-cond (sub1 0.617→+0.027,
+      sub2 0.592→−0.013) — not the primary metric.  Direction validated but
+      not a real gain; sub4 = sub3 config unchanged (re-submit to measure
+      official-side noise).
+    model: EpochCRNN_M ×5 (folds [0..4])
+    loss: FocalBCEWithLogitsLoss (γ=2.0) + label_smoothing 0.05
+    train:
+      n_epochs: 100
+      batch_size: 16
+      optimizer: adamw_amsgrad
+      lr: 0.0003
+      max_lr: 0.001
+      lr_scheduler: one_cycle
+      pct_start: 0.3
+      grad_clip: 1.0
+      weight_decay: 0.01
+      label_smoothing: 0.05
+      early_stopping_patience: 15
+      early_stopping_min_epochs: 30
+      pos_weight: 12.16
+      monitor: auroc_age_cond
+      age_adv: false
+      data: official-phase-large (6600 records, 5-fold)
+    features:
+      version: binary_arousal_v1
+      dim: 21
+      layout: stage_onehot(6) + stage_probs(5) + arousal_fraction(1) + resp_fractions(5) + limb_fractions(2) + time_encoding(2)
+      normalization: none
+    hash: 1f84c1c
