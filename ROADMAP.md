@@ -28,14 +28,15 @@
 | Official submissions | **4/10 used**: sub1 0.617, sub2 0.592, sub3 0.611, **sub4 ID 2620 (08-14, sub3 config unchanged) — processing, score pending**; sub4 anchors official-side evaluation noise |
 | Leaderboard (08-15) | top age-cond **0.847 (Matcha, small)**; ReCognition 0.795, Leicester Fox 0.774, bashlab_wpi 0.751; Revenger 0.617 |
 | Docker / CI | docker-test **green** (run 31875296556, 20m53s); opt-in Phi inference test on a 30-min segment passes in ~86 s — the full-night wavelet stage (~9–18 GB intermediates) would OOM the 7 GB runner, so CI truncates the signal but pads the spectrogram back to the canonical 11 h |
-| P3 spectral (D1) | 641-dim Ye-2023-style extractor done + deterministic; full 1,103-record `tmp/spectral_features/features.csv`; univariate age-cond AUC: **N1 θ/α 0.63–0.64** (3 sites consistent), N3 delta / edge95 / REM coherence weak positives — spectral features alone are not the bottleneck |
+| P3 spectral (D1) | 641-dim Ye-2023-style extractor done + deterministic; full 1,103-record `tmp/spectral_features/features.csv`; univariate age-cond AUC: **N1 θ/α 0.63–0.64** (3 sites consistent), N3 delta / edge95 / REM coherence weak positives |
+| D2 tabular (08-15) | small-set I0006-holdout (911 train / 192 eval): **LightGBM on 641-dim 0.655 ± 0.019** (15 seeds, min 0.626), XGB 0.653 ± 0.012, RF 0.576; the 390-dim `spec` block alone 0.659 ± 0.007, CAISR `arch` block 0.576, meta-only LR 0.601 — **+0.109 over the small-pool CRNN (0.546)**; large-pool comparable validation pending |
 | P4 Philosopher's Stone | submodule pinned `0b1b49a`; 2.4 GB checkpoint (SHA `b2a9…5af87`) baked into the image + sha-verified; cache-extract script smoke 3/3 on GPU (~78 s/record); full 1,103-record cache pending AutoDL 5090 (~4–8 h) |
-| Decision gates | sub4 already in; next new-signal check = **D2 tabular model** (spectral + meta) before touching the training loop |
+| Decision gates | sub4 already in; D2-small passed (0.655 ± 0.019 vs 0.546) → next gate = **tabular on the large set** (A1-comparable, 0.6375) before touching the CRNN training loop |
 
 ## Next Steps (2026-08-15, deadline 08-20)
 
 1. Read sub4/2620 score (~08-18): Δ(sub4, sub3) = official-side noise, the second anchor for the proxy→official discount (only −0.027 so far).
-2. D2 tabular baseline: `tmp/spectral_features/features.csv` + `record_meta.csv` → GBDT/LR; proxy age-cond AUROC vs 0.6375 (A1) / 0.611 (official).  Seed-reproducible Δ > 0.04 required.
+2. ~~D2 tabular baseline (small)~~ ✅ **done** (0.655 ± 0.019 vs small-pool CRNN 0.546).  Next: (a) tabular on the LARGE CAISR features — locally computable, directly comparable to A1 0.6375; (b) decide whether to wire the spectral+GBDT pipeline into `team_code.py` (organisers extract from raw on their side) for sub5.
 3. AutoDL 5090: run the full Phi cache; wire cache read + on-the-fly fallback into `team_code.py`.
 4. Candidate methods (single-factor + seed rerun, Δ > 0.04): age-gated ranking loss, CORAL/SAM, survival, CreationTime metadata, raw spectral bank — detail in `tmp/agecond-improvement-research-2026-08-15.md` (uncommitted).
 5. sub5 by 08-17/18 to stay inside the 72 h feedback window; confirm whether final ranking uses the last or the best submission.
@@ -132,7 +133,8 @@ pos_weight sweep {2,4,8,16}: **no gain over default 12.16**; temperature/Platt: 
 - [x] Cross-site spectra probed (C2, 08-09): overlap → **site-level harmonisation not required**.
 - [x] **641-dim Ye-2023-style extractor** (D1, 08-15): staged relative powers/ratios, kurtosis, Hjorth, I-CARE quantiles, coherence, HRV/SpO2, CAISR architecture, time metadata — deterministic; 1,103-record cache extracted.
 - [x] Univariate age-cond screening: N1 θ/α 0.63–0.64 across sites; N3 delta / edge95 / REM coherence weak positives.
-- [ ] **D2**: tabular model (GBDT/LR) on spectral + meta, gated by seed-reproducible Δ > 0.04.
+- [x] **D2 (small)**: LightGBM on the 641-dim bank 0.655 ± 0.019 (15 seeds) vs small-pool CRNN 0.546; the `spec` block alone 0.659 ± 0.007; XGB agrees (0.653), RF weak (0.576).
+- [ ] **D2 (large, A1-comparable)**: tabular on the large set — CAISR-derived features are local (no raw); the full spectral bank needs the 1.2 TB large raw.
 
 ### P4 — Philosopher's Stone (BDSP pretrained sleep EEG model)
 
@@ -326,6 +328,7 @@ Usage plan: full 1,103-record cache on AutoDL 5090 (~4–8 h) → 1024-D latent 
 | **D4** | 08-11 | (A1 cfg) | 21 | two-sided domain-randomization on train features (I0004/I0007 shift dirs, p=0.5 each) | 3e-4/16/100 | — | 0.6535 | +0.016 | ~ Below pass line, not adopted solo; possible no-age+aug ensemble member later. |
 | **O7c** | 08-12 | (A1 cfg) | 21 | age-stratified sampler (4 pos + 8 win-neg + 4 mixed-neg per batch) + tanh pairwise on logits, bank_size=0; λ sweep | 3e-4/16/100 | — | 0.6664 / 0.6065 / 0.6154 / 0.6335 (λ=0.05/0.1/0.3/0.1×no-age); **rerun λ=0.05 seed 1: 0.6199** | **+0.029** / −0.031 / −0.022 / −0.004 / **rerun −0.018** | ⚠️ **Refuted by rerun (Δ0.047 ≈ 2× noise floor)** — the +0.029 was seed noise; λ=0.05 not adopted.  Sampler's age-mixing (n_mixed_neg) preserves FiLM conditioning; pairwise family (O7a/O7c) closed. |
 | **S1** | 08-12 | (A1 cfg) | 21 | lr_scheduler swap: OneCycle (max 1e-3, pct 0.3) → warmup 5% + cosine (peak base lr 3e-4) | 3e-4/16/100 | — | 0.6469 | +0.009 | ~ Noise-adjacent; plain AUROC 0.7036 vs baseline 0.7171.  Not adopted alone; could stack with O7c. |
+| **D2-tabular** | 08-15 | ×15 seeds (LGBM) | 641 | GBDT/XGB/RF on the small spectral bank, I0006-holdout (911/192) | — | — | **0.655 ± 0.019** (LGBM n=15, min 0.626) / 0.653 ± 0.012 (XGB) / 0.576 ± 0.020 (RF) | **+0.109** vs small-pool CRNN 0.546 | ✅ **First method to clear the pass line with margin.** `spec` block alone 0.659 ± 0.007; `arch` (CAISR) 0.576; coh/tp/hrv/spo2 ≈ 0.52/0.51/0.40/0.46.  Small regime only — the large-pool (A1-comparable) run is the next gate. |
 
 **B-wave verdict (08-09)**: no intervention adopted — the sub3 config remains the best cross-site baseline; the CAISR-OOD mean shift is untargeted until the ComBat result.
 
