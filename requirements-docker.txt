@@ -37,3 +37,6 @@ lightning-utilities==0.15.3
 ssqueezepy==0.6.6
 mne==1.5.0
 h5py
+# Tabular (D2) submission path
+xgboost==3.1.2
+lightgbm==4.6.0

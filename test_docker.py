@@ -17,7 +17,7 @@ from cfg import _BASE_DIR, ModelCfg, TrainCfg
 from dataset import CINC2026Dataset, collate_fn
 from evaluate_model import evaluate_model as _evaluate_model
 from evaluate_model import run as model_evaluator_func
-from helper_code import DEMOGRAPHICS_FILE
+from helper_code import DEMOGRAPHICS_FILE, HEADERS, find_patients
 from models import EpochCRNN, EpochTransformer
 from run_model import run as model_runner_func
 from team_code import _MODEL_CLASS_MAP, _resolve_db_dir, train_model
@@ -480,6 +480,80 @@ def test_phi_inference() -> None:
     print("test_phi_inference passed ✓")
 
 
+@func_indicator("testing tabular pipeline")
+def test_tabular() -> None:
+    """End-to-end smoke of the D2 tabular path on the raw PSG subset.
+
+    Part A drives the on-the-fly branch (extraction from raw EDFs — the
+    official-environment path); part B drives the cache-first branch and
+    regression-tests that metadata columns are filled from demographics at
+    inference (guards against the silent all-NaN metadata bug).
+    """
+    from helper_code import load_demographics
+    from tabular_pipeline import (
+        assemble_record_features,
+        load_tabular_model,
+        run_tabular_model,
+        train_tabular,
+    )
+
+    raw_dir = tmp_data_dir / "physiological_data"
+    if not raw_dir.exists() or not any(raw_dir.glob("*/*.edf")):
+        print("  No raw PSG subset present — skipping.")
+        return
+
+    records = find_patients(str(tmp_data_dir / DEMOGRAPHICS_FILE))
+    hits = []
+    for r in records:
+        base = f"{r[HEADERS['bids_folder']]}_ses-{r[HEADERS['session_id']]}"
+        if (raw_dir / r[HEADERS["site_id"]] / f"{base}.edf").exists():
+            hits.append(r)
+    assert hits, "no raw record found"
+    rec = hits[0]
+
+    cache_csv = tmp_model_dir / "spectral_features" / "features.csv"
+    assert cache_csv.exists(), "test_spectral_features should have produced the feature cache"
+
+    cfg = deepcopy(TrainCfg)
+    cfg.db_dir = _resolve_db_dir(str(tmp_data_dir))
+    cfg.tabular.enable = True
+    cfg.tabular.model = "xgboost"
+    cfg.tabular.xgb_params.n_estimators = 30
+    cfg.tabular.feature_groups = ["spec"]
+    cfg.tabular.workers = 1
+
+    # Part A — on-the-fly extraction branch
+    cfg.tabular.feature_cache = ""
+    model_folder_a = tmp_model_dir / "tabular_test_onthefly"
+    train_tabular(cfg, model_folder_a, verbose=True)
+    model_dict_a = load_tabular_model(model_folder_a, cfg, verbose=True)
+    binary, prob = run_tabular_model(model_dict_a, rec, str(tmp_data_dir), verbose=True)
+    assert binary in (0, 1) and 0.0 <= prob <= 1.0
+    print(f"  on-the-fly output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")
+
+    # Part B — cache-first branch + metadata regression guard
+    cfg.tabular.feature_cache = str(cache_csv)
+    model_folder_b = tmp_model_dir / "tabular_test_cache"
+    train_tabular(cfg, model_folder_b, verbose=True)
+    model_dict_b = load_tabular_model(model_folder_b, cfg, verbose=True)
+    config = model_dict_b["tabular"]["config"]
+    meta_cols = ["meta_age", "meta_sex_male", "meta_bmi", "meta_rec_year"]
+    assert config["feature_list"][-len(meta_cols) :] == meta_cols, "metadata columns missing from the trained feature list"
+    binary, prob = run_tabular_model(model_dict_b, rec, str(tmp_data_dir), verbose=True)
+    assert binary in (0, 1) and 0.0 <= prob <= 1.0
+    patient_data = load_demographics(
+        str(tmp_data_dir / DEMOGRAPHICS_FILE),
+        rec[HEADERS["bids_folder"]],
+        rec[HEADERS["session_id"]],
+    )
+    assembled = assemble_record_features(pd.Series(dtype=float), patient_data, config)
+    assert pd.notna(assembled["meta_age"]) and pd.notna(
+        assembled["meta_sex_male"]
+    ), "metadata columns are NaN at inference — demographics were not filled"
+    print(f"  cache-first output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")
+    print("test_tabular passed ✓")
+
+
 if __name__ == "__main__":
     TEST_FLAG = os.environ.get("CINC2026_REVENGER_TEST", False)
     TEST_FLAG = str2bool(TEST_FLAG)
@@ -509,5 +583,6 @@ if __name__ == "__main__":
     test_spectral_features()
     test_phi_cache()
     test_phi_inference()
+    test_tabular()
     # test_trainer()  # passed, and overriden by test_entry
     test_entry()

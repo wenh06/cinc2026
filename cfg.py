@@ -202,6 +202,51 @@ TrainCfg.focal = CFG(
     gamma=2.0,
 )
 
+# D2 tabular pipeline — 641-dim spectral/physiological feature bank + boosted
+# trees, an alternate submission path that bypasses the CRNN entirely.
+# Default OFF: the default config remains the sub3 CRNN ensemble.
+#   enable         (bool, False) — route train_model/run_model through the tabular branch
+#   model          (str, "xgboost") — {"xgboost", "lightgbm"}
+#   feature_groups (list, ["spec"]) — which blocks of the 641-dim bank to use
+#                   {"spec","coh","tp","trans","arch","hrv","spo2"}; empty = all
+#   include_meta   (bool, True) — append age / sex / bmi / recording-year
+#   lgbm_params    (CFG) — LightGBM hyperparameters
+#   xgb_params     (CFG) — XGBoost hyperparameters
+#   feature_cache  (str, "") — precomputed features.csv (D1 layout, index =
+#                   BidsFolder or BidsFolder__SessionID); cache-first, on-the-fly
+#                   extraction from raw+CAISR for misses
+#   workers        (int, 4) — on-the-fly extraction parallelism
+#   threshold      (float, 0.5) — binary cutoff (Reward side only; age-cond is rank-based)
+# D2-small reading (I0006-holdout): LGBM spec 0.659±0.007, XGB spec 0.653±0.012
+# vs small-pool CRNN 0.546 — see ROADMAP experiment log row D2-tabular.
+TrainCfg.tabular = CFG(
+    enable=False,
+    model="xgboost",
+    feature_groups=["spec"],
+    include_meta=True,
+    lgbm_params=CFG(
+        n_estimators=500,
+        learning_rate=0.05,
+        num_leaves=31,
+        colsample_bytree=0.8,
+        subsample=0.8,
+        subsample_freq=1,
+        seed=0,
+    ),
+    xgb_params=CFG(
+        n_estimators=500,
+        learning_rate=0.05,
+        max_depth=6,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        tree_method="hist",
+        seed=0,
+    ),
+    feature_cache="",
+    workers=4,
+    threshold=0.5,
+)
+
 # Callbacks & Logging
 TrainCfg.log_step = 20
 TrainCfg.keep_checkpoint_max = 5

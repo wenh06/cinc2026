@@ -66,6 +66,7 @@ from helper_code import (
     load_demographics,
 )
 from models import EpochCRNN, EpochTransformer
+from tabular_pipeline import load_tabular_model, run_tabular_model, tabular_enabled, train_tabular
 from utils.scoring_metrics import tune_binary_threshold
 
 # Map TrainCfg.model_name → model class.  Both plain names ("epoch_transformer")
@@ -222,6 +223,10 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
             if k not in _skip:
                 setattr(train_config, k, v)
 
+    if tabular_enabled(train_config):
+        train_tabular(train_config, Path(model_folder), verbose)
+        return
+
     folds = train_config.get("folds", None)
     if folds is None:
         _train_single_fold(train_config, Path(model_folder), verbose)
@@ -348,6 +353,9 @@ def load_model(model_folder: str, verbose: bool) -> Dict[str, Any]:
     """
     if verbose:
         print("[CinC2026] Loading model ...")
+
+    if tabular_enabled(TrainCfg):
+        return load_tabular_model(Path(model_folder), TrainCfg, verbose)
 
     model_name = TrainCfg.model_name
     model_cls = _MODEL_CLASS_MAP[model_name]
@@ -484,6 +492,9 @@ def _run_model_impl(
     verbose: bool,
 ) -> Tuple[int, float]:
     """Inner implementation of :func:`run_model` (may raise)."""
+    if model_dict.get("tabular", None) is not None:
+        return run_tabular_model(model_dict, record, data_folder, verbose)
+
     model: Any = model_dict.get("model", None)
 
     bids_folder = str(record[HEADERS["bids_folder"]])
