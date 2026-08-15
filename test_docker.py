@@ -350,6 +350,66 @@ def test_entry() -> None:
 test_team_code = test_entry
 
 
+@func_indicator("testing raw spectral features")
+def test_spectral_features() -> None:
+    """Run the spectral feature extractor on the raw PSG subset (3 records)."""
+    import subprocess
+    import sys
+
+    raw_dir = tmp_data_dir / "physiological_data"
+    edfs = sorted(raw_dir.glob("*/*.edf")) if raw_dir.exists() else []
+    if not edfs:
+        print("  No raw PSG subset present — skipping (set MEGA_RAW_ACTION_TEST_URL to enable).")
+        return
+    out_dir = tmp_model_dir / "spectral_features"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "scripts" / "extract_spectral_features.py"),
+            "--data-root",
+            str(tmp_data_dir),
+            "--out-dir",
+            str(out_dir),
+            "--workers",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    feat = pd.read_csv(out_dir / "features.csv", index_col=0)
+    assert len(feat) == len(edfs), f"expected {len(edfs)} rows, got {len(feat)}"
+    assert not feat.isna().all(axis=1).any(), "all-NaN feature row for a raw record"
+    print(f"  spectral features: {feat.shape[0]} records x {feat.shape[1]} features")
+    print("test_spectral_features passed ✓")
+
+
+@func_indicator("testing Philosopher's Stone cache utilities")
+def test_phi_cache() -> None:
+    """Test C4-M1 resolution and cache loading without running the model."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from utils.phi_cache import PHI_LATENT_DIM, PHI_SCORE_KEYS, _resolve_c4m1, load_phi_cache
+
+    raw_dir = tmp_data_dir / "physiological_data"
+    edfs = sorted(raw_dir.glob("*/*.edf")) if raw_dir.exists() else []
+    if not edfs:
+        print("  No raw PSG subset present — skipping (set MEGA_RAW_ACTION_TEST_URL to enable).")
+        return
+    for p in edfs:
+        resolved = _resolve_c4m1(p)
+        assert resolved is not None, f"failed to resolve C4-M1 for {p}"
+        sig, fs = resolved
+        assert fs > 0 and len(sig) > 0, f"empty C4-M1 for {p}"
+    demo = pd.read_csv(tmp_data_dir / DEMOGRAPHICS_FILE)
+    cache = load_phi_cache(tmp_model_dir / "phi_cache_nonexistent", demo.head(10))
+    assert cache.shape == (10, PHI_LATENT_DIM + len(PHI_SCORE_KEYS))
+    assert cache.isna().all().all(), "empty cache dir should yield all-NaN frame"
+    print("test_phi_cache passed ✓")
+
+
 if __name__ == "__main__":
     TEST_FLAG = os.environ.get("CINC2026_REVENGER_TEST", False)
     TEST_FLAG = str2bool(TEST_FLAG)
@@ -376,5 +436,7 @@ if __name__ == "__main__":
     test_dataset()
     test_models()
     test_challenge_metrics()
+    test_spectral_features()
+    test_phi_cache()
     # test_trainer()  # passed, and overriden by test_entry
     test_entry()

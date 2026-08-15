@@ -31,3 +31,9 @@ humanize
 PeakUtils
 edfio
 pycurl
+# Philosopher's Stone (third_party/philosophers-stone) inference dependencies
+pytorch-lightning==2.6.5
+lightning-utilities==0.15.3
+ssqueezepy==0.6.6
+mne==1.5.0
+h5py

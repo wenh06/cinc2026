@@ -118,6 +118,13 @@ RUN aws --version && which aws
 COPY ./ /challenge
 
 
+# ── Initialize git submodules (e.g. third_party/philosophers-stone) ──────────
+# The official runner clones the submission repo WITHOUT --recurse-submodules,
+# so the submodule directories are empty after COPY.  This step fetches them at
+# build time (network is available during the build; see torch-ecg/AWS installs).
+RUN git submodule update --init --recursive
+
+
 # ── Post-build environment check ─────────────────────────────────────────────
 RUN python post_docker_build.py
 RUN du -sh $DATA_CACHE_DIR $TEST_DATA_CACHE_DIR $MODEL_CACHE_DIR
