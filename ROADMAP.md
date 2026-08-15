@@ -16,7 +16,7 @@
 | B-wave | ❌ all refuted: small pool (−0.092), z-score flat (−0.004), n_train not the S0001 driver |
 | C-wave probes | ✅ real I0004 features: arousal ×5–6, **limb ÷100**; I0007 = opposite extreme → per-site empirical harmonisation is the only feature-side fix.  ✅ raw spectra overlap across all 5 sites → no spectral site confound.  ❌ model-side TTA refuted (entropy-min −0.069) |
 | C-wave ComBat | ❌ all 3 variants refuted on the proxy: empirical n=10 recs −0.023 / −0.026, two-pass transductive −0.005.  Distributional repair on real I0004/I0007 is perfect (both land back in training range) yet the proxy score never gains — feature harmonisation cannot recover the drop.  **ComBat out of sub4** |
-| Decision gates | **sub4 = sub3 config unchanged** — O7c λ=0.05 rerun refuted (0.6664 → 0.6199, Δ0.047 ≈ 2× noise floor; seed 1 even below baseline −0.018).  sub4 re-submits sub3's config to (1) measure official-side evaluation noise, (2) give the proxy→official discount a second anchor.  No new method adopted since D1's rerun lesson |
+| Decision gates | **sub4 = sub3 config unchanged** — O7c λ=0.05 rerun refuted (0.6664 → 0.6199, Δ0.047 ≈ 2× noise floor; seed 1 even below baseline −0.018).  sub4 re-submits sub3's config to (1) measure official-side evaluation noise, (2) give the proxy→official discount a second anchor.  No new method adopted since D1's rerun lesson.  **Next experiment: P3 delta power** (only untried new-information channel; large-raw download is the gate) |
 | D-wave (08-11→12) | O-wave re-tests on the proxy: D1 no-age 0.6616 → rerun 0.6392 (noise, not adopted); D2 night +0.002 ≈ 0; D3 drop −0.050 ❌; D4 aug +0.016 ~.  **O7c** (tanh pairwise + age-stratified sampler): λ=0.05 **+0.029**, λ=0.1 −0.031, λ=0.3 −0.022, λ=0.1×no-age −0.004 — pairwise helps only at minimal weight (consistent with O7a's λ=1 failure).  **warmup-cosine scheduler** +0.009 (0.6469, noise-adjacent).  O7c λ=0.05 **rerun refuted** (0.6664 → 0.6199, Δ0.047; seed 1 below baseline) — pairwise helps only at minimal weight but even that is seed noise; λ=0.05 **not adopted** |
 
 ---
@@ -85,7 +85,7 @@ Candidate interventions (evidence × cost ranking; P5-6 in progress):
 7. **Multi-architecture soft voting** (CRNN + Transformer) — SOMNUS: soft voting beats every single model in 94.9% of comparisons.
 8. ~~Model-side TTA~~ — ❌ **refuted (C3)**: BN-stat −0.011, entropy-min −0.069.  Matches the literature: gradient-based model-side TTA frequently *degrades* EEG models ([NeuroAdapt-Bench 2026](https://huggingface.co/papers/2604.16926)); the positive EEG-TTA result ([PSDNorm 2025](https://ar5iv.labs.arxiv.org/html/2503.04582)) is *input-side* normalisation — precisely our surviving option (item 6).
 9. **Site-adversarial GRL** — mixed evidence; O1 (age-adv) failed; last resort.
-10. **Raw-PSG spectral features** — ✅ probe (C2): spectra overlap all 5 sites → no site confound, features viable.  But spectra don't measure arousal events — the most corrupted input (C1).  Full raw e2e remains the highest-cost option.
+10. **Raw-PSG spectral features (P3, current priority 08-13)** — ✅ probe (C2): spectra overlap all 5 sites → no site confound, features viable.  **Deep rationale (C1+C2)**: the official-val drop's only identifiable mechanism is CAISR *event-count* drift (arousal ×5–6, limb ÷100 on I0004) — spectral features are the one input channel that is *stable* cross-site, sidestepping the CAISR drift source.  CAISR is a classifier output: no spectral power, no waveform morphology (spindles), no ECG/SpO₂ (HRV/ODI) — the literature's strongest sleep-cognition biomarkers sit in its blind spots.  Official baseline computes physiological stats in `run_model` → raw is available at inference.  **Data reality (08-13)**: small-set full raw (1,103 recs, 214 GB) on `/Data1/physionetchallenge2026data`; supplementary I0004/I0007 raw (20 recs) on `/Data1/cinc2026supplementary`; **large-set raw (6,599 files, ~1.2 TB) not downloaded** (kaggle; ~8–20 h at typical bandwidth; /Data1 1.2 T free → stream extract-then-delete).
 
 **Not recommended**: site-ID input (useless for unseen sites); BBSE/prior-shift (rank-invariant); SAM (no sleep evidence).
 
@@ -103,10 +103,12 @@ r(age, prob) = +0.39 (2026-08-02); age-cond AUROC added to the trainer; **age-ad
 
 pos_weight sweep {2,4,8,16}: **no gain over default 12.16**; temperature/Platt: **AUROC rank-invariant** by construction (only Brier/ECE move).
 
-### P3 — Conservative spectral features (Phase 8, reduced scope)
+### P3 — Conservative spectral features (Phase 8, reduced scope) 🔴 current priority (08-13)
+
+**Why now**: 08-04→08-13 interventions (B/C/D/O7 waves) all reshuffled the same 21-dim CAISR input + CRNN_M skeleton; raw-spectral features are the only untried **new-information** channel and the only cross-site-**stable** one (C2: overlap) where CAISR event counts are most corrupted (C1: ×5–6).  Feasibility gated on large-set raw availability (small-set + supplementary raw are local).
 
 - [x] Cross-site spectra probed (C2, 08-09): overlap → **site-level harmonisation not required**.
-- [ ] **Relative delta power** only (delta/total, **NREM epochs only**), bipolar C3-M2 (derive for I0006) → +1 dim = 22.
+- [ ] **Relative delta power** only (delta/total, **NREM epochs only**), bipolar C3-M2 (derive for I0006) → +1 dim = 22, epoch-aligned with CAISR.
 - [ ] Only after validation: theta/alpha ratio (EEG slowing index).
 
 ### P4 — Philosopher's Stone (BDSP pretrained sleep EEG model)
@@ -190,7 +192,7 @@ pos_weight sweep {2,4,8,16}: **no gain over default 12.16**; temperature/Platt: 
 
 **Phase 7 — Submission pipeline** ✅: config-driven `team_code.py`, official API + `test_docker.py` + `sync_official.py`, data-layout support, mini/reduced subsets, O0 baseline run.
 
-**Phase 8 — Spectral augmentation** 🔜 (→ P3): relative delta power, NREM-only, bipolar C3-M2 (derive for I0006); **why relative**: absolute power is hardware-dependent.  Raw-signal access at official inference **confirmed** (the official baseline computes physiological stats in `run_model`).
+**Phase 8 — Spectral augmentation** 🔴 (→ P3, current priority 08-13): relative delta power, NREM-only, bipolar C3-M2 (derive for I0006); **why relative**: absolute power is hardware-dependent.  Raw-signal access at official inference **confirmed** (the official baseline computes physiological stats in `run_model`).
 
 **Phase 9 — Night-level features** 🔜 (→ P1, closed): `build_night_features` (15 dims) implemented `2658f57`, **O2 failed** → closed.
 
