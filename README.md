@@ -33,7 +33,8 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 
 - [README.md](README.md): this file, serves as the documentation of the project.
 - [cfg.py](cfg.py): the configuration file for the whole project, including the D2 tabular entry
-  (`TrainCfg.tabular`; the default is the sub5 small-pool XGBoost on the spectral block, metadata excluded).
+  (`TrainCfg.tabular`; the default is the sub5 small-pool XGBoost on the spectral block, metadata excluded)
+  and the model-component registry (`TrainCfg.components`; the default is the single `sub5_tabular_xgb` component).
 - [const.py](const.py): constant definitions.
 - [Dockerfile](Dockerfile): docker file for building the docker image for submissions.  At build time it also
   downloads the Philosopher's Stone checkpoint and the D1 spectral feature cache (MEGA) into the image.
@@ -46,7 +47,12 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 - [sync_official.py](sync_official.py): script for synchronizing data from the official baseline and official scoring code.
 - [team_code.py](team_code.py): entry file for the submissions — `train_model` / `load_model` / `run_model`, including the
   5-fold CV ensemble mode (`TrainCfg.folds = [0..4]`: one model per fold, equal-weight probability averaging at inference),
-  and the routing to the D2 tabular path when `TrainCfg.tabular.enable` is set.
+  and the routing to the D2 tabular path when `TrainCfg.tabular.enable` is set.  With `TrainCfg.components` configured,
+  each component trains into `model_folder/components/<name>/`, a manifest (`model_manifest.json`) drives loading, and
+  `run_model` walks the components in priority order with per-record fallback (e.g. Phi → sub5 tabular XGB).
+- [component_registry.py](component_registry.py): model-component registry — manifest format, per-type artifact names,
+  component enumeration (priority-ordered) and the baked spectral-feature-cache resolution
+  (`data/spectral_features`, Dockerfile-baked, no network at runtime).
 - [tabular_pipeline.py](tabular_pipeline.py): the D2 tabular submission path — 641-dim spectral/physiological feature bank
   (cache-first, on-the-fly extraction from raw PSG + CAISR on misses) + XGBoost/LightGBM.  The fitted feature-column list is
   serialised with the model so training and inference always see identical columns.
@@ -56,7 +62,8 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
   (label × site × sex × age band) via torch_ecg's `stratified_train_test_split`.
 - [data_reader.py](data_reader.py): database reader (`CINC2026`) for loading PSG recordings, CAISR and human-expert annotations.
 - [outputs.py](outputs.py): model output dataclass (`CINC2026Outputs`) handling logits → probability → binary prediction conversion.
-- [test_docker.py](test_docker.py): tests for the Docker submission pipeline (dataset, models, trainer, entry).
+- [test_docker.py](test_docker.py): tests for the Docker submission pipeline (dataset, models, trainer, entry),
+  including the tabular path and the component registry / per-record fallback chain.
 - [post_docker_build.py](post_docker_build.py): post-Docker-build setup script — environment sanity check, Philosopher's Stone
   checkpoint download (size + SHA-256 pinned), and verification of the baked D1 spectral feature cache (`data/spectral_features`).
 - [channel_table.csv](channel_table.csv): channel name standardization mapping across recording sites.

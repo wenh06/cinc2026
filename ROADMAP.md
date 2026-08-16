@@ -56,6 +56,23 @@
 | P4 Philosopher's Stone (08-16) | full-signal CWT peaks ~60–70 GB → OOM-killed the 62 GB shared box (bare `Killed`).  Built the **hybrid low-memory wavelet stage** (`utils/phi_preprocess.py`): ≤2 Hz rows computed on the full signal with the upstream non-vectorised `cwt` (bit-identical); >2 Hz rows computed on overlapping 40-min chunks (10-min overlap) and stitched.  Fixed a stitching time-axis bug (`right = t1 - t_end`).  Validation vs the full-signal reference on 3 full nights: latent max|Δ| ≈ 1e-4–5e-4, correlation 1.000000.  **66 s/record, 14.2 GB peak** (vs 2–4 min / 60–70 GB) → full 1,103-record cache running locally, 2 workers, ~10 h |
 | Next gates | Phi PCA-64 + ranker on the I0006 proxy (Δ>0.04 over 0.546) once the cache completes; sub5 submission |
 
+## Current Status (2026-08-16, night)
+
+| Item | State |
+|------|-------|
+| **Component registry** | submissions can now bundle several independently trained models with a per-record fallback chain.  `TrainCfg.components` (default = the single `sub5_tabular_xgb`) trains each component into `model_folder/components/<name>/` and writes `model_manifest.json`; `load_model` routes from the on-disk manifest (not the current `TrainCfg`), and `run_model` walks components in priority order — a failing primary (e.g. a Phi ranker on a no-C4 montage) falls through to the next, with sub5's tabular XGB as the montage-agnostic terminal fallback.  `TrainCfg.tabular.enable` stays as the legacy master switch; old layouts load unchanged.  `test_docker.test_model_components` covers manifest round-trip, e2e train/load/run and the fallback chain |
+| Feature-cache gap fixed | the Dockerfile-baked MEGA spectral cache was **never wired at runtime** (`feature_cache` default empty).  `component_registry.resolve_feature_cache` now auto-resolves `data/spectral_features/features.csv` when no explicit path is set; official mounts land on `training_data` / `holdout_data`, so `/challenge/data` is not shadowed — train hits the cache, misses (organiser-added records) extract on the fly |
+| Official runtime constraints | verified against `official_baseline` README: data at `/challenge/training_data` + `/challenge/holdout_data`, only `/challenge/model` writable, no network — the registry only writes under `model_folder` and performs no network I/O |
+| Phi full cache | chunked 2 workers running; 5 records failed = **montage without any C4** (5/54 I0002 + 1 S0001, ≈0.5% of 1,103); `_resolve_c4m1` has no fallback for those.  Decision: drop them (NaN rows), no C3-M2 fallback (distribution shift risk).  Data-folder-only rule for training: cache is looked up per mounted row — organisers' add/remove perturbations change the trained model as they expect |
+| Local e2e | full 1,103-record tabular training (on-the-fly) running in tmux `e2e` (~23:15); run_model + evaluate to follow on the produced model |
+
+## Next Steps (2026-08-16, night)
+
+1. Merge dev → master once the component-registry docker-test CI is green (official evaluation pulls master); sub5 submit 08-17/18, training set = small.
+2. Phi cache completes (~08-17 morning) → PCA-64 + XGB ranker on the I0006 holdout, adopt only on Δ>0.04; then add as a `phi` component with the sub5 tabular fallback.
+3. Read sub4/2620 (~08-17): second anchor for the proxy→official discount.
+4. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
+
 ## Next Steps (2026-08-16, deadline 08-20)
 
 1. sub5 submit **08-17/18**, training set = small (config already default; CI green; full 1,103-record end-to-end training running locally for a final dry-run).
