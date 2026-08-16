@@ -419,9 +419,11 @@ def test_phi_inference() -> None:
     """Run Phi latent extraction on ONE raw record (CPU; opt-in).
 
     Gated by ``CINC2026_TEST_PHI=1`` because it adds several minutes on the
-    2-core / 7 GB CI runner.  The record is truncated to 30 minutes for the
+    2-core / 7 GB CI runner.  The record is truncated to 10 minutes for the
     wavelet stage: the full-night transform alone needs ~9-18 GB of intermediate
-    arrays, which OOMs the runner.  The spectrogram is then padded back to the
+    arrays, which OOMs the runner, and the 30-minute variant sat close enough to
+    the 7 GB limit to be OOM-killed under runner contention.  The spectrogram is
+    then padded back to the
     canonical 11 h so the model forward, head weights, etc. still run end to end
     exactly as in production.  The checkpoint is baked into the image at build
     time by post_docker_build.py (MODEL_CACHE_DIR/philosophers-stone/model_files/).
@@ -456,7 +458,7 @@ def test_phi_inference() -> None:
             "--limit",
             "1",
             "--max-seconds",
-            "1800",
+            "600",
             "--no-collect-heads",
         ],
         capture_output=True,
@@ -464,6 +466,7 @@ def test_phi_inference() -> None:
         timeout=5400,
     )
     if result.returncode != 0:
+        print(f"--- phi extract returncode: {result.returncode} ---")
         print("--- phi extract stdout ---")
         print(result.stdout)
         print("--- phi extract stderr ---")
