@@ -34,7 +34,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -708,16 +707,24 @@ def process_record(args: Tuple[dict, str, str, dict]) -> Tuple[str, Dict[str, ob
 # ---------------------------------------------------------------------------
 
 
-def build_tasks(data_root: Path, demo: pd.DataFrame, limit: Optional[int]) -> List[Tuple[dict, str, str, dict]]:
+def build_tasks(
+    data_root: Path,
+    demo: pd.DataFrame,
+    limit: Optional[int],
+    require_raw: bool = True,
+) -> List[Tuple[dict, str, str, dict]]:
     rules = helper_code.load_rename_rules(str(Path(__file__).resolve().parent.parent / "channel_table.csv"))
     tasks = []
     for _, row in demo.iterrows():
         base = f"{row['BidsFolder']}_ses-{row['SessionID']}"
         site = row["SiteID"]
-        raw_path = str(data_root / "physiological_data" / site / f"{base}.edf")
-        ann_path = str(data_root / "algorithmic_annotations" / site / f"{base}_caisr_annotations.edf")
-        if os.path.exists(raw_path):
-            tasks.append((dict(row), raw_path, ann_path, rules))
+        raw_path = data_root / "physiological_data" / site / f"{base}.edf"
+        ann_path = data_root / "algorithmic_annotations" / site / f"{base}_caisr_annotations.edf"
+        if require_raw and not raw_path.exists():
+            continue
+        if not ann_path.exists():
+            continue
+        tasks.append((dict(row), str(raw_path) if raw_path.exists() else "", str(ann_path), rules))
         if limit and len(tasks) >= limit:
             break
     return tasks
@@ -729,13 +736,21 @@ def main() -> None:
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--limit", type=int, default=None, help="limit records (smoke run)")
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument(
+        "--require-raw",
+        dest="require_raw",
+        action="store_true",
+        default=True,
+        help="skip records without raw PSG (default); use --no-require-raw for CAISR-only runs",
+    )
+    parser.add_argument("--no-require-raw", dest="require_raw", action="store_false")
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     demo = pd.read_csv(data_root / "demographics.csv")
-    tasks = build_tasks(data_root, demo, args.limit)
+    tasks = build_tasks(data_root, demo, args.limit, require_raw=args.require_raw)
     print(f"records to process: {len(tasks)}", flush=True)
 
     rows_feat, rows_meta = [], []
