@@ -204,12 +204,16 @@ TrainCfg.focal = CFG(
 
 # D2 tabular pipeline — 641-dim spectral/physiological feature bank + boosted
 # trees, an alternate submission path that bypasses the CRNN entirely.
-# Default OFF: the default config remains the sub3 CRNN ensemble.
-#   enable         (bool, False) — route train_model/run_model through the tabular branch
+# Default ON for sub5 (SMALL training set): XGBoost on the 390-dim spec block,
+# metadata excluded.  include_meta stays False because meta_rec_year is a
+# follow-up-window eligibility artifact (records from ~2019+ are almost all
+# positive) that inflates the I0006/S0001/I0002 holdouts but does not transfer
+# to the official val/test sites (I0004 2004-2016, I0007 2011-2017).
+#   enable         (bool, True) — route train_model/run_model through the tabular branch
 #   model          (str, "xgboost") — {"xgboost", "lightgbm"}
 #   feature_groups (list, ["spec"]) — which blocks of the 641-dim bank to use
 #                   {"spec","coh","tp","trans","arch","hrv","spo2"}; empty = all
-#   include_meta   (bool, True) — append age / sex / bmi / recording-year
+#   include_meta   (bool, False) — append age / sex / bmi / recording-year
 #   lgbm_params    (CFG) — LightGBM hyperparameters
 #   xgb_params     (CFG) — XGBoost hyperparameters
 #   feature_cache  (str, "") — precomputed features.csv (D1 layout, index =
@@ -217,13 +221,14 @@ TrainCfg.focal = CFG(
 #                   extraction from raw+CAISR for misses
 #   workers        (int, 4) — on-the-fly extraction parallelism
 #   threshold      (float, 0.5) — binary cutoff (Reward side only; age-cond is rank-based)
-# D2-small reading (I0006-holdout): LGBM spec 0.659±0.007, XGB spec 0.653±0.012
-# vs small-pool CRNN 0.546 — see ROADMAP experiment log row D2-tabular.
+# D2-small reading (15 seeds, I0006-holdout): XGB spec-only 0.6446±0.0144,
+# LGBM spec-only 0.6555±0.0230 vs small-pool CRNN 0.546; S0001-holdout XGB
+# 0.6473±0.0076 — see ROADMAP experiment log rows D2-tabular / D2-large.
 TrainCfg.tabular = CFG(
-    enable=False,
+    enable=True,
     model="xgboost",
     feature_groups=["spec"],
-    include_meta=True,
+    include_meta=False,
     lgbm_params=CFG(
         n_estimators=500,
         learning_rate=0.05,

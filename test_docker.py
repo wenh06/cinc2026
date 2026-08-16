@@ -255,6 +255,10 @@ def test_entry() -> None:
     2. ``run_model.py``    →  ``team_code.load_model`` + ``team_code.run_model``
     3. ``evaluate_model.py`` →  scoring
     """
+    # cfg default now routes submissions through the tabular path (sub5);
+    # this test exercises the CRNN entry, so force the CRNN branch for the
+    # whole train → load → run sequence (load_model reads the global TrainCfg).
+    TrainCfg.tabular.enable = False
     echo_write_permission(tmp_data_dir)
     echo_write_permission(tmp_model_dir)
     echo_write_permission(tmp_output_dir)
@@ -532,6 +536,7 @@ def test_tabular() -> None:
     print(f"  on-the-fly output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")
 
     # Part B — cache-first branch + metadata regression guard
+    cfg.tabular.include_meta = True  # sub5 default is False; re-enable for the meta-fill regression
     cfg.tabular.feature_cache = str(cache_csv)
     model_folder_b = tmp_model_dir / "tabular_test_cache"
     train_tabular(cfg, model_folder_b, verbose=True)
