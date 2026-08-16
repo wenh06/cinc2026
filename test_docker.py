@@ -17,7 +17,7 @@ from cfg import _BASE_DIR, ModelCfg, TrainCfg
 from dataset import CINC2026Dataset, collate_fn
 from evaluate_model import evaluate_model as _evaluate_model
 from evaluate_model import run as model_evaluator_func
-from helper_code import DEMOGRAPHICS_FILE
+from helper_code import DEMOGRAPHICS_FILE, HEADERS, find_patients
 from models import EpochCRNN, EpochTransformer
 from run_model import run as model_runner_func
 from team_code import _MODEL_CLASS_MAP, _resolve_db_dir, train_model
@@ -255,6 +255,10 @@ def test_entry() -> None:
     2. ``run_model.py``    →  ``team_code.load_model`` + ``team_code.run_model``
     3. ``evaluate_model.py`` →  scoring
     """
+    # cfg default now routes submissions through the tabular path (sub5);
+    # this test exercises the CRNN entry, so force the CRNN branch for the
+    # whole train → load → run sequence (load_model reads the global TrainCfg).
+    TrainCfg.tabular.enable = False
     echo_write_permission(tmp_data_dir)
     echo_write_permission(tmp_model_dir)
     echo_write_permission(tmp_output_dir)
@@ -350,6 +354,293 @@ def test_entry() -> None:
 test_team_code = test_entry
 
 
+@func_indicator("testing raw spectral features")
+def test_spectral_features() -> None:
+    """Run the spectral feature extractor on the raw PSG subset (3 records)."""
+    import subprocess
+    import sys
+
+    raw_dir = tmp_data_dir / "physiological_data"
+    edfs = sorted(raw_dir.glob("*/*.edf")) if raw_dir.exists() else []
+    if not edfs:
+        print("  No raw PSG subset present — skipping (set MEGA_RAW_ACTION_TEST_URL to enable).")
+        return
+    out_dir = tmp_model_dir / "spectral_features"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "scripts" / "extract_spectral_features.py"),
+            "--data-root",
+            str(tmp_data_dir),
+            "--out-dir",
+            str(out_dir),
+            "--workers",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    feat = pd.read_csv(out_dir / "features.csv", index_col=0)
+    assert len(feat) == len(edfs), f"expected {len(edfs)} rows, got {len(feat)}"
+    assert not feat.isna().all(axis=1).any(), "all-NaN feature row for a raw record"
+    print(f"  spectral features: {feat.shape[0]} records x {feat.shape[1]} features")
+    print("test_spectral_features passed ✓")
+
+
+@func_indicator("testing Philosopher's Stone cache utilities")
+def test_phi_cache() -> None:
+    """Test C4-M1 resolution and cache loading without running the model."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from utils.phi_cache import PHI_LATENT_DIM, PHI_SCORE_KEYS, _resolve_c4m1, load_phi_cache
+
+    raw_dir = tmp_data_dir / "physiological_data"
+    edfs = sorted(raw_dir.glob("*/*.edf")) if raw_dir.exists() else []
+    if not edfs:
+        print("  No raw PSG subset present — skipping (set MEGA_RAW_ACTION_TEST_URL to enable).")
+        return
+    for p in edfs:
+        resolved = _resolve_c4m1(p)
+        assert resolved is not None, f"failed to resolve C4-M1 for {p}"
+        sig, fs = resolved
+        assert fs > 0 and len(sig) > 0, f"empty C4-M1 for {p}"
+    demo = pd.read_csv(tmp_data_dir / DEMOGRAPHICS_FILE)
+    cache = load_phi_cache(tmp_model_dir / "phi_cache_nonexistent", demo.head(10))
+    assert cache.shape == (10, PHI_LATENT_DIM + len(PHI_SCORE_KEYS))
+    assert cache.isna().all().all(), "empty cache dir should yield all-NaN frame"
+    print("test_phi_cache passed ✓")
+
+
+@func_indicator("testing Philosopher's Stone inference")
+def test_phi_inference() -> None:
+    """Run Phi latent extraction on ONE raw record (CPU; opt-in).
+
+    Gated by ``CINC2026_TEST_PHI=1`` because it adds several minutes on the
+    2-core / 7 GB CI runner.  The record is truncated to 10 minutes for the
+    wavelet stage: the full-night transform alone needs ~9-18 GB of intermediate
+    arrays, which OOMs the runner, and the 30-minute variant sat close enough to
+    the 7 GB limit to be OOM-killed under runner contention.  The spectrogram is
+    then padded back to the
+    canonical 11 h so the model forward, head weights, etc. still run end to end
+    exactly as in production.  The checkpoint is baked into the image at build
+    time by post_docker_build.py (MODEL_CACHE_DIR/philosophers-stone/model_files/).
+    """
+    import subprocess
+    import sys
+
+    if not str2bool(os.environ.get("CINC2026_TEST_PHI", "0")):
+        print("  CINC2026_TEST_PHI not set — skipping.")
+        return
+    raw_dir = tmp_data_dir / "physiological_data"
+    edfs = sorted(raw_dir.glob("*/*.edf")) if raw_dir.exists() else []
+    if not edfs:
+        print("  No raw PSG subset present — skipping.")
+        return
+    model_cache = Path(os.environ.get("MODEL_CACHE_DIR", "/challenge/cache/revenger_model_dir"))
+    checkpoint = model_cache / "philosophers-stone" / "model_files" / "SleepPhilosophersStone.ckpt"
+    assert checkpoint.exists(), f"checkpoint missing at {checkpoint}"
+    cache_dir = tmp_model_dir / "phi_cache"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "scripts" / "phi_cache_extract.py"),
+            "--data-root",
+            str(tmp_data_dir),
+            "--checkpoint",
+            str(checkpoint),
+            "--cache-dir",
+            str(cache_dir),
+            "--workers",
+            "1",
+            "--limit",
+            "1",
+            "--max-seconds",
+            "600",
+            "--no-collect-heads",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5400,
+    )
+    if result.returncode != 0:
+        print(f"--- phi extract returncode: {result.returncode} ---")
+        print("--- phi extract stdout ---")
+        print(result.stdout)
+        print("--- phi extract stderr ---")
+        print(result.stderr)
+    assert result.returncode == 0, result.stderr[-2000:]
+    npzs = sorted(cache_dir.glob("*/*.npz"))
+    if len(npzs) != 1:
+        print("--- phi extract stdout ---")
+        print(result.stdout)
+        print("--- phi extract stderr ---")
+        print(result.stderr)
+        failures = cache_dir / "failures.csv"
+        if failures.exists():
+            print("--- failures.csv ---")
+            print(failures.read_text())
+    assert len(npzs) == 1, f"expected 1 npz, got {npzs}"
+    print(f"  phi latent cached: {npzs[0]}")
+    print("test_phi_inference passed ✓")
+
+
+@func_indicator("testing tabular pipeline")
+def test_tabular() -> None:
+    """End-to-end smoke of the D2 tabular path on the raw PSG subset.
+
+    Part A drives the on-the-fly branch (extraction from raw EDFs — the
+    official-environment path); part B drives the cache-first branch and
+    regression-tests that metadata columns are filled from demographics at
+    inference (guards against the silent all-NaN metadata bug).
+    """
+    from helper_code import load_demographics
+    from tabular_pipeline import (
+        assemble_record_features,
+        load_tabular_model,
+        run_tabular_model,
+        train_tabular,
+    )
+
+    raw_dir = tmp_data_dir / "physiological_data"
+    if not raw_dir.exists() or not any(raw_dir.glob("*/*.edf")):
+        print("  No raw PSG subset present — skipping.")
+        return
+
+    records = find_patients(str(tmp_data_dir / DEMOGRAPHICS_FILE))
+    hits = []
+    for r in records:
+        base = f"{r[HEADERS['bids_folder']]}_ses-{r[HEADERS['session_id']]}"
+        if (raw_dir / r[HEADERS["site_id"]] / f"{base}.edf").exists():
+            hits.append(r)
+    assert hits, "no raw record found"
+    rec = hits[0]
+
+    cache_csv = tmp_model_dir / "spectral_features" / "features.csv"
+    assert cache_csv.exists(), "test_spectral_features should have produced the feature cache"
+
+    cfg = deepcopy(TrainCfg)
+    cfg.db_dir = _resolve_db_dir(str(tmp_data_dir))
+    cfg.tabular.enable = True
+    cfg.tabular.model = "xgboost"
+    cfg.tabular.xgb_params.n_estimators = 30
+    cfg.tabular.feature_groups = ["spec"]
+    cfg.tabular.workers = 1
+
+    # Part A — on-the-fly extraction branch
+    cfg.tabular.feature_cache = ""
+    model_folder_a = tmp_model_dir / "tabular_test_onthefly"
+    train_tabular(cfg, model_folder_a, verbose=True)
+    model_dict_a = load_tabular_model(model_folder_a, cfg, verbose=True)
+    binary, prob = run_tabular_model(model_dict_a, rec, str(tmp_data_dir), verbose=True)
+    assert binary in (0, 1) and 0.0 <= prob <= 1.0
+    print(f"  on-the-fly output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")
+
+    # Part B — cache-first branch + metadata regression guard
+    cfg.tabular.include_meta = True  # sub5 default is False; re-enable for the meta-fill regression
+    cfg.tabular.feature_cache = str(cache_csv)
+    model_folder_b = tmp_model_dir / "tabular_test_cache"
+    train_tabular(cfg, model_folder_b, verbose=True)
+    model_dict_b = load_tabular_model(model_folder_b, cfg, verbose=True)
+    config = model_dict_b["config"]
+    meta_cols = ["meta_age", "meta_sex_male", "meta_bmi", "meta_rec_year"]
+    assert config["feature_list"][-len(meta_cols) :] == meta_cols, "metadata columns missing from the trained feature list"
+    binary, prob = run_tabular_model(model_dict_b, rec, str(tmp_data_dir), verbose=True)
+    assert binary in (0, 1) and 0.0 <= prob <= 1.0
+    patient_data = load_demographics(
+        str(tmp_data_dir / DEMOGRAPHICS_FILE),
+        rec[HEADERS["bids_folder"]],
+        rec[HEADERS["session_id"]],
+    )
+    assembled = assemble_record_features(pd.Series(dtype=float), patient_data, config)
+    assert pd.notna(assembled["meta_age"]) and pd.notna(
+        assembled["meta_sex_male"]
+    ), "metadata columns are NaN at inference — demographics were not filled"
+    print(f"  cache-first output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")
+    print("test_tabular passed ✓")
+
+
+@func_indicator("testing model components")
+def test_model_components() -> None:
+    """Component registry: manifest round-trip, e2e train/load/run, fallback chain."""
+    from component_registry import MANIFEST_NAME, read_manifest, write_manifest
+    from tabular_pipeline import load_tabular_model, run_tabular_model
+    from team_code import _run_components, load_model, run_model
+
+    raw_dir = tmp_data_dir / "physiological_data"
+    records = find_patients(str(tmp_data_dir / DEMOGRAPHICS_FILE))
+    hits = [
+        r
+        for r in records
+        if (raw_dir / r[HEADERS["site_id"]] / f"{r[HEADERS['bids_folder']]}_ses-{r[HEADERS['session_id']]}.edf").exists()
+    ]
+    assert hits, "no raw record found for the component test"
+    rec = hits[0]
+
+    # 1. manifest round-trip
+    roundtrip_dir = tmp_model_dir / "manifest_roundtrip"
+    roundtrip_dir.mkdir(parents=True, exist_ok=True)
+    write_manifest(
+        roundtrip_dir,
+        [
+            CFG(name="first", type="tabular", enable=True, priority=0),
+            CFG(name="second", type="tabular", enable=False, priority=1),
+        ],
+    )
+    manifest = read_manifest(roundtrip_dir)
+    assert [c["name"] for c in manifest["components"]] == ["first", "second"]
+    assert [c["enable"] for c in manifest["components"]] == [True, False]
+
+    # 2. end-to-end through team_code.train_model / load_model / run_model
+    comp_dir = tmp_model_dir / "components_e2e"
+    old_n = TrainCfg.tabular.xgb_params.n_estimators
+    try:
+        TrainCfg.tabular.xgb_params.n_estimators = 30
+        train_model(str(tmp_data_dir), str(comp_dir), True)
+        assert (comp_dir / MANIFEST_NAME).is_file(), "component manifest not written by train_model"
+        model_dict = load_model(str(comp_dir), True)
+        assert set(model_dict["components"]) == {"sub5_tabular_xgb"}
+        binary, prob = run_model(model_dict, rec, str(tmp_data_dir), True)
+        assert binary in (0, 1) and 0.0 <= prob <= 1.0
+        print(f"  component e2e output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")
+    finally:
+        TrainCfg.tabular.xgb_params.n_estimators = old_n
+
+    # 3. per-record fallback chain: a failing primary falls through to the next
+    good_payload = load_tabular_model(comp_dir / "components" / "sub5_tabular_xgb", TrainCfg, False)
+    bad_payload = dict(good_payload)
+    bad_payload["config"] = dict(good_payload["config"])
+    bad_payload["config"]["constant"] = None  # force the booster predict path
+    bad_payload["booster"] = None  # run_tabular_model raises on predict
+    chain = {
+        "components": {"primary_bad": bad_payload, "fallback_good": good_payload},
+        "manifest": {
+            "components": [
+                {"name": "primary_bad", "type": "tabular", "priority": 0},
+                {"name": "fallback_good", "type": "tabular", "priority": 1},
+            ]
+        },
+    }
+    binary_chain, prob_chain = _run_components(chain, rec, str(tmp_data_dir), False)
+    binary_good, prob_good = run_tabular_model(good_payload, rec, str(tmp_data_dir), False)
+    assert (binary_chain, prob_chain) == (binary_good, prob_good), "fallback chain did not recover the fallback output"
+
+    # 4. all components failing raises (the run_model wrapper turns it into (0, 0.5))
+    all_bad = {
+        "components": {"bad": bad_payload},
+        "manifest": {"components": [{"name": "bad", "type": "tabular", "priority": 0}]},
+    }
+    try:
+        _run_components(all_bad, rec, str(tmp_data_dir), False)
+        raise AssertionError("expected RuntimeError when every component fails")
+    except RuntimeError:
+        pass
+
+    print("test_model_components passed ✓")
+
+
 if __name__ == "__main__":
     TEST_FLAG = os.environ.get("CINC2026_REVENGER_TEST", False)
     TEST_FLAG = str2bool(TEST_FLAG)
@@ -376,5 +667,10 @@ if __name__ == "__main__":
     test_dataset()
     test_models()
     test_challenge_metrics()
+    test_spectral_features()
+    test_phi_cache()
+    test_phi_inference()
+    test_tabular()
+    test_model_components()
     # test_trainer()  # passed, and overriden by test_entry
     test_entry()

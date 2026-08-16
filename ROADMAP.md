@@ -21,6 +21,67 @@
 
 ---
 
+## Current Status (2026-08-15)
+
+| Item | State |
+|------|-------|
+| Official submissions | **4/10 used**: sub1 0.617, sub2 0.592, sub3 0.611, **sub4 ID 2620 (08-14, sub3 config unchanged) — processing, score pending**; sub4 anchors official-side evaluation noise |
+| Leaderboard (08-15) | top age-cond **0.847 (Matcha, small)**; ReCognition 0.795, Leicester Fox 0.774, bashlab_wpi 0.751; Revenger 0.617 |
+| Docker / CI | docker-test **green** (run 31875296556, 20m53s); opt-in Phi inference test on a 30-min segment passes in ~86 s — the full-night wavelet stage (~9–18 GB intermediates) would OOM the 7 GB runner, so CI truncates the signal but pads the spectrogram back to the canonical 11 h |
+| P3 spectral (D1) | 641-dim Ye-2023-style extractor done + deterministic; full 1,103-record `tmp/spectral_features/features.csv`; univariate age-cond AUC: **N1 θ/α 0.63–0.64** (3 sites consistent), N3 delta / edge95 / REM coherence weak positives |
+| D2 tabular (08-15) | small-set I0006-holdout (911 train / 192 eval): **LightGBM on 641-dim 0.655 ± 0.019** (15 seeds, min 0.626), XGB 0.653 ± 0.012, RF 0.576; the 390-dim `spec` block alone 0.659 ± 0.007, CAISR `arch` block 0.576, meta-only LR 0.601 — **+0.109 over the small-pool CRNN (0.546)**; large-pool comparable validation pending |
+| P4 Philosopher's Stone | submodule pinned `0b1b49a`; 2.4 GB checkpoint (SHA `b2a9…5af87`) baked into the image + sha-verified; cache-extract script smoke 3/3 on GPU (~78 s/record); full 1,103-record cache pending AutoDL 5090 (~4–8 h) |
+| Decision gates | sub4 already in; D2-small passed (0.655 ± 0.019 vs 0.546) → next gate = **tabular on the large set** (A1-comparable, 0.6375) before touching the CRNN training loop |
+
+## Next Steps (2026-08-15, deadline 08-20)
+
+1. Read sub4/2620 score (~08-18): Δ(sub4, sub3) = official-side noise, the second anchor for the proxy→official discount (only −0.027 so far).
+2. ~~D2 tabular baseline (small)~~ ✅ **done** (0.655 ± 0.019 vs small-pool CRNN 0.546).  Next: (a) tabular on the LARGE CAISR features — locally computable, directly comparable to A1 0.6375; (b) decide whether to wire the spectral+GBDT pipeline into `team_code.py` (organisers extract from raw on their side) for sub5.
+3. AutoDL 5090: run the full Phi cache; wire cache read + on-the-fly fallback into `team_code.py`.
+4. Candidate methods (single-factor + seed rerun, Δ > 0.04): age-gated ranking loss, CORAL/SAM, survival, CreationTime metadata, raw spectral bank — detail in `tmp/agecond-improvement-research-2026-08-15.md` (uncommitted).
+5. sub5 by 08-17/18 to stay inside the 72 h feedback window; confirm whether final ranking uses the last or the best submission.
+6. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
+
+---
+
+## Current Status (2026-08-16)
+
+| Item | State |
+|------|-------|
+| Official submissions | **4/10 used**; sub4/2620 (sub3 config unchanged) still pending (≤72 h → ~08-17); best = sub1 0.617 |
+| Docker / CI | **green** for `53a27ce` (run 31933319823): sub5 tabular default entry, Dockerfile MEGA feature-cache bake + `post_docker_build.py` SHA verification, `test_tabular` all pass |
+| **sub5 locked** | small-pool tabular: **XGB + 390-dim `spec`, `include_meta=False`** (`cfg.py` default now `enable=True`). 15-seed validation: I0006-holdout 0.6446±0.0144, S0001-holdout 0.6473±0.0076, I0002-holdout 0.7486±0.0318 (small-pool CRNN = 0.546); adding age/sex/bmi meta *hurts* (~−0.01).  Submission plan: train set = **small**, submit 08-17/18 |
+| D2-large gate | **FAILED / rejected**. Large-pool CAISR-only `arch`+meta XGB = 0.6452±0.0084 vs A1 0.6375 on the full I0006 eval — but the edge is a **rec_year follow-up-window artifact** (see below), not signal |
+| rec_year trap | negative requires ≥6 y follow-up ⇒ records from ~2019+ are almost all positive (2019: 89%, 2020+: 100%) and every local holdout carries this tail. Official val **I0004 = 2004–2016**, test **I0007 = 2011–2017** have no such tail (supplementary demographics), and the official test prevalence 5–15% confirms it. Year-restricted eval (≤2017) collapses arch+meta to 0.5931 and rec_year-only to 0.6410.  **Rule: never ship rec_year; year-restrict any eval of models that use it** |
+| P4 Philosopher's Stone (08-16) | full-signal CWT peaks ~60–70 GB → OOM-killed the 62 GB shared box (bare `Killed`).  Built the **hybrid low-memory wavelet stage** (`utils/phi_preprocess.py`): ≤2 Hz rows computed on the full signal with the upstream non-vectorised `cwt` (bit-identical); >2 Hz rows computed on overlapping 40-min chunks (10-min overlap) and stitched.  Fixed a stitching time-axis bug (`right = t1 - t_end`).  Validation vs the full-signal reference on 3 full nights: latent max|Δ| ≈ 1e-4–5e-4, correlation 1.000000.  **66 s/record, 14.2 GB peak** (vs 2–4 min / 60–70 GB) → full 1,103-record cache running locally, 2 workers, ~10 h |
+| Next gates | Phi PCA-64 + ranker on the I0006 proxy (Δ>0.04 over 0.546) once the cache completes; sub5 submission |
+
+## Current Status (2026-08-16, night)
+
+| Item | State |
+|------|-------|
+| **Component registry** | submissions can now bundle several independently trained models with a per-record fallback chain.  `TrainCfg.components` (default = the single `sub5_tabular_xgb`) trains each component into `model_folder/components/<name>/` and writes `model_manifest.json`; `load_model` routes from the on-disk manifest (not the current `TrainCfg`), and `run_model` walks components in priority order — a failing primary (e.g. a Phi ranker on a no-C4 montage) falls through to the next, with sub5's tabular XGB as the montage-agnostic terminal fallback.  `TrainCfg.tabular.enable` stays as the legacy master switch; old layouts load unchanged.  `test_docker.test_model_components` covers manifest round-trip, e2e train/load/run and the fallback chain |
+| Feature-cache gap fixed | the Dockerfile-baked MEGA spectral cache was **never wired at runtime** (`feature_cache` default empty).  `component_registry.resolve_feature_cache` now auto-resolves `data/spectral_features/features.csv` when no explicit path is set; official mounts land on `training_data` / `holdout_data`, so `/challenge/data` is not shadowed — train hits the cache, misses (organiser-added records) extract on the fly |
+| Official runtime constraints | verified against `official_baseline` README: data at `/challenge/training_data` + `/challenge/holdout_data`, only `/challenge/model` writable, no network — the registry only writes under `model_folder` and performs no network I/O |
+| Phi full cache | chunked 2 workers running; 5 records failed = **montage without any C4** (5/54 I0002 + 1 S0001, ≈0.5% of 1,103); `_resolve_c4m1` has no fallback for those.  Decision: drop them (NaN rows), no C3-M2 fallback (distribution shift risk).  Data-folder-only rule for training: cache is looked up per mounted row — organisers' add/remove perturbations change the trained model as they expect |
+| Local e2e | full 1,103-record tabular training (on-the-fly) running in tmux `e2e` (~23:15); run_model + evaluate to follow on the produced model |
+
+## Next Steps (2026-08-16, night)
+
+1. Merge dev → master once the component-registry docker-test CI is green (official evaluation pulls master); sub5 submit 08-17/18, training set = small.
+2. Phi cache completes (~08-17 morning) → PCA-64 + XGB ranker on the I0006 holdout, adopt only on Δ>0.04; then add as a `phi` component with the sub5 tabular fallback.
+3. Read sub4/2620 (~08-17): second anchor for the proxy→official discount.
+4. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
+
+## Next Steps (2026-08-16, deadline 08-20)
+
+1. sub5 submit **08-17/18**, training set = small (config already default; CI green; full 1,103-record end-to-end training running locally for a final dry-run).
+2. Phi cache completes (~08-17 morning) → PCA-64 + XGB ranker on the I0006 holdout (`scripts/phi_pca_ranker.py`), adopt only on Δ>0.04; candidate stream for a later submission, not sub5.
+3. Read sub4/2620 (~08-17): second anchor for the proxy→official discount.
+4. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
+
+---
+
 ## Data Facts
 
 | Fact | Unofficial Phase | Official Phase |
@@ -103,17 +164,21 @@ r(age, prob) = +0.39 (2026-08-02); age-cond AUROC added to the trainer; **age-ad
 
 pos_weight sweep {2,4,8,16}: **no gain over default 12.16**; temperature/Platt: **AUROC rank-invariant** by construction (only Brier/ECE move).
 
-### P3 — Conservative spectral features (Phase 8, reduced scope) 🔴 current priority (08-13)
+### P3 — Spectral features 🔴 current priority (08-15)
 
 **Why now**: 08-04→08-13 interventions (B/C/D/O7 waves) all reshuffled the same 21-dim CAISR input + CRNN_M skeleton; raw-spectral features are the only untried **new-information** channel and the only cross-site-**stable** one (C2: overlap) where CAISR event counts are most corrupted (C1: ×5–6).  Feasibility gated on large-set raw availability (small-set + supplementary raw are local).
 
 - [x] Cross-site spectra probed (C2, 08-09): overlap → **site-level harmonisation not required**.
-- [ ] **Relative delta power** only (delta/total, **NREM epochs only**), bipolar C3-M2 (derive for I0006) → +1 dim = 22, epoch-aligned with CAISR.
-- [ ] Only after validation: theta/alpha ratio (EEG slowing index).
+- [x] **641-dim Ye-2023-style extractor** (D1, 08-15): staged relative powers/ratios, kurtosis, Hjorth, I-CARE quantiles, coherence, HRV/SpO2, CAISR architecture, time metadata — deterministic; 1,103-record cache extracted.
+- [x] Univariate age-cond screening: N1 θ/α 0.63–0.64 across sites; N3 delta / edge95 / REM coherence weak positives.
+- [x] **D2 (small)**: LightGBM on the 641-dim bank 0.655 ± 0.019 (15 seeds) vs small-pool CRNN 0.546; the `spec` block alone 0.659 ± 0.007; XGB agrees (0.653), RF weak (0.576).
+- [ ] **D2 (large, A1-comparable)**: tabular on the large set — CAISR-derived features are local (no raw); the full spectral bank needs the 1.2 TB large raw.
 
 ### P4 — Philosopher's Stone (BDSP pretrained sleep EEG model)
 
-1024-D latent → PCA-64 → frozen feature extractor.  Evaluate on 10–20 records first; cap at 1–2 days.
+**Status (08-15)**: fully wired — submodule pinned `0b1b49a`; 2.4 GB checkpoint baked into the Docker image with SHA-256 verification (`post_docker_build.py`); `scripts/phi_cache_extract.py` batch extraction (resume / multi-process / deterministic order, I0006 monopolar C4−M1 derivation); cache loader with on-the-fly fallback in `utils/phi_cache.py`.  GPU smoke 3/3 (~78 s/record); CI opt-in test green (~86 s, truncated segment).
+
+Usage plan: full 1,103-record cache on AutoDL 5090 (~4–8 h) → 1024-D latent → PCA-64 → frozen feature extractor, evaluated under the Δ > 0.04 gate.
 
 ---
 
@@ -124,8 +189,9 @@ pos_weight sweep {2,4,8,16}: **no gain over default 12.16**; temperature/Platt: 
 | 1 | 2372 | 08-02 | `EpochCRNN_M` single, BCE, pos_weight 12.16 | 0.617 | 0.027 | SessionID int/str bug (local-eval artefact only — see §10.5) |
 | 2 | 2407 | 08-05 | sub1 training + SessionID fix + sliding-window inference | 0.592 | −0.013 | ≈ sub1 within noise — official scorer uses its own ages |
 | 3 | 2471 | 08-08 | 5-fold focal+LS ensemble, early-stop floor (O8) | 0.611 | −0.130 | within noise of sub1 (Δ0.006), +0.019 vs sub2; proxy 0.638 discounted −0.027 |
+| 4 | 2620 | 08-14 | sub3 config unchanged (noise anchor) | — | — | submitted 22:33 EDT; processing — score and Δ(sub4, sub3) pending |
 
-> Official val = unseen **I0004**; leaderboard top ≈ 0.773.  Full detail in `submissions` (all three confirmed).
+> Official val = unseen **I0004**; leaderboard top ≈ 0.847 (08-15).  Full detail in `submissions` (sub1–3 confirmed; sub4 processing).
 
 ---
 
@@ -300,6 +366,7 @@ pos_weight sweep {2,4,8,16}: **no gain over default 12.16**; temperature/Platt: 
 | **D4** | 08-11 | (A1 cfg) | 21 | two-sided domain-randomization on train features (I0004/I0007 shift dirs, p=0.5 each) | 3e-4/16/100 | — | 0.6535 | +0.016 | ~ Below pass line, not adopted solo; possible no-age+aug ensemble member later. |
 | **O7c** | 08-12 | (A1 cfg) | 21 | age-stratified sampler (4 pos + 8 win-neg + 4 mixed-neg per batch) + tanh pairwise on logits, bank_size=0; λ sweep | 3e-4/16/100 | — | 0.6664 / 0.6065 / 0.6154 / 0.6335 (λ=0.05/0.1/0.3/0.1×no-age); **rerun λ=0.05 seed 1: 0.6199** | **+0.029** / −0.031 / −0.022 / −0.004 / **rerun −0.018** | ⚠️ **Refuted by rerun (Δ0.047 ≈ 2× noise floor)** — the +0.029 was seed noise; λ=0.05 not adopted.  Sampler's age-mixing (n_mixed_neg) preserves FiLM conditioning; pairwise family (O7a/O7c) closed. |
 | **S1** | 08-12 | (A1 cfg) | 21 | lr_scheduler swap: OneCycle (max 1e-3, pct 0.3) → warmup 5% + cosine (peak base lr 3e-4) | 3e-4/16/100 | — | 0.6469 | +0.009 | ~ Noise-adjacent; plain AUROC 0.7036 vs baseline 0.7171.  Not adopted alone; could stack with O7c. |
+| **D2-tabular** | 08-15 | ×15 seeds (LGBM) | 641 | GBDT/XGB/RF on the small spectral bank, I0006-holdout (911/192) | — | — | **0.655 ± 0.019** (LGBM n=15, min 0.626) / 0.653 ± 0.012 (XGB) / 0.576 ± 0.020 (RF) | **+0.109** vs small-pool CRNN 0.546 | ✅ **First method to clear the pass line with margin.** `spec` block alone 0.659 ± 0.007; `arch` (CAISR) 0.576; coh/tp/hrv/spo2 ≈ 0.52/0.51/0.40/0.46.  Small regime only — the large-pool (A1-comparable) run is the next gate. |
 
 **B-wave verdict (08-09)**: no intervention adopted — the sub3 config remains the best cross-site baseline; the CAISR-OOD mean shift is untargeted until the ComBat result.
 

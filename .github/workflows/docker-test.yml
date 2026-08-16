@@ -10,16 +10,23 @@ env:
   # see the Dockerfile for the definition of some of the following environment variables
   # Lifecycle: pre → alpha → beta → final
   status: alpha
-  # Dataset to download for the action test.  Both archives are CAISR-annotations-only
-  # tarballs (demographics.csv + algorithmic_annotations/, no raw PSG) hosted on MEGA:
+  # Dataset to download for the action test.  Two CAISR-annotations-only tarballs
+  # (demographics.csv + algorithmic_annotations/, no raw PSG) and one raw-PSG
+  # subset tarball (3 records, one per site, physiological_data/ folder structure
+  # preserved) are hosted on MEGA:
   #   small  → official-phase  (1,103 records, 178 MB)   [default]
   #   large  → official-phase-large (6,600 records, 1.1 GB)
   # The download URLs (which embed the decryption key) live in GitHub repository
   # secrets — never commit them:
   #   MEGA_CAISR_OFFICIAL_PHASE_SMALL_URL  → small dataset archive (1,103 records)
   #   MEGA_CAISR_OFFICIAL_PHASE_LARGE_URL  → large dataset archive (6,600 records)
+  #   MEGA_RAW_ACTION_TEST_URL             → raw PSG subset (3 records, ~400 MB)
   dataset_size: small
   CINC2026_REVENGER_TEST: 1
+  # Set to "1" to also run the Philosopher's Stone inference test on one raw
+  # record (truncated to 30 min; full-night inference would OOM the 7 GB
+  # runner).  It adds a few minutes on the 2-core runner (CPU-only inference).
+  CINC2026_TEST_PHI: 1
   download_data_dir: ${{ github.workspace }}/download_data
   mount_data_dir: /challenge/data
   revenger_data_dir: /challenge/cache/revenger_data_dir
@@ -127,6 +134,26 @@ jobs:
         echo "=== total files ==="
         find ${{ env.download_data_dir }} -type f | wc -l
 
+    - name: Download raw PSG subset (MEGA)
+      if: ${{ env.status != 'pre' }}
+      # The raw subset lets the pipeline tests exercise the raw-PSG paths
+      # (spectral feature extraction, Philosopher's Stone C4-M1 resolution)
+      # without pulling the 214 GB training set.  megatools is installed by the
+      # previous dataset step.  If the secret is not set, degrade gracefully.
+      env:
+        MEGA_URL_RAW: ${{ secrets.MEGA_RAW_ACTION_TEST_URL }}
+      run: |
+        if [ -z "$MEGA_URL_RAW" ]; then
+          echo "MEGA_RAW_ACTION_TEST_URL secret not set — skipping raw PSG subset."
+          exit 0
+        fi
+        megadl --path /tmp/cinc2026-raw.tar.gz "$MEGA_URL_RAW"
+        echo "=== raw PSG subset archive contents ==="
+        tar -tzf /tmp/cinc2026-raw.tar.gz
+        tar -xzf /tmp/cinc2026-raw.tar.gz -C ${{ env.download_data_dir }}
+        echo "=== raw PSG subset on disk ==="
+        find ${{ env.download_data_dir }}/physiological_data -type f
+
     - name: Create writable host directories for container output
       if: ${{ env.status != 'pre' }}
       run: |
@@ -147,6 +174,7 @@ jobs:
         docker run \
           -e PYTHONUNBUFFERED=1 \
           -e CINC2026_REVENGER_TEST=${{ env.CINC2026_REVENGER_TEST }} \
+          -e CINC2026_TEST_PHI=${{ env.CINC2026_TEST_PHI }} \
           -e revenger_data_dir=${{ env.revenger_data_dir }} \
           -e revenger_model_dir=${{ env.revenger_model_dir }} \
           -e revenger_test_dir=${{ env.revenger_test_dir }} \

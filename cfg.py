@@ -202,6 +202,79 @@ TrainCfg.focal = CFG(
     gamma=2.0,
 )
 
+# D2 tabular pipeline — 641-dim spectral/physiological feature bank + boosted
+# trees, an alternate submission path that bypasses the CRNN entirely.
+# Default ON for sub5 (SMALL training set): XGBoost on the 390-dim spec block,
+# metadata excluded.  include_meta stays False because meta_rec_year is a
+# follow-up-window eligibility artifact (records from ~2019+ are almost all
+# positive) that inflates the I0006/S0001/I0002 holdouts but does not transfer
+# to the official val/test sites (I0004 2004-2016, I0007 2011-2017).
+#   enable         (bool, True) — route train_model/run_model through the tabular branch
+#   model          (str, "xgboost") — {"xgboost", "lightgbm"}
+#   feature_groups (list, ["spec"]) — which blocks of the 641-dim bank to use
+#                   {"spec","coh","tp","trans","arch","hrv","spo2"}; empty = all
+#   include_meta   (bool, False) — append age / sex / bmi / recording-year
+#   lgbm_params    (CFG) — LightGBM hyperparameters
+#   xgb_params     (CFG) — XGBoost hyperparameters
+#   feature_cache  (str, "") — precomputed features.csv (D1 layout, index =
+#                   BidsFolder or BidsFolder__SessionID); cache-first, on-the-fly
+#                   extraction from raw+CAISR for misses
+#   workers        (int, 4) — on-the-fly extraction parallelism
+#   threshold      (float, 0.5) — binary cutoff (Reward side only; age-cond is rank-based)
+# D2-small reading (15 seeds, I0006-holdout): XGB spec-only 0.6446±0.0144,
+# LGBM spec-only 0.6555±0.0230 vs small-pool CRNN 0.546; S0001-holdout XGB
+# 0.6473±0.0076 — see ROADMAP experiment log rows D2-tabular / D2-large.
+TrainCfg.tabular = CFG(
+    enable=True,
+    model="xgboost",
+    feature_groups=["spec"],
+    include_meta=False,
+    lgbm_params=CFG(
+        n_estimators=500,
+        learning_rate=0.05,
+        num_leaves=31,
+        colsample_bytree=0.8,
+        subsample=0.8,
+        subsample_freq=1,
+        seed=0,
+    ),
+    xgb_params=CFG(
+        n_estimators=500,
+        learning_rate=0.05,
+        max_depth=6,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        tree_method="hist",
+        seed=0,
+    ),
+    feature_cache="",
+    workers=4,
+    threshold=0.5,
+)
+
+# Model-component registry — a submission may bundle several independently
+# trained models with a per-record fallback chain.  Components run in
+# `priority` order (lower first); a component that raises on a record falls
+# through to the next one.  Each component trains into
+# `model_folder/components/<name>/` and is recorded in
+# `model_folder/model_manifest.json`, so `load_model` routes from the
+# on-disk manifest rather than the current `TrainCfg`.
+#   name     (str) — unique component name (also the artifact subfolder)
+#   type     (str) — {"tabular", "crnn", "phi"}
+#   enable   (bool, True) — train/load this component
+#   priority (int, 0) — fallback order; lower runs first
+# The sub5 default is the single tabular XGB component driven by
+# `TrainCfg.tabular` above.  `TrainCfg.tabular.enable` is kept for the legacy
+# no-components layout (see team_code.train_model / load_model).
+TrainCfg.components = [
+    CFG(
+        name="sub5_tabular_xgb",
+        type="tabular",
+        enable=True,
+        priority=0,
+    ),
+]
+
 # Callbacks & Logging
 TrainCfg.log_step = 20
 TrainCfg.keep_checkpoint_max = 5

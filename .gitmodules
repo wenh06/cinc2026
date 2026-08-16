@@ -1,3 +1,6 @@
 [submodule "official_baseline"]
 	path = official_baseline
 	url = https://github.com/physionetchallenges/python-example-2026.git
+[submodule "third_party/philosophers-stone"]
+	path = third_party/philosophers-stone
+	url = https://github.com/bdsp-core/philosophers-stone.git
