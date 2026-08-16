@@ -608,6 +608,8 @@ def test_model_components() -> None:
     # 3. per-record fallback chain: a failing primary falls through to the next
     good_payload = load_tabular_model(comp_dir / "components" / "sub5_tabular_xgb", TrainCfg, False)
     bad_payload = dict(good_payload)
+    bad_payload["config"] = dict(good_payload["config"])
+    bad_payload["config"]["constant"] = None  # force the booster predict path
     bad_payload["booster"] = None  # run_tabular_model raises on predict
     chain = {
         "components": {"primary_bad": bad_payload, "fallback_good": good_payload},
