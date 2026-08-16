@@ -44,6 +44,27 @@
 
 ---
 
+## Current Status (2026-08-16)
+
+| Item | State |
+|------|-------|
+| Official submissions | **4/10 used**; sub4/2620 (sub3 config unchanged) still pending (≤72 h → ~08-17); best = sub1 0.617 |
+| Docker / CI | **green** for `53a27ce` (run 31933319823): sub5 tabular default entry, Dockerfile MEGA feature-cache bake + `post_docker_build.py` SHA verification, `test_tabular` all pass |
+| **sub5 locked** | small-pool tabular: **XGB + 390-dim `spec`, `include_meta=False`** (`cfg.py` default now `enable=True`). 15-seed validation: I0006-holdout 0.6446±0.0144, S0001-holdout 0.6473±0.0076, I0002-holdout 0.7486±0.0318 (small-pool CRNN = 0.546); adding age/sex/bmi meta *hurts* (~−0.01).  Submission plan: train set = **small**, submit 08-17/18 |
+| D2-large gate | **FAILED / rejected**. Large-pool CAISR-only `arch`+meta XGB = 0.6452±0.0084 vs A1 0.6375 on the full I0006 eval — but the edge is a **rec_year follow-up-window artifact** (see below), not signal |
+| rec_year trap | negative requires ≥6 y follow-up ⇒ records from ~2019+ are almost all positive (2019: 89%, 2020+: 100%) and every local holdout carries this tail. Official val **I0004 = 2004–2016**, test **I0007 = 2011–2017** have no such tail (supplementary demographics), and the official test prevalence 5–15% confirms it. Year-restricted eval (≤2017) collapses arch+meta to 0.5931 and rec_year-only to 0.6410.  **Rule: never ship rec_year; year-restrict any eval of models that use it** |
+| P4 Philosopher's Stone (08-16) | full-signal CWT peaks ~60–70 GB → OOM-killed the 62 GB shared box (bare `Killed`).  Built the **hybrid low-memory wavelet stage** (`utils/phi_preprocess.py`): ≤2 Hz rows computed on the full signal with the upstream non-vectorised `cwt` (bit-identical); >2 Hz rows computed on overlapping 40-min chunks (10-min overlap) and stitched.  Fixed a stitching time-axis bug (`right = t1 - t_end`).  Validation vs the full-signal reference on 3 full nights: latent max|Δ| ≈ 1e-4–5e-4, correlation 1.000000.  **66 s/record, 14.2 GB peak** (vs 2–4 min / 60–70 GB) → full 1,103-record cache running locally, 2 workers, ~10 h |
+| Next gates | Phi PCA-64 + ranker on the I0006 proxy (Δ>0.04 over 0.546) once the cache completes; sub5 submission |
+
+## Next Steps (2026-08-16, deadline 08-20)
+
+1. sub5 submit **08-17/18**, training set = small (config already default; CI green; full 1,103-record end-to-end training running locally for a final dry-run).
+2. Phi cache completes (~08-17 morning) → PCA-64 + XGB ranker on the I0006 holdout (`scripts/phi_pca_ranker.py`), adopt only on Δ>0.04; candidate stream for a later submission, not sub5.
+3. Read sub4/2620 (~08-17): second anchor for the proxy→official discount.
+4. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
+
+---
+
 ## Data Facts
 
 | Fact | Unofficial Phase | Official Phase |
