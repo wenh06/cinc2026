@@ -14,6 +14,7 @@ Set ``PHI_MODEL_DOWNLOAD=0`` to skip the download (e.g. fast local/CI builds).
 """
 
 import hashlib
+import json
 import os
 import sys
 import urllib.request
@@ -32,6 +33,9 @@ PHI_URL = f"https://huggingface.co/{PHI_REPO_ID}/resolve/{PHI_REVISION}/{PHI_CKP
 PHI_SIZE = 2393981880
 PHI_SHA256 = "b2a9b8dab3ae8543241d613a80cd6a85a6dfca15573f897a1096861b3915af87"
 PHI_RETRIES = 3
+
+FEATURE_CACHE_DIR = Path(__file__).resolve().parent / "data" / "spectral_features"
+FEATURE_CACHE_FILES = ("features.csv", "record_meta.csv", "manifest.json")
 
 
 def check_env() -> None:
@@ -54,6 +58,25 @@ def check_submodules() -> None:
             "the Dockerfile must run `git submodule update --init --recursive` before this script."
         )
     print("Philosopher's Stone submodule present ✓")
+
+
+def verify_feature_cache() -> None:
+    """Verify the tabular spectral-feature cache downloaded by the Dockerfile."""
+    missing = [name for name in FEATURE_CACHE_FILES if not (FEATURE_CACHE_DIR / name).is_file()]
+    if missing:
+        raise RuntimeError(f"tabular feature cache absent at {FEATURE_CACHE_DIR} (missing: {missing})")
+    manifest = json.loads((FEATURE_CACHE_DIR / "manifest.json").read_text())
+    for entry in manifest.get("files", []):
+        name = entry.get("name")
+        if name not in FEATURE_CACHE_FILES or name == "manifest.json":
+            continue
+        digest = _sha256(FEATURE_CACHE_DIR / name)
+        if digest != entry.get("sha256"):
+            raise RuntimeError(f"feature cache {name}: SHA-256 mismatch ({digest} != {entry.get('sha256')})")
+    print(
+        f"tabular feature cache verified at {FEATURE_CACHE_DIR} ✓ "
+        f"({manifest.get('n_records')} records, {manifest.get('n_features')} features)"
+    )
 
 
 def download_phi_checkpoint() -> None:
@@ -112,6 +135,10 @@ def _sha256(path: Path) -> str:
 def main() -> None:
     check_env()
     check_submodules()
+    if os.environ.get("FEATURE_CACHE_DOWNLOAD", "1") != "0":
+        verify_feature_cache()
+    else:
+        print("FEATURE_CACHE_DOWNLOAD=0 — skipping feature cache verification.")
     if os.environ.get("PHI_MODEL_DOWNLOAD", "1") != "0":
         download_phi_checkpoint()
     else:
