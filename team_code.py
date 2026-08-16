@@ -58,6 +58,15 @@ import torch
 from pyedflib import EdfReader
 
 from cfg import ModelCfg, TrainCfg, sync_feature_config
+from component_registry import (
+    ARTIFACT_NAMES,
+    COMPONENT_TYPES,
+    component_dir,
+    enabled_components,
+    read_manifest,
+    resolve_feature_cache,
+    write_manifest,
+)
 from const import BINARY_AROUSAL_FEATURE_SET, resolve_feature_pipeline
 from dataset import CINC2026Dataset, build_epoch_features, build_night_features, normalize_epoch_features
 from helper_code import (
@@ -92,7 +101,7 @@ _MODEL_CLASS_MAP: Dict[str, Any] = {
 from trainer import CINC2026Trainer
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-FINAL_MODEL_NAME = "final_model.pth.tar"
+FINAL_MODEL_NAME = ARTIFACT_NAMES["crnn"]
 
 
 def _is_strict_test() -> bool:
@@ -223,6 +232,17 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
             if k not in _skip:
                 setattr(train_config, k, v)
 
+    resolve_feature_cache(train_config)
+    components = enabled_components(train_config)
+    if components:
+        for comp in components:
+            _train_component(comp, train_config, Path(model_folder), verbose)
+        write_manifest(Path(model_folder), components)
+        if verbose:
+            names = ", ".join(str(c.get("name")) for c in components)
+            print(f"[CinC2026] trained components: {names}")
+        return
+
     if tabular_enabled(train_config):
         train_tabular(train_config, Path(model_folder), verbose)
         return
@@ -241,6 +261,35 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
         _train_single_fold(fold_config, Path(model_folder) / f"fold_{k}", verbose)
         if verbose:
             print(f"[CinC2026] fold_{k} saved")
+
+
+def _train_component(comp: Any, train_config: Any, model_folder: Path, verbose: bool) -> None:
+    """Train one component into ``model_folder/components/<name>/``."""
+    name = str(comp.get("name"))
+    ctype = str(comp.get("type"))
+    out_dir = component_dir(model_folder, name)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if verbose:
+        print(f"[CinC2026] training component '{name}' ({ctype})")
+    if ctype == "tabular":
+        train_tabular(train_config, out_dir, verbose)
+    elif ctype == "crnn":
+        folds = train_config.get("folds", None)
+        if folds is None:
+            _train_single_fold(train_config, out_dir, verbose)
+            return
+        if verbose:
+            print(f"[CinC2026] 5-fold ensemble mode — folds: {list(folds)}")
+        for k in folds:
+            fold_config = deepcopy(train_config)
+            fold_config.fold = k
+            _train_single_fold(fold_config, out_dir / f"fold_{k}", verbose)
+            if verbose:
+                print(f"[CinC2026] fold_{k} saved")
+    elif ctype == "phi":
+        raise NotImplementedError("the Phi component is not wired yet — train via scripts/phi_pca_ranker.py first")
+    else:
+        raise ValueError(f"unknown component type: {ctype!r} (expected one of {COMPONENT_TYPES})")
 
 
 def _train_single_fold(train_config: Any, out_folder: Path, verbose: bool) -> None:
@@ -342,20 +391,41 @@ def load_model(model_folder: str, verbose: bool) -> Dict[str, Any]:
     Called by ``run_model.py``.  Falls back to a randomly initialised model
     if the checkpoint file is not found (useful for dry runs).
 
-    Two layouts are supported:
+    Three layouts are supported:
 
+    * component manifest — ``model_folder/model_manifest.json`` written by
+      :func:`train_model` when ``TrainCfg.components`` is configured, returned
+      as ``{"components": {name: payload}, "manifest": ...}``; the routing
+      does NOT depend on the current ``TrainCfg``;
     * single model — ``model_folder/final_model.pth.tar``, returned as
       ``{"model": ..., "train_config": ...}``;
     * 5-fold ensemble — ``model_folder/fold_{k}/final_model.pth.tar``
       (trained with ``TrainCfg.folds`` set), returned as
       ``{"models": [...], "train_config": ..., "ensemble": True}``.
       :func:`run_model` averages the fold probabilities.
+    * legacy tabular — ``{"tabular": ...}`` when ``TrainCfg.tabular.enable``
+      is set and no manifest is present.
     """
     if verbose:
         print("[CinC2026] Loading model ...")
 
+    folder = Path(model_folder)
+    manifest = read_manifest(folder)
+    if manifest is not None:
+        load_cfg = deepcopy(TrainCfg)
+        resolve_feature_cache(load_cfg)
+        components = {}
+        for comp in manifest["components"]:
+            name = str(comp["name"])
+            if verbose:
+                print(f"  Loading component '{name}' ({comp.get('type')})")
+            components[name] = _load_component(comp, folder, load_cfg, verbose)
+        return {"components": components, "manifest": manifest}
+
     if tabular_enabled(TrainCfg):
-        return load_tabular_model(Path(model_folder), TrainCfg, verbose)
+        load_cfg = deepcopy(TrainCfg)
+        resolve_feature_cache(load_cfg)
+        return {"tabular": load_tabular_model(folder, load_cfg, verbose)}
 
     model_name = TrainCfg.model_name
     model_cls = _MODEL_CLASS_MAP[model_name]
@@ -378,7 +448,7 @@ def load_model(model_folder: str, verbose: bool) -> Dict[str, Any]:
             train_configs.append(tc)
         return {"models": models, "train_config": train_configs[0], "ensemble": True}
 
-    model_path = Path(model_folder) / FINAL_MODEL_NAME
+    model_path = folder / FINAL_MODEL_NAME
     if model_path.exists():
         model, train_config = model_cls.from_checkpoint(str(model_path), weights_only=False)
     else:
@@ -390,6 +460,48 @@ def load_model(model_folder: str, verbose: bool) -> Dict[str, Any]:
     model.to(DEVICE)
     model.eval()
     return {"model": model, "train_config": train_config}
+
+
+def _load_component(comp: Dict[str, Any], model_folder: Path, train_config: Any, verbose: bool) -> Any:
+    """Load one component's payload from ``model_folder/components/<name>/``."""
+    name = str(comp.get("name"))
+    ctype = str(comp.get("type"))
+    out_dir = component_dir(model_folder, name)
+    if ctype == "tabular":
+        return load_tabular_model(out_dir, train_config, verbose)
+    if ctype == "crnn":
+        model_name = train_config.model_name
+        model_cls = _MODEL_CLASS_MAP[model_name]
+        fold_dirs = sorted(
+            out_dir.glob("fold_*/" + FINAL_MODEL_NAME),
+            key=lambda p: int(p.parent.name.split("_")[1]),
+        )
+        if fold_dirs:
+            if verbose:
+                print(f"  Loading {len(fold_dirs)}-fold ensemble: {[str(p) for p in fold_dirs]}")
+            models = []
+            train_configs = []
+            for ckpt in fold_dirs:
+                model, tc = model_cls.from_checkpoint(str(ckpt), weights_only=False)
+                model.to(DEVICE)
+                model.eval()
+                models.append(model)
+                train_configs.append(tc)
+            return {"models": models, "train_config": train_configs[0], "ensemble": True}
+        model_path = out_dir / FINAL_MODEL_NAME
+        if model_path.exists():
+            model, tc = model_cls.from_checkpoint(str(model_path), weights_only=False)
+        else:
+            if verbose:
+                print(f"  Warning: {model_path} not found — using random weights.")
+            model = model_cls(config=getattr(ModelCfg, model_name))
+            tc = train_config
+        model.to(DEVICE)
+        model.eval()
+        return {"model": model, "train_config": tc}
+    if ctype == "phi":
+        raise NotImplementedError("the Phi component is not wired yet")
+    raise ValueError(f"unknown component type: {ctype!r} (expected one of {COMPONENT_TYPES})")
 
 
 @torch.no_grad()
@@ -442,6 +554,51 @@ def _sliding_window_inference(
     return int(p >= threshold), p
 
 
+def _run_component(
+    ctype: str,
+    payload: Any,
+    record: Dict[str, str],
+    data_folder: str,
+    verbose: bool,
+) -> Tuple[int, float]:
+    """Run one component payload; component types may raise → fallback chain."""
+    if ctype == "tabular":
+        return run_tabular_model(payload, record, data_folder, verbose)
+    if ctype == "crnn":
+        return _run_crnn_model(payload, record, data_folder, verbose)
+    raise NotImplementedError(f"component type {ctype!r} cannot run yet")
+
+
+def _run_components(
+    model_dict: Dict[str, Any],
+    record: Dict[str, str],
+    data_folder: str,
+    verbose: bool,
+) -> Tuple[int, float]:
+    """Run the component chain in priority order; failures fall through.
+
+    Each record goes to the highest-priority component that succeeds.  If a
+    component raises (e.g. a Phi ranker facing a montage without C4), the
+    next component in priority order gets the record — the sub5 tabular XGB
+    is the terminal fallback because its features are montage-agnostic.
+    """
+    ordered = sorted(
+        model_dict["manifest"]["components"],
+        key=lambda c: (int(c.get("priority", 0)), str(c.get("name", ""))),
+    )
+    last_exc: Optional[Exception] = None
+    for comp in ordered:
+        name = str(comp["name"])
+        ctype = str(comp["type"])
+        try:
+            return _run_component(ctype, model_dict["components"][name], record, data_folder, verbose)
+        except Exception as exc:  # noqa: BLE001 — per-record fallback to the next component
+            last_exc = exc
+            if verbose:
+                print(f"  [component '{name}'] failed on {record}: {exc!r}; falling through")
+    raise RuntimeError(f"all components failed on {record}: {last_exc!r}")
+
+
 def run_model(
     model_dict: Dict[str, Any],
     record: Dict[str, str],
@@ -492,9 +649,20 @@ def _run_model_impl(
     verbose: bool,
 ) -> Tuple[int, float]:
     """Inner implementation of :func:`run_model` (may raise)."""
+    if model_dict.get("components", None) is not None:
+        return _run_components(model_dict, record, data_folder, verbose)
     if model_dict.get("tabular", None) is not None:
-        return run_tabular_model(model_dict, record, data_folder, verbose)
+        return run_tabular_model(model_dict["tabular"], record, data_folder, verbose)
+    return _run_crnn_model(model_dict, record, data_folder, verbose)
 
+
+def _run_crnn_model(
+    model_dict: Dict[str, Any],
+    record: Dict[str, str],
+    data_folder: str,
+    verbose: bool,
+) -> Tuple[int, float]:
+    """CRNN inference for one record (single model or 5-fold ensemble)."""
     model: Any = model_dict.get("model", None)
 
     bids_folder = str(record[HEADERS["bids_folder"]])

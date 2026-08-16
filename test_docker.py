@@ -541,7 +541,7 @@ def test_tabular() -> None:
     model_folder_b = tmp_model_dir / "tabular_test_cache"
     train_tabular(cfg, model_folder_b, verbose=True)
     model_dict_b = load_tabular_model(model_folder_b, cfg, verbose=True)
-    config = model_dict_b["tabular"]["config"]
+    config = model_dict_b["config"]
     meta_cols = ["meta_age", "meta_sex_male", "meta_bmi", "meta_rec_year"]
     assert config["feature_list"][-len(meta_cols) :] == meta_cols, "metadata columns missing from the trained feature list"
     binary, prob = run_tabular_model(model_dict_b, rec, str(tmp_data_dir), verbose=True)
@@ -557,6 +557,83 @@ def test_tabular() -> None:
     ), "metadata columns are NaN at inference — demographics were not filled"
     print(f"  cache-first output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")
     print("test_tabular passed ✓")
+
+
+@func_indicator("testing model components")
+def test_model_components() -> None:
+    """Component registry: manifest round-trip, e2e train/load/run, fallback chain."""
+    from component_registry import MANIFEST_NAME, read_manifest, write_manifest
+    from tabular_pipeline import load_tabular_model, run_tabular_model
+    from team_code import _run_components, load_model, run_model
+
+    raw_dir = tmp_data_dir / "physiological_data"
+    records = find_patients(str(tmp_data_dir / DEMOGRAPHICS_FILE))
+    hits = [
+        r
+        for r in records
+        if (raw_dir / r[HEADERS["site_id"]] / f"{r[HEADERS['bids_folder']]}_ses-{r[HEADERS['session_id']]}.edf").exists()
+    ]
+    assert hits, "no raw record found for the component test"
+    rec = hits[0]
+
+    # 1. manifest round-trip
+    roundtrip_dir = tmp_model_dir / "manifest_roundtrip"
+    roundtrip_dir.mkdir(parents=True, exist_ok=True)
+    write_manifest(
+        roundtrip_dir,
+        [
+            CFG(name="first", type="tabular", enable=True, priority=0),
+            CFG(name="second", type="tabular", enable=False, priority=1),
+        ],
+    )
+    manifest = read_manifest(roundtrip_dir)
+    assert [c["name"] for c in manifest["components"]] == ["first", "second"]
+    assert [c["enable"] for c in manifest["components"]] == [True, False]
+
+    # 2. end-to-end through team_code.train_model / load_model / run_model
+    comp_dir = tmp_model_dir / "components_e2e"
+    old_n = TrainCfg.tabular.xgb_params.n_estimators
+    try:
+        TrainCfg.tabular.xgb_params.n_estimators = 30
+        train_model(str(tmp_data_dir), str(comp_dir), True)
+        assert (comp_dir / MANIFEST_NAME).is_file(), "component manifest not written by train_model"
+        model_dict = load_model(str(comp_dir), True)
+        assert set(model_dict["components"]) == {"sub5_tabular_xgb"}
+        binary, prob = run_model(model_dict, rec, str(tmp_data_dir), True)
+        assert binary in (0, 1) and 0.0 <= prob <= 1.0
+        print(f"  component e2e output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")
+    finally:
+        TrainCfg.tabular.xgb_params.n_estimators = old_n
+
+    # 3. per-record fallback chain: a failing primary falls through to the next
+    good_payload = load_tabular_model(comp_dir / "components" / "sub5_tabular_xgb", TrainCfg, False)
+    bad_payload = dict(good_payload)
+    bad_payload["booster"] = None  # run_tabular_model raises on predict
+    chain = {
+        "components": {"primary_bad": bad_payload, "fallback_good": good_payload},
+        "manifest": {
+            "components": [
+                {"name": "primary_bad", "type": "tabular", "priority": 0},
+                {"name": "fallback_good", "type": "tabular", "priority": 1},
+            ]
+        },
+    }
+    binary_chain, prob_chain = _run_components(chain, rec, str(tmp_data_dir), False)
+    binary_good, prob_good = run_tabular_model(good_payload, rec, str(tmp_data_dir), False)
+    assert (binary_chain, prob_chain) == (binary_good, prob_good), "fallback chain did not recover the fallback output"
+
+    # 4. all components failing raises (the run_model wrapper turns it into (0, 0.5))
+    all_bad = {
+        "components": {"bad": bad_payload},
+        "manifest": {"components": [{"name": "bad", "type": "tabular", "priority": 0}]},
+    }
+    try:
+        _run_components(all_bad, rec, str(tmp_data_dir), False)
+        raise AssertionError("expected RuntimeError when every component fails")
+    except RuntimeError:
+        pass
+
+    print("test_model_components passed ✓")
 
 
 if __name__ == "__main__":
@@ -589,5 +666,6 @@ if __name__ == "__main__":
     test_phi_cache()
     test_phi_inference()
     test_tabular()
+    test_model_components()
     # test_trainer()  # passed, and overriden by test_entry
     test_entry()

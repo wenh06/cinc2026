@@ -269,7 +269,11 @@ def train_tabular(train_config: Any, model_folder: Path, verbose: bool) -> None:
 
 
 def load_tabular_model(model_folder: Path, train_config: Any, verbose: bool) -> Dict[str, Any]:
-    """Load the tabular artefacts into a model_dict consumed by run_model."""
+    """Load the tabular artefacts into a component payload.
+
+    The payload keys mirror what :func:`run_tabular_model` consumes; the legacy
+    ``team_code.load_model`` wraps it as ``{"tabular": payload}``.
+    """
     cfg_path = model_folder / _TABULAR_CONFIG_NAME
     if not cfg_path.exists():
         raise FileNotFoundError(f"tabular config missing at {cfg_path}")
@@ -291,22 +295,21 @@ def load_tabular_model(model_folder: Path, train_config: Any, verbose: bool) -> 
     if verbose:
         print(f"[CinC2026] tabular model loaded ({config.get('model')}, n_train={config.get('n_train')})")
     return {
-        "tabular": {
-            "config": config,
-            "booster": booster,
-            "cache_frame": cache_frame,
-            "cache_lookup": cache_lookup,
-            "rename_rules": rename_rules,
-        }
+        "config": config,
+        "booster": booster,
+        "cache_frame": cache_frame,
+        "cache_lookup": cache_lookup,
+        "rename_rules": rename_rules,
     }
 
 
-def run_tabular_model(model_dict: Dict[str, Any], record: Dict[str, str], data_folder: str, verbose: bool) -> Tuple[int, float]:
-    """Inference for one record through the tabular model (cache-first)."""
+def run_tabular_model(
+    tabular_payload: Dict[str, Any], record: Dict[str, str], data_folder: str, verbose: bool
+) -> Tuple[int, float]:
+    """Inference for one record through a loaded tabular payload (cache-first)."""
     import pandas as pd
 
-    tabular = model_dict["tabular"]
-    config = tabular["config"]
+    config = tabular_payload["config"]
     bids = str(record[HEADERS["bids_folder"]])
     site = str(record[HEADERS["site_id"]])
     session_id = str(record[HEADERS["session_id"]])
@@ -314,11 +317,11 @@ def run_tabular_model(model_dict: Dict[str, Any], record: Dict[str, str], data_f
     demo_file = Path(data_folder) / DEMOGRAPHICS_FILE
     patient_data = load_demographics(str(demo_file), bids, record[HEADERS["session_id"]])
 
-    idx = tabular["cache_lookup"].get(_record_key(bids, session_id))
+    idx = tabular_payload["cache_lookup"].get(_record_key(bids, session_id))
     if idx is None:
-        idx = tabular["cache_lookup"].get(bids)
-    if idx is not None and tabular["cache_frame"] is not None:
-        feat = tabular["cache_frame"].iloc[idx]
+        idx = tabular_payload["cache_lookup"].get(bids)
+    if idx is not None and tabular_payload["cache_frame"] is not None:
+        feat = tabular_payload["cache_frame"].iloc[idx]
     else:
         base = f"{bids}_ses-{session_id}"
         raw_path = Path(data_folder) / "physiological_data" / site / f"{base}.edf"
@@ -326,7 +329,9 @@ def run_tabular_model(model_dict: Dict[str, Any], record: Dict[str, str], data_f
         if not raw_path.exists():
             raise ValueError(f"tabular: no raw EDF for {bids} and cache miss")
         process_record = _import_process_record()
-        _rec, feat_dict, _meta = process_record((dict(patient_data), str(raw_path), str(ann_path), tabular["rename_rules"]))
+        _rec, feat_dict, _meta = process_record(
+            (dict(patient_data), str(raw_path), str(ann_path), tabular_payload["rename_rules"])
+        )
         feat = pd.Series(feat_dict)
 
     x = assemble_record_features(feat, patient_data, config).to_frame().T
@@ -336,9 +341,9 @@ def run_tabular_model(model_dict: Dict[str, Any], record: Dict[str, str], data_f
         if config.get("model") == "xgboost":
             import xgboost as xgb
 
-            margin = tabular["booster"].predict(xgb.DMatrix(x.values, feature_names=config["feature_list"]))
+            margin = tabular_payload["booster"].predict(xgb.DMatrix(x.values, feature_names=config["feature_list"]))
         else:
-            margin = tabular["booster"].predict(x.values)
+            margin = tabular_payload["booster"].predict(x.values)
         p = float(1.0 / (1.0 + np.exp(-margin[0])))
     threshold = float(config.get("threshold", 0.5))
     return int(p >= threshold), p

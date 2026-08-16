@@ -252,6 +252,29 @@ TrainCfg.tabular = CFG(
     threshold=0.5,
 )
 
+# Model-component registry — a submission may bundle several independently
+# trained models with a per-record fallback chain.  Components run in
+# `priority` order (lower first); a component that raises on a record falls
+# through to the next one.  Each component trains into
+# `model_folder/components/<name>/` and is recorded in
+# `model_folder/model_manifest.json`, so `load_model` routes from the
+# on-disk manifest rather than the current `TrainCfg`.
+#   name     (str) — unique component name (also the artifact subfolder)
+#   type     (str) — {"tabular", "crnn", "phi"}
+#   enable   (bool, True) — train/load this component
+#   priority (int, 0) — fallback order; lower runs first
+# The sub5 default is the single tabular XGB component driven by
+# `TrainCfg.tabular` above.  `TrainCfg.tabular.enable` is kept for the legacy
+# no-components layout (see team_code.train_model / load_model).
+TrainCfg.components = [
+    CFG(
+        name="sub5_tabular_xgb",
+        type="tabular",
+        enable=True,
+        priority=0,
+    ),
+]
+
 # Callbacks & Logging
 TrainCfg.log_step = 20
 TrainCfg.keep_checkpoint_max = 5
