@@ -13,6 +13,8 @@ Notes
 * C4-M1 is taken directly when present, otherwise derived as C4 - M1 (I0006
   monopolar), falling back to bare C4.
 * ``sex``: 0 = female, 1 = male (per the upstream README).
+* Failed records are appended one-per-line to ``<cache-dir>/error-list.txt``
+  (fresh per run); the full failure table lands in ``failures.csv`` at the end.
 
 Usage::
 
@@ -20,7 +22,12 @@ Usage::
         --data-root /path/to/training_set_small \
         --checkpoint /path/to/SleepPhilosophersStone.ckpt \
         --cache-dir /path/to/phi_cache \
-        --workers 4
+        --workers 4 [--chunked] [--low-freq-cut 1.0]
+
+``--chunked`` switches to the hybrid wavelet stage in ``utils/
+phi_preprocess.py`` (low frequencies on the full signal, high frequencies in
+overlapping chunks), dropping the peak RAM from ~60-70 GB to ~10 GB so more
+record-workers fit in memory.
 """
 
 from __future__ import annotations
@@ -39,9 +46,25 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from utils.phi_cache import PHI_SCORE_KEYS, _resolve_c4m1, cache_path_for_row, record_key
 
+_CHUNKED = False
+_CHUNK_SECONDS = 2400.0
+_OVERLAP_SECONDS = 600.0
+_LOW_FREQ_CUT = 2.0
 
-def _worker_init(checkpoint: str, device_id: int) -> None:
-    global _MODEL, _CFG
+
+def _worker_init(
+    checkpoint: str,
+    device_id: int,
+    chunked: bool = False,
+    chunk_seconds: float = 2400.0,
+    overlap_seconds: float = 600.0,
+    low_freq_cut: float = 2.0,
+) -> None:
+    global _MODEL, _CFG, _CHUNKED, _CHUNK_SECONDS, _OVERLAP_SECONDS, _LOW_FREQ_CUT
+    _CHUNKED = chunked
+    _CHUNK_SECONDS = chunk_seconds
+    _OVERLAP_SECONDS = overlap_seconds
+    _LOW_FREQ_CUT = low_freq_cut
     phi_src = PROJECT_ROOT / "third_party" / "philosophers-stone" / "src"
     if str(phi_src) not in sys.path:
         sys.path.insert(0, str(phi_src))
@@ -51,6 +74,42 @@ def _worker_init(checkpoint: str, device_id: int) -> None:
     _CFG = Config(model_file=checkpoint)
     _CFG.device = f"cuda:{device_id}" if torch.cuda.is_available() else "cpu"
     _MODEL = load_model(_CFG)
+
+
+def _infer_chunked(signal: np.ndarray, fs: float, age: float, sex: int, file_id: str, collect_heads: bool):
+    """Chunked-wavelet path: same pre/post-processing, low-memory CWT."""
+    import pandas as pd
+    from philosophers_stone.philosopher_utils import _resample_1d, infer_brain_health_from_specs
+    from philosophers_stone.preprocessing_and_spectrograms import preprocess_filter
+
+    from utils.phi_preprocess import compute_wavelet_spectrogram_chunked
+
+    try:
+        eeg_200 = _resample_1d(signal, fs, _CFG.resample_hz)
+        max_len = int(_CFG.hours_pad * 3600 * _CFG.resample_hz)
+        if len(eeg_200) > max_len:
+            eeg_200 = eeg_200[:max_len]
+        signals = pd.DataFrame({_CFG.channel: eeg_200.astype(float)})
+        signals = preprocess_filter(signals, Fs=_CFG.resample_hz, bandpass_high=_CFG.f_high)
+        signal_100 = signals[_CFG.channel].to_numpy()[::2]
+        specs = compute_wavelet_spectrogram_chunked(
+            signal_100,
+            _CFG,
+            chunk_seconds=_CHUNK_SECONDS,
+            overlap_seconds=_OVERLAP_SECONDS,
+            low_freq_cut=_LOW_FREQ_CUT,
+        )
+        return infer_brain_health_from_specs(
+            specs,
+            age=age,
+            sex=sex,
+            file_id=file_id,
+            cfg=_CFG,
+            model=_MODEL,
+            collect_head_outputs=collect_heads,
+        )
+    except Exception as exc:  # noqa: BLE001 — keep the record-level fail semantics
+        return {"status": "error", "error_message": str(exc)}
 
 
 def _process_one(args):
@@ -71,19 +130,22 @@ def _process_one(args):
     if max_seconds is not None:
         signal = signal[: int(max_seconds * fs)]
 
-    from philosophers_stone.philosopher_utils import infer_brain_health
-
     sex = 1 if str(row.get("Sex")).lower().startswith("male") else 0
-    result = infer_brain_health(
-        signal,
-        fs_hz=fs,
-        age=float(row["Age"]),
-        sex=sex,
-        file_id=record_key(row),
-        cfg=_CFG,
-        model=_MODEL,
-        collect_head_outputs=collect_heads,
-    )
+    if _CHUNKED:
+        result = _infer_chunked(signal, fs, float(row["Age"]), sex, record_key(row), collect_heads)
+    else:
+        from philosophers_stone.philosopher_utils import infer_brain_health
+
+        result = infer_brain_health(
+            signal,
+            fs_hz=fs,
+            age=float(row["Age"]),
+            sex=sex,
+            file_id=record_key(row),
+            cfg=_CFG,
+            model=_MODEL,
+            collect_head_outputs=collect_heads,
+        )
     if result.get("status") != "ok":
         return ("fail", record_key(row), str(result.get("error_message")))
 
@@ -110,6 +172,19 @@ def main() -> None:
     parser.add_argument("--cache-dir", required=True)
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument(
+        "--chunked",
+        action="store_true",
+        help="compute the wavelet stage in overlapping chunks (low memory, see utils/phi_preprocess.py)",
+    )
+    parser.add_argument("--chunk-seconds", type=float, default=2400.0, help="chunk length in seconds (chunked mode)")
+    parser.add_argument("--overlap-seconds", type=float, default=600.0, help="overlap dropped at each chunk boundary")
+    parser.add_argument(
+        "--low-freq-cut",
+        type=float,
+        default=2.0,
+        help="frequencies at/below this (Hz) are computed on the full signal",
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument(
         "--max-seconds",
@@ -127,6 +202,8 @@ def main() -> None:
     data_root = Path(args.data_root)
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    error_list = cache_dir / "error-list.txt"
+    error_list.write_text("")  # fresh per run; failures are appended as they occur
     demo = pd.read_csv(data_root / "demographics.csv")
     demo = demo.sort_values(["SiteID", "BidsFolder"], kind="stable").reset_index(drop=True)
     demo["edf_path"] = demo.apply(
@@ -151,7 +228,14 @@ def main() -> None:
         with ProcessPoolExecutor(
             max_workers=args.workers,
             initializer=_worker_init,
-            initargs=(args.checkpoint, args.device_id),
+            initargs=(
+                args.checkpoint,
+                args.device_id,
+                args.chunked,
+                args.chunk_seconds,
+                args.overlap_seconds,
+                args.low_freq_cut,
+            ),
         ) as pool:
             for i, (status, key, err) in enumerate(pool.map(_process_one, tasks)):
                 if status == "ok":
@@ -160,10 +244,19 @@ def main() -> None:
                     n_skip += 1
                 else:
                     failures.append((key, err))
+                    with open(error_list, "a") as fh:
+                        fh.write(f"{key}\n")
                 if (i + 1) % 10 == 0:
                     print(f"processed {i + 1}/{len(tasks)} (ok {n_ok}, skip {n_skip})", flush=True)
     else:
-        _worker_init(args.checkpoint, args.device_id)
+        _worker_init(
+            args.checkpoint,
+            args.device_id,
+            args.chunked,
+            args.chunk_seconds,
+            args.overlap_seconds,
+            args.low_freq_cut,
+        )
         for i, task in enumerate(tasks):
             status, key, err = _process_one(task)
             if status == "ok":
@@ -172,6 +265,8 @@ def main() -> None:
                 n_skip += 1
             else:
                 failures.append((key, err))
+                with open(error_list, "a") as fh:
+                    fh.write(f"{key}\n")
             if (i + 1) % 10 == 0:
                 print(f"processed {i + 1}/{len(tasks)} (ok {n_ok}, skip {n_skip})", flush=True)
 
