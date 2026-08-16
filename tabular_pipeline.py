@@ -22,6 +22,7 @@ so training and inference always see identical columns.
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -40,6 +41,21 @@ _TABULAR_XGB_MODEL_NAME = "tabular_model.json"
 _TABULAR_LGB_MODEL_NAME = "tabular_model.txt"
 
 _EXTRACTOR_PROCESS_RECORD = None
+
+
+def _xgb_n_jobs() -> int:
+    """XGBoost thread count; env-overridable for shared/oversubscribed hosts.
+
+    ``CINC2026_XGB_N_JOBS=-1`` (default) lets XGBoost use all cores — fine on a
+    dedicated machine (the official scorer).  Set it to a small integer when
+    training on a shared box, where ``n_jobs=-1`` thrashes badly (measured
+    >70 s vs 0.34 s for the same fit at ``n_jobs=2``).
+    """
+    raw = os.environ.get("CINC2026_XGB_N_JOBS", "-1").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return -1
 
 
 def tabular_enabled(train_config: Any) -> bool:
@@ -215,7 +231,7 @@ def train_tabular(train_config: Any, model_folder: Path, verbose: bool) -> None:
         params = dict(tab.get("xgb_params") or {})
         random_state = int(params.pop("seed", params.pop("random_state", 0)))
         params.setdefault("tree_method", "hist")
-        clf = xgb.XGBClassifier(random_state=random_state, n_jobs=-1, **params)
+        clf = xgb.XGBClassifier(random_state=random_state, n_jobs=_xgb_n_jobs(), **params)
     elif model_name == "lightgbm":
         import lightgbm as lgb
 
