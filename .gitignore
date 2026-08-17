@@ -145,7 +145,14 @@ checkpoints
 log
 saved_models
 eval_res
-data
+data/*
+!data/spectral_features/
+
+# Vendored philosophers-stone: track only the runtime source and the license.
+third_party/philosophers-stone/*
+!third_party/philosophers-stone/src/
+!third_party/philosophers-stone/LICENSE
+!third_party/philosophers-stone/VENDORED.md
 runs/
 cache/*
 !cache/.keep
