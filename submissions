@@ -283,3 +283,71 @@ Official Phase:
       layout: stage_onehot(6) + stage_probs(5) + arousal_fraction(1) + resp_fractions(5) + limb_fractions(2) + time_encoding(2)
       normalization: none
     hash: 1f84c1c
+  submission 4:
+    submission ID: 2620
+    submission time: 8/14/2026 22:33:30 ET
+    challenge_scores:
+      status: pending — score not yet received (expect ~08-17/18)
+    notes: |
+      sub3 config unchanged re-submission (noise anchor).  Training config is
+      byte-identical to submission 3 (5-fold focal+LS ensemble, O8 early-stop
+      floor); only the submission slot differs.  Purpose: (1) measure
+      official-side evaluation noise via Δ(sub4, sub3), (2) second anchor for
+      the proxy→official discount (currently −0.027 only).  Expected age-cond
+      ≈ 0.611 if the official scorer is stable; a large swing would mean
+      official-side noise is comparable to the local proxy's ±0.02–0.04.
+    model: EpochCRNN_M ×5 (folds [0..4])
+    loss: FocalBCEWithLogitsLoss (γ=2.0) + label_smoothing 0.05
+    train:
+      n_epochs: 100
+      batch_size: 16
+      optimizer: adamw_amsgrad
+      lr: 0.0003
+      max_lr: 0.001
+      lr_scheduler: one_cycle
+      pct_start: 0.3
+      grad_clip: 1.0
+      weight_decay: 0.01
+      label_smoothing: 0.05
+      early_stopping_patience: 15
+      early_stopping_min_epochs: 30
+      pos_weight: 12.16
+      monitor: auroc_age_cond
+      age_adv: false
+      data: official-phase-large (6600 records, 5-fold)
+    features:
+      version: binary_arousal_v1
+      dim: 21
+      layout: stage_onehot(6) + stage_probs(5) + arousal_fraction(1) + resp_fractions(5) + limb_fractions(2) + time_encoding(2)
+      normalization: none
+    hash: ecf8f68
+  submission 5:
+    submission ID: 2656
+    submission time: 8/16/2026 20:02:05 ET
+    challenge_scores:
+      status: pending — processing
+    notes: |
+      First tabular submission: single-component XGBoost on the 390-dim
+      `spec` block of the spectral bank, no demographics/metadata.  Small
+      training pool (1,103 records); deterministic (seed=0).  Local holdouts
+      I0006 0.6446 / S0001 0.6473 / I0002 0.7486; applying the sub3 proxy
+      discount (−0.027) puts the official expectation around 0.61–0.63.
+    model: XGBoost (component sub5_tabular_xgb)
+    train:
+      n_estimators: 500
+      learning_rate: 0.05
+      max_depth: 6
+      subsample: 0.8
+      colsample_bytree: 0.8
+      tree_method: hist
+      seed: 0
+      threshold: 0.5
+      data: official-phase-small (1,103 records)
+    features:
+      version: spectral_bank_v1
+      dim: 390
+      layout: 5 stages × 6 EEG bipolars × (5 band powers + 3 ratios) +
+              5 stages × 6 channels × (kurtosis + Hjorth×3 + edge95)
+      feature_cache: baked D1 features.csv, on-the-fly fallback for misses
+      metadata: none (include_meta=False)
+    hash: f85d78f
