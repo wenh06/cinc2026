@@ -144,3 +144,54 @@ def compute_wavelet_spectrogram_chunked(
     specs_interp = interpolate_wx_2d(specs_raw, ssq_freqs, freq_bins, fs, cfg.fs_time)
     specs = pad_spectrogram(specs_interp, cfg.fs_time, hours_pad=cfg.hours_pad)
     return specs
+
+
+def infer_brain_health_chunked(
+    signal: np.ndarray,
+    fs: float,
+    age: float,
+    sex: int,
+    file_id: str,
+    cfg,
+    model,
+    *,
+    collect_head_outputs: bool = True,
+    chunk_seconds: float = DEFAULT_CHUNK_SECONDS,
+    overlap_seconds: float = DEFAULT_OVERLAP_SECONDS,
+    low_freq_cut: float = DEFAULT_LOW_FREQ_CUT,
+) -> dict:
+    """Run the full Phi pipeline with the low-memory chunked wavelet stage.
+
+    Mirrors the resample/filter/spectrogram steps of the upstream
+    ``infer_brain_health``, but swaps the CWT stage for the chunked version
+    (identical scale grid and interpolation/padding, much lower peak RAM).
+    """
+    import pandas as pd
+
+    _ensure_phi_importable()
+    from philosophers_stone.philosopher_utils import _resample_1d, infer_brain_health_from_specs
+    from philosophers_stone.preprocessing_and_spectrograms import preprocess_filter
+
+    eeg_200 = _resample_1d(signal, fs, cfg.resample_hz)
+    max_len = int(cfg.hours_pad * 3600 * cfg.resample_hz)
+    if len(eeg_200) > max_len:
+        eeg_200 = eeg_200[:max_len]
+    signals = pd.DataFrame({cfg.channel: eeg_200.astype(float)})
+    signals = preprocess_filter(signals, Fs=cfg.resample_hz, bandpass_high=cfg.f_high)
+    signal_100 = signals[cfg.channel].to_numpy()[::2]
+    specs = compute_wavelet_spectrogram_chunked(
+        signal_100,
+        cfg,
+        chunk_seconds=chunk_seconds,
+        overlap_seconds=overlap_seconds,
+        low_freq_cut=low_freq_cut,
+    )
+    return infer_brain_health_from_specs(
+        specs,
+        age=age,
+        sex=sex,
+        file_id=file_id,
+        cfg=cfg,
+        model=model,
+        collect_head_outputs=collect_head_outputs,
+    )

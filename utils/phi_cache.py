@@ -114,9 +114,11 @@ def compute_phi_on_the_fly(
     device_id: int = 0,
     collect_heads: bool = True,
 ) -> Dict[str, object]:
-    """Compute Phi latent/scores for one raw EDF via the array API.
+    """Compute Phi latent/scores for one raw EDF with the chunked-wavelet path.
 
-    Used only as a cache-miss fallback (slow: minutes per recording).
+    Used only as a cache-miss fallback (slow: minutes per recording).  The
+    chunked stage matches the cache extraction in ``scripts/phi_cache_extract.py``
+    and keeps peak RAM low instead of the upstream full-signal CWT.
     """
     eeg = _resolve_c4m1(edf_path)
     if eeg is None:
@@ -129,14 +131,16 @@ def compute_phi_on_the_fly(
     src = phi_root / "src"
     if str(src) not in sys.path:
         sys.path.insert(0, str(src))
-    from philosophers_stone.philosopher_utils import Config, infer_brain_health, load_model
+    from philosophers_stone.philosopher_utils import Config, load_model
 
     cfg = Config(model_file=str(model_file))
     cfg.device = f"cuda:{device_id}" if __import__("torch").cuda.is_available() else "cpu"
     model = load_model(cfg)
-    result = infer_brain_health(
+    from utils.phi_preprocess import infer_brain_health_chunked
+
+    result = infer_brain_health_chunked(
         signal,
-        fs_hz=fs,
+        fs,
         age=float(age),
         sex=int(sex_male),
         file_id=os.path.basename(str(edf_path)),
