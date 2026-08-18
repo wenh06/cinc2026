@@ -20,7 +20,7 @@ FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
 #   docker build --build-arg TORCH_ECG_SOURCE=github .     # use dev branch
 ARG TORCH_ECG_SOURCE=github
 ARG PHI_MODEL_DOWNLOAD=1
-ARG PHI_MEGA_URL=
+ARG PHI_MEGA_URL=https://mega.nz/file/RAoT1RxK#MdMRDO6sMJwdED3rwwrPGgaUb6zn4OGs_ZYndOfMZvg
 
 # Avoid interactive prompts during apt installs
 ENV DEBIAN_FRONTEND=noninteractive
