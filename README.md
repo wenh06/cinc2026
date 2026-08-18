@@ -36,8 +36,10 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
   (`TrainCfg.tabular`; the default is the sub5 small-pool XGBoost on the spectral block, metadata excluded)
   and the model-component registry (`TrainCfg.components`; the default is the single `sub5_tabular_xgb` component).
 - [const.py](const.py): constant definitions.
-- [Dockerfile](Dockerfile): docker file for building the docker image for submissions.  At build time it also
-  downloads the Philosopher's Stone checkpoint and the D1 spectral feature cache (MEGA) into the image.
+- [Dockerfile](Dockerfile): docker file for building the docker image for submissions.  The image bakes the
+  vendored Philosopher's Stone source (`third_party/philosophers-stone/src`) and the D1 spectral feature cache
+  (`data/spectral_features`) directly from the repository — the build needs no `.git`, no MEGA and no
+  HuggingFace access.  The 2.4 GB Phi checkpoint download is opt-in (`PHI_MODEL_DOWNLOAD=1`, CI only).
 - [requirements.txt](requirements.txt), [requirements-docker.txt](requirements-docker.txt), [requirements-no-torch.txt](requirements-no-torch.txt):
   requirements files for different purposes.
 - [create_labels.py](create_labels.py), [evaluate_model.py](evaluate_model.py), [helper_code.py](helper_code.py),
@@ -52,7 +54,7 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
   `run_model` walks the components in priority order with per-record fallback (e.g. Phi → sub5 tabular XGB).
 - [component_registry.py](component_registry.py): model-component registry — manifest format, per-type artifact names,
   component enumeration (priority-ordered) and the baked spectral-feature-cache resolution
-  (`data/spectral_features`, Dockerfile-baked, no network at runtime).
+  (`data/spectral_features`, vendored in the repository, no network at runtime).
 - [tabular_pipeline.py](tabular_pipeline.py): the D2 tabular submission path — 641-dim spectral/physiological feature bank
   (cache-first, on-the-fly extraction from raw PSG + CAISR on misses) + XGBoost/LightGBM.  The fitted feature-column list is
   serialised with the model so training and inference always see identical columns.
@@ -64,8 +66,9 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 - [outputs.py](outputs.py): model output dataclass (`CINC2026Outputs`) handling logits → probability → binary prediction conversion.
 - [test_docker.py](test_docker.py): tests for the Docker submission pipeline (dataset, models, trainer, entry),
   including the tabular path and the component registry / per-record fallback chain.
-- [post_docker_build.py](post_docker_build.py): post-Docker-build setup script — environment sanity check, Philosopher's Stone
-  checkpoint download (size + SHA-256 pinned), and verification of the baked D1 spectral feature cache (`data/spectral_features`).
+- [post_docker_build.py](post_docker_build.py): post-Docker-build setup script — environment sanity check, opt-in
+  Philosopher's Stone checkpoint download (size + SHA-256 pinned, CI only), and verification of the vendored
+  Phi source and D1 spectral feature cache (`data/spectral_features`).
 - [channel_table.csv](channel_table.csv): channel name standardization mapping across recording sites.
 - [submissions](submissions): log file for the submissions, including the key hyperparameters, the scores received,
   commit hash, etc. The log file is updated after each submission.
@@ -77,6 +80,10 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 <details>
 <summary>Click to view the details</summary>
 
+- [data](data): the only exception to the "no data in git" rule.  Only `data/spectral_features` (features.csv,
+  record_meta.csv, manifest.json; ~12 MB) is tracked: it is the precomputed D1 641-dim spectral cache used
+  cache-first by the tabular path.  It must ship with the build context because the official image build has
+  no `.git` and no guaranteed MEGA/HF access; all other `data/` contents (local dataset staging) stay ignored.
 - [official_baseline](official_baseline): the official baseline code, included as a submodule.
 - [model_configs](model_configs): modular per-model configurations (separate config files for `EpochTransformer`, `EpochCRNN`).
 - [models](models): model definitions (`EpochTransformer`, `EpochCRNN` with multiple CNN backbone variants, `ChannelTransformer`, `MultiBranchNet`).
@@ -91,7 +98,12 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
   [Phi latent cache extraction](scripts/phi_cache_extract.py), [D2 tabular baselines](scripts/d2_tabular_baseline.py) /
   [robustness](scripts/d2_tabular_robustness.py) / [large-pool gate](scripts/d2_tabular_large.py), and the
   [Phi PCA-rankers](scripts/phi_pca_ranker.py).
-- [third_party](third_party): vendored third-party code (e.g. the [Philosopher's Stone](third_party/philosophers-stone) brain-health model submodule).
+- [third_party](third_party): vendored third-party code — the [Philosopher's Stone](third_party/philosophers-stone)
+  brain-health model, pinned to commit `0b1b49a8` (CC BY-NC 4.0); only `src/` and `LICENSE` are tracked.  It is
+  no longer a git submodule because the official build context has no `.git`.
+- [.github/workflows](.github/workflows): CI pipelines — the [docker test](.github/workflows/docker-test.yml) builds
+  from a `git archive` context without `.git` (mimicking the official harness) and runs the full pipeline suite
+  with `--network none`.
 
 </details>
 
