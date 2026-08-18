@@ -1,0 +1,18 @@
+{
+  "n_records": 1103,
+  "n_features": 641,
+  "files": [
+    {
+      "name": "features.csv",
+      "sha256": "26919118a4a5a1f8c75ee7b2433164f66fae517411bf26826af78e31729c5730"
+    },
+    {
+      "name": "record_meta.csv",
+      "sha256": "1d7bf29e96a33e85a7e1346e5f7441fe109110abf23dba64dcc7d6dc3a89bf33"
+    },
+    {
+      "name": "manifest.json",
+      "sha256": "7a6daab9f60d6d6aa5837a14488442525e53eea0eed416572983588fb6009b1e"
+    }
+  ]
+}

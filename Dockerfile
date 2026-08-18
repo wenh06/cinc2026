@@ -19,8 +19,7 @@ FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
 #   docker build .                                          # use PyPI release
 #   docker build --build-arg TORCH_ECG_SOURCE=github .     # use dev branch
 ARG TORCH_ECG_SOURCE=github
-ARG FEATURE_CACHE_DOWNLOAD=1
-ARG MEGA_SPECTRAL_FEATURE_CACHE_URL=https://mega.nz/file/lNpg0KSb#Ha4Ywos4bkjXhyrEiF8KVmW4c3TTq0J7z83eF6ZSMWw
+ARG PHI_MODEL_DOWNLOAD=0
 
 # Avoid interactive prompts during apt installs
 ENV DEBIAN_FRONTEND=noninteractive
@@ -37,7 +36,7 @@ ENV TEST_DATA_CACHE_DIR=/challenge/cache/revenger_action_test_data_dir
 ENV GIT_CLONE_DIR=/challenge/cache/git_clone_dir
 
 ENV TF_CPP_MIN_LOG_LEVEL=2
-ENV FEATURE_CACHE_DOWNLOAD=$FEATURE_CACHE_DOWNLOAD
+ENV PHI_MODEL_DOWNLOAD=$PHI_MODEL_DOWNLOAD
 
 
 # ── Diagnostics ───────────────────────────────────────────────────────────────
@@ -122,28 +121,11 @@ RUN aws --version && which aws
 COPY ./ /challenge
 
 
-# ── Initialize git submodules (e.g. third_party/philosophers-stone) ──────────
-# The official runner clones the submission repo WITHOUT --recurse-submodules,
-# so the submodule directories are empty after COPY.  This step fetches them at
-# build time (network is available during the build; see torch-ecg/AWS installs).
-RUN git submodule update --init --recursive
-
-
-# ── Tabular spectral feature cache (D1 641-dim bank, small training set) ─────
-# Downloaded from MEGA at build time (the URL embeds the decryption key) and
-# extracted to /challenge/data/spectral_features.  FEATURE_CACHE_DOWNLOAD=0
-# skips it for fast local builds (the tabular path then falls back to
-# on-the-fly extraction from raw).
-RUN if [ "$FEATURE_CACHE_DOWNLOAD" = "1" ]; then \
-        echo "Downloading tabular spectral feature cache from MEGA …" \
-        && megadl --path /tmp/cinc2026-feature-cache.tar.gz "$MEGA_SPECTRAL_FEATURE_CACHE_URL" \
-        && mkdir -p /challenge/data \
-        && tar -xzf /tmp/cinc2026-feature-cache.tar.gz -C /challenge/data \
-        && rm -f /tmp/cinc2026-feature-cache.tar.gz \
-        && echo "Feature cache extracted to /challenge/data/spectral_features ✓"; \
-    else \
-        echo "FEATURE_CACHE_DOWNLOAD=0 — skipping feature cache download."; \
-    fi
+# ── Vendored third-party source and tabular feature cache ─────────────────────
+# third_party/philosophers-stone/src and data/spectral_features are ordinary
+# tracked files.  The official build context has no .git (git submodules fail
+# there) and no guaranteed MEGA/HF access, so both are baked into the image by
+# the COPY above instead of being fetched at build time.
 
 
 # ── Post-build environment check ─────────────────────────────────────────────

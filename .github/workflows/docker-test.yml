@@ -90,15 +90,25 @@ jobs:
     #   with:
     #     username: ${{ secrets.DOCKERHUB_USERNAME }}
     #     password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Export build context without .git (mimic the official harness)
+      run: |
+        mkdir -p /tmp/cinc2026-build-context
+        git archive --format=tar HEAD | tar -x -C /tmp/cinc2026-build-context
+        test ! -e /tmp/cinc2026-build-context/.git
+        test -f /tmp/cinc2026-build-context/Dockerfile
+        test -f /tmp/cinc2026-build-context/third_party/philosophers-stone/src/philosophers_stone/__init__.py
+        test -f /tmp/cinc2026-build-context/data/spectral_features/features.csv
+        echo "build context exported without .git ✓"
     - name: Build and push (optional) the Docker image
       uses: docker/build-push-action@v7
       with:
-        context: .
+        context: /tmp/cinc2026-build-context
         file: ${{ env.docker_main_filename }}
         push: false
         # load: true
         build-args: |
           TORCH_ECG_SOURCE=${{ env.TORCH_ECG_SOURCE }}
+          PHI_MODEL_DOWNLOAD=1
         tags: |
           ${{ env.DOCKER_HUB_USERNAME }}/${{ env.DOCKER_HUB_REPOSITORY }}:${{ env.DOCKER_IMAGE_TAG }}
 

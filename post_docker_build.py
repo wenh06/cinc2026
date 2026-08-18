@@ -49,15 +49,15 @@ def check_env() -> None:
     print("Environment check passed ✓")
 
 
-def check_submodules() -> None:
-    """Sanity-check that the third_party/philosophers-stone submodule was cloned."""
+def check_phi_source() -> None:
+    """Sanity-check that the vendored philosophers-stone source is present."""
     submodule_root = Path(__file__).resolve().parent / "third_party" / "philosophers-stone"
     if not (submodule_root / "src" / "philosophers_stone" / "__init__.py").exists():
         raise RuntimeError(
             "third_party/philosophers-stone is empty — "
-            "the Dockerfile must run `git submodule update --init --recursive` before this script."
+            "the source is vendored in the repository and must not depend on git submodules."
         )
-    print("Philosopher's Stone submodule present ✓")
+    print("Philosopher's Stone source present ✓")
 
 
 def verify_feature_cache() -> None:
@@ -134,12 +134,12 @@ def _sha256(path: Path) -> str:
 
 def main() -> None:
     check_env()
-    check_submodules()
+    check_phi_source()
     if os.environ.get("FEATURE_CACHE_DOWNLOAD", "1") != "0":
         verify_feature_cache()
     else:
         print("FEATURE_CACHE_DOWNLOAD=0 — skipping feature cache verification.")
-    if os.environ.get("PHI_MODEL_DOWNLOAD", "1") != "0":
+    if os.environ.get("PHI_MODEL_DOWNLOAD", "0") != "0":
         download_phi_checkpoint()
     else:
         print("PHI_MODEL_DOWNLOAD=0 — skipping Philosopher's Stone checkpoint download.")

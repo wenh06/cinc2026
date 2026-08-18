@@ -1,5 +1,5 @@
 # ignore svg, txt, json, html files and the folders final_results
-exclude: '^.*\.(svg|txt|json|html)$|final_results|^build|^dist|official_baseline|webpages|create_labels\.py|helper_code\.py|run_model\.py|train_model\.py|evaluate_model\.py|\.ipynb_checkpoints|fast-test.*\.ipynb'
+exclude: '^.*\.(svg|txt|json|html)$|final_results|^build|^dist|official_baseline|third_party/philosophers-stone|webpages|create_labels\.py|helper_code\.py|run_model\.py|train_model\.py|evaluate_model\.py|\.ipynb_checkpoints|fast-test.*\.ipynb'
 fail_fast: false
 
 repos:

@@ -159,8 +159,23 @@ results
 .github
 
 ##############################################
-# large data / archives (never part of the image)
+# large data / archives (never part of the image; the vendored
+# data/spectral_features cache below IS part of the image)
 ##############################################
-data
+data/*
+!data/spectral_features
+
+# Heavy upstream-only parts of the vendored philosophers-stone checkout are
+# not needed at runtime; keep local image build contexts small.
+third_party/philosophers-stone/sample-data
+third_party/philosophers-stone/paper
+third_party/philosophers-stone/docs
+third_party/philosophers-stone/tests
+third_party/philosophers-stone/docker
+third_party/philosophers-stone/*.pdf
+third_party/philosophers-stone/*.sh
+third_party/philosophers-stone/*.py
+third_party/philosophers-stone/README.md
+third_party/philosophers-stone/pyproject.toml
 *.tar.gz
 *.zip
