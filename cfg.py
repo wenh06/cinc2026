@@ -252,6 +252,43 @@ TrainCfg.tabular = CFG(
     threshold=0.5,
 )
 
+# Phi component — frozen Philosopher's Stone latents -> PCA -> tabular ranker
+# (the sub6 primary).  Latents are cache-first from `cache` (vendored at
+# `data/phi_cache` in the image; resolves automatically when unset); misses are
+# computed on the fly from the raw EDF using the baked checkpoint.  Records
+# without a usable C4-M1 raise at inference and fall through to the next
+# component.  I0006 proxy: lr_pca 0.6825, xgb_pca 0.6807 ± 0.0247 (PCA-64,
+# latents only) — see scripts/phi_pca_ranker.py and tmp/phi_cache/results_pca.json.
+#   model      (str, "xgboost") — {"xgboost", "logistic"}
+#   pca_dim    (int, 64)
+#   include_scores (bool, False) — append the 4 brain-health scores to the PCA features
+#   cache      (str, "") — latent cache dir; resolved to data/phi_cache when unset
+#   checkpoint (str, "") — resolved via MODEL_CACHE_DIR when unset
+#   xgb_params (CFG) / lr_params (CFG) — ranker hyperparameters
+#   threshold  (float, 0.5) — binary cutoff (Reward side only; age-cond is rank-based)
+TrainCfg.phi = CFG(
+    enable=True,
+    model="xgboost",
+    pca_dim=64,
+    include_scores=False,
+    cache="",
+    checkpoint="",
+    xgb_params=CFG(
+        n_estimators=500,
+        learning_rate=0.05,
+        max_depth=6,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        tree_method="hist",
+        seed=0,
+    ),
+    lr_params=CFG(
+        C=1.0,
+        max_iter=2000,
+    ),
+    threshold=0.5,
+)
+
 # Model-component registry — a submission may bundle several independently
 # trained models with a per-record fallback chain.  Components run in
 # `priority` order (lower first); a component that raises on a record falls
@@ -263,15 +300,22 @@ TrainCfg.tabular = CFG(
 #   type     (str) — {"tabular", "crnn", "phi"}
 #   enable   (bool, True) — train/load this component
 #   priority (int, 0) — fallback order; lower runs first
-# The sub5 default is the single tabular XGB component driven by
-# `TrainCfg.tabular` above.  `TrainCfg.tabular.enable` is kept for the legacy
-# no-components layout (see team_code.train_model / load_model).
+# The sub6 default is phi_pca64 (priority 0) with sub5_tabular_xgb as the
+# montage-agnostic fallback (priority 1).  `TrainCfg.tabular.enable` /
+# `TrainCfg.phi.enable` are kept for the legacy no-components layout (see
+# team_code.train_model / load_model).
 TrainCfg.components = [
+    CFG(
+        name="phi_pca64",
+        type="phi",
+        enable=True,
+        priority=0,
+    ),
     CFG(
         name="sub5_tabular_xgb",
         type="tabular",
         enable=True,
-        priority=0,
+        priority=1,
     ),
 ]
 

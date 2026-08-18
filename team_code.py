@@ -75,6 +75,7 @@ from helper_code import (
     load_demographics,
 )
 from models import EpochCRNN, EpochTransformer
+from phi_component import load_phi_model, resolve_phi_cache, run_phi_model, train_phi_model
 from tabular_pipeline import load_tabular_model, run_tabular_model, tabular_enabled, train_tabular
 from utils.scoring_metrics import tune_binary_threshold
 
@@ -233,6 +234,7 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
                 setattr(train_config, k, v)
 
     resolve_feature_cache(train_config)
+    resolve_phi_cache(train_config)
     components = enabled_components(train_config)
     if components:
         for comp in components:
@@ -287,7 +289,7 @@ def _train_component(comp: Any, train_config: Any, model_folder: Path, verbose: 
             if verbose:
                 print(f"[CinC2026] fold_{k} saved")
     elif ctype == "phi":
-        raise NotImplementedError("the Phi component is not wired yet — train via scripts/phi_pca_ranker.py first")
+        train_phi_model(train_config, out_dir, verbose)
     else:
         raise ValueError(f"unknown component type: {ctype!r} (expected one of {COMPONENT_TYPES})")
 
@@ -414,6 +416,7 @@ def load_model(model_folder: str, verbose: bool) -> Dict[str, Any]:
     if manifest is not None:
         load_cfg = deepcopy(TrainCfg)
         resolve_feature_cache(load_cfg)
+        resolve_phi_cache(load_cfg)
         components = {}
         for comp in manifest["components"]:
             name = str(comp["name"])
@@ -500,7 +503,7 @@ def _load_component(comp: Dict[str, Any], model_folder: Path, train_config: Any,
         model.eval()
         return {"model": model, "train_config": tc}
     if ctype == "phi":
-        raise NotImplementedError("the Phi component is not wired yet")
+        return load_phi_model(out_dir, train_config, verbose)
     raise ValueError(f"unknown component type: {ctype!r} (expected one of {COMPONENT_TYPES})")
 
 
@@ -566,6 +569,8 @@ def _run_component(
         return run_tabular_model(payload, record, data_folder, verbose)
     if ctype == "crnn":
         return _run_crnn_model(payload, record, data_folder, verbose)
+    if ctype == "phi":
+        return run_phi_model(payload, record, data_folder, verbose)
     raise NotImplementedError(f"component type {ctype!r} cannot run yet")
 
 

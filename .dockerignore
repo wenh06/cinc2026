@@ -164,6 +164,7 @@ results
 ##############################################
 data/*
 !data/spectral_features
+!data/phi_cache
 
 # Heavy upstream-only parts of the vendored philosophers-stone checkout are
 # not needed at runtime; keep local image build contexts small.
