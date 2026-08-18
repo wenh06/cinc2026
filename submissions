@@ -325,13 +325,19 @@ Official Phase:
     submission ID: 2656
     submission time: 8/16/2026 20:02:05 ET
     challenge_scores:
-      status: pending — processing
+      status: build failed — official build context has no .git, so
+              `git submodule update --init --recursive` failed (Dockerfile RUN 129)
     notes: |
       First tabular submission: single-component XGBoost on the 390-dim
       `spec` block of the spectral bank, no demographics/metadata.  Small
       training pool (1,103 records); deterministic (seed=0).  Local holdouts
       I0006 0.6446 / S0001 0.6473 / I0002 0.7486; applying the sub3 proxy
       discount (−0.027) puts the official expectation around 0.61–0.63.
+      Build failed: the official image build context has no .git, so
+      `git submodule update --init --recursive` failed.  Fixed by vendoring
+      philosophers-stone/src and data/spectral_features and removing
+      git/MEGA/HF from the build.  Failed builds do not consume one of the 10
+      entries, so the retry keeps the sub5 label.
     model: XGBoost (component sub5_tabular_xgb)
     train:
       n_estimators: 500
