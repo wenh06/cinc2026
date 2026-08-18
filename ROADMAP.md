@@ -80,6 +80,24 @@
 3. Read sub4/2620 (~08-17): second anchor for the proxy→official discount.
 4. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
 
+## Current Status (2026-08-18)
+
+| Item | State |
+|------|-------|
+| Official submissions | **4 successful / 10** (failed builds do not consume a slot): sub1 0.617, sub2 0.592, sub3 0.611, **sub4/2620 = 0.602** (Reward −0.086, age-weighted 0.624, AUROC 0.802, AUPRC 0.241).  Δ(sub4, sub3) = **−0.009** — second official-noise anchor for the proxy→official discount.  **sub5/2656 build-failed**: official build context has no `.git`, so the submodule update failed.  **sub5 retry #2693** (commit `d97c502`, tabular-only) submitted 08-17, score pending |
+| Build independence | philosophers-stone is no longer a submodule — `src/` + `LICENSE` vendored and tracked (pinned `0b1b49a8`, CC BY-NC 4.0); `data/spectral_features` and `data/phi_cache` are tracked build inputs (no MEGA/HF guarantee at official build time).  docker-test CI builds from a `git archive` context **without `.git`** to mirror the official harness |
+| Phi checkpoint | baked at build time (`PHI_MODEL_DOWNLOAD=1`): huggingface.co → hf-mirror.com → optional `PHI_MEGA_URL` via megadl; every attempt pinned by size 2,393,981,880 B + SHA-256 |
+| Phi cache | full 1,103-record extraction (chunked path) done: **1,086 ok + 4 resume-skips = 1,090 cached**, **13 failed** = no usable C4-M1 (5 I0002 + 8 S0001).  Those 13 fall through to the tabular XGB at train/run time |
+| **sub6 locked** | Phi PCA-64 ranker (XGBoost, seed 0, include_scores=False) **primary** + sub5 tabular XGB fallback.  I0006-holdout evidence: `lr_pca` **0.6825**, `xgb_pca` **0.6807 ± 0.0247** vs small-pool CRNN 0.546 (Δ > 0.04 gate).  Caveat: only the I0006 proxy was validated; S0001/I0002-holdout directions not yet run.  Runtime cache-miss extraction now uses the **same chunked wavelet path** as cache extraction (equivalent to the full-signal reference: latent max|Δ| ≈ 1e-4–5e-4), keeping the official-perturbation fallback low-memory and consistent |
+
+## Next Steps (2026-08-18, deadline 08-20)
+
+1. Push dev `e2e1caa` to docker-test → green → merge dev into master → submit **sub6** (Phi primary + tabular fallback).
+2. (Optional robustness) S0001-holdout / I0002-holdout Phi ranker directions before the final entries.
+3. Read sub5 retry #2693 and sub6 scores; refresh the proxy→official discount anchors.
+4. Upload the Phi checkpoint to MEGA and wire the link into `PHI_MEGA_URL` as the third build-time source.
+5. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
+
 ---
 
 ## Data Facts
