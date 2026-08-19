@@ -108,12 +108,14 @@
 | MEGA checkpoint | uploaded; baked as the `PHI_MEGA_URL` ARG default in the Dockerfile — third build-time source after huggingface.co / hf-mirror.com |
 | Holdout robustness | S0001-holdout: lr 0.5231, **xgb 0.5873 ± 0.0172**; I0002-holdout: lr 0.8205, **xgb 0.7846 ± 0.0140** (eval n=49/7 pos — noisy).  I0006-holdout remains the official-like anchor (0.6807) |
 | PCA ablation | raw-1024 vs PCA-64 (XGB/LR, 5 seeds): I0006 raw 0.6336 vs **pca64 0.6776** (PCA helps); S0001 **raw 0.6069** vs pca64 0.5873; I0002 **raw 0.8051** vs pca64 0.7795.  PCA-64 is not uniformly better; the 55 BDSP `heads` add little.  sub6 keeps PCA-64; sub7 candidate = raw-XGB or per-site choice |
+| sub7 exploration | PCA-dim sweep (I0006): 32/64/128/256 = 0.5946/0.6776/0.6218/0.6277 → 64 is the sweet spot; +4 scores 0.6680; spectral-only 0.6608; fusion [PCA-64\|\|spec390] 0.6689 — no gain over PCA-64 alone.  Ensembles: LR+XGB **0.6800 ± 0.0125** (half XGB's seed variance), +spec 0.6692/0.6736.  Best single model varies by site (S0001 fusion 0.6270, I0002 LR 0.8205) → per-site betting is risky |
+| **sub7 locked** | Phi ranker = LR+XGB probability average on PCA-64 (`TrainCfg.phi.model="ensemble"`, commit `ae6c38f`), tabular fallback unchanged.  I0006 anchor 0.6800±0.0125 (lr 0.6825 / xgb 0.6776); the ensemble hedges the site-dependent best-model problem and halves seed variance.  raw not adopted: the only comparison past Δ>0.04 favours PCA on the I0006 anchor |
 | Next | read #2693 full breakdown + sub6 #2750 score; sub7 decision (raw vs PCA-64, MLP probe); paper 09-01 |
 
 ## Next Steps (2026-08-19, deadline 08-20)
 
 1. Read sub6 #2750 and #2693 full scores; backfill `submissions` / ROADMAP anchors.
-2. sub7 decision from the ablation (raw-XGB vs PCA-64-XGB, MLP/FT-Transformer probe) — only adopt on Δ>0.04 with seed reruns.
+2. ~~sub7 decision~~ ✅ LR+XGB ensemble adopted (`ae6c38f`); MLP/FT-Transformer probe deferred (low expected gain, deadline pressure).
 3. One final entry remains possible before 08-20; otherwise lock the best of sub1–sub6.
 4. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
 
