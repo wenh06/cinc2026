@@ -36,6 +36,12 @@ ARTIFACT_NAMES: Dict[str, Any] = {
         "xgboost": "tabular_model.json",
         "lightgbm": "tabular_model.txt",
     },
+    "phi": {
+        "config": "config.json",
+        "pca": "pca.pkl",
+        "xgboost": "ranker.json",
+        "logistic": "ranker.pkl",
+    },
 }
 
 
@@ -52,11 +58,15 @@ def enabled_components(train_config: Any) -> List[Any]:
         return []
     tab = train_config.get("tabular", None)
     tabular_on = tab is None or bool(tab.get("enable", False))
+    phi = train_config.get("phi", None)
+    phi_on = phi is None or bool(phi.get("enable", False))
     enabled = []
     for c in comps:
         if not bool(c.get("enable", True)):
             continue
         if str(c.get("type")) == "tabular" and not tabular_on:
+            continue
+        if str(c.get("type")) == "phi" and not phi_on:
             continue
         enabled.append(c)
     enabled.sort(key=lambda c: (int(c.get("priority", 0)), str(c.get("name", ""))))

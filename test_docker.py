@@ -259,6 +259,7 @@ def test_entry() -> None:
     # this test exercises the CRNN entry, so force the CRNN branch for the
     # whole train → load → run sequence (load_model reads the global TrainCfg).
     TrainCfg.tabular.enable = False
+    TrainCfg.phi.enable = False
     echo_write_permission(tmp_data_dir)
     echo_write_permission(tmp_model_dir)
     echo_write_permission(tmp_output_dir)
@@ -566,6 +567,7 @@ def test_tabular() -> None:
 def test_model_components() -> None:
     """Component registry: manifest round-trip, e2e train/load/run, fallback chain."""
     from component_registry import MANIFEST_NAME, read_manifest, write_manifest
+    from phi_component import PHI_SCORE_KEYS
     from tabular_pipeline import load_tabular_model, run_tabular_model
     from team_code import _run_components, load_model, run_model
 
@@ -593,7 +595,24 @@ def test_model_components() -> None:
     assert [c["name"] for c in manifest["components"]] == ["first", "second"]
     assert [c["enable"] for c in manifest["components"]] == [True, False]
 
-    # 2. end-to-end through team_code.train_model / load_model / run_model
+    # 2. end-to-end through team_code.train_model / load_model / run_model.
+    # The CI raw subset has no Phi latents baked in (the mounted /challenge/data
+    # shadows the vendored cache), so write synthetic latents first; the phi
+    # component then trains from cache and the tabular component still extracts
+    # on the fly.  The real extraction path is covered by test_phi_inference.
+    TrainCfg.phi.cache = str(tmp_model_dir / "phi_cache")
+    rng = np.random.default_rng(2026)
+    for r in records:
+        site = str(r[HEADERS["site_id"]])
+        key = f"{r[HEADERS['bids_folder']]}__{r[HEADERS['session_id']]}"
+        out = tmp_model_dir / "phi_cache" / site / f"{key}.npz"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            out,
+            latent=rng.standard_normal(1024).astype(np.float32),
+            **{k: float(rng.random()) for k in PHI_SCORE_KEYS},
+        )
+
     comp_dir = tmp_model_dir / "components_e2e"
     old_n = TrainCfg.tabular.xgb_params.n_estimators
     try:
@@ -601,7 +620,7 @@ def test_model_components() -> None:
         train_model(str(tmp_data_dir), str(comp_dir), True)
         assert (comp_dir / MANIFEST_NAME).is_file(), "component manifest not written by train_model"
         model_dict = load_model(str(comp_dir), True)
-        assert set(model_dict["components"]) == {"sub5_tabular_xgb"}
+        assert set(model_dict["components"]) == {"phi_pca64", "sub5_tabular_xgb"}
         binary, prob = run_model(model_dict, rec, str(tmp_data_dir), True)
         assert binary in (0, 1) and 0.0 <= prob <= 1.0
         print(f"  component e2e output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")

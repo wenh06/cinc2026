@@ -147,6 +147,7 @@ saved_models
 eval_res
 data/*
 !data/spectral_features/
+!data/phi_cache/
 
 # Vendored philosophers-stone: track only the runtime source and the license.
 third_party/philosophers-stone/*

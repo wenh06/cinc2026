@@ -19,7 +19,8 @@ FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
 #   docker build .                                          # use PyPI release
 #   docker build --build-arg TORCH_ECG_SOURCE=github .     # use dev branch
 ARG TORCH_ECG_SOURCE=github
-ARG PHI_MODEL_DOWNLOAD=0
+ARG PHI_MODEL_DOWNLOAD=1
+ARG PHI_MEGA_URL=https://mega.nz/file/RAoT1RxK#MdMRDO6sMJwdED3rwwrPGgaUb6zn4OGs_ZYndOfMZvg
 
 # Avoid interactive prompts during apt installs
 ENV DEBIAN_FRONTEND=noninteractive
@@ -37,6 +38,7 @@ ENV GIT_CLONE_DIR=/challenge/cache/git_clone_dir
 
 ENV TF_CPP_MIN_LOG_LEVEL=2
 ENV PHI_MODEL_DOWNLOAD=$PHI_MODEL_DOWNLOAD
+ENV PHI_MEGA_URL=$PHI_MEGA_URL
 
 
 # ── Diagnostics ───────────────────────────────────────────────────────────────
@@ -121,11 +123,13 @@ RUN aws --version && which aws
 COPY ./ /challenge
 
 
-# ── Vendored third-party source and tabular feature cache ─────────────────────
-# third_party/philosophers-stone/src and data/spectral_features are ordinary
-# tracked files.  The official build context has no .git (git submodules fail
-# there) and no guaranteed MEGA/HF access, so both are baked into the image by
-# the COPY above instead of being fetched at build time.
+# ── Vendored third-party source and feature caches ────────────────────────────
+# third_party/philosophers-stone/src, data/spectral_features and
+# data/phi_cache are ordinary tracked files.  The official build context has
+# no .git (git submodules fail there) and no guaranteed MEGA/HF access, so they
+# are baked into the image by the COPY above instead of being fetched at build
+# time.  The Phi checkpoint itself is still downloaded at build time
+# (PHI_MODEL_DOWNLOAD=1) so cache-miss records can be computed on the fly.
 
 
 # ── Post-build environment check ─────────────────────────────────────────────
