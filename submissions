@@ -327,6 +327,11 @@ Official Phase:
     challenge_scores:
       status: build failed — official build context has no .git, so
               `git submodule update --init --recursive` failed (Dockerfile RUN 129)
+    retry:
+      submission ID: 2693
+      submission time: 8/17/2026 20:32:36 ET
+      status: success (status page) — age-cond AUROC 0.627, Reward −0.299; full breakdown pending email
+      hash: d97c502
     notes: |
       First tabular submission: single-component XGBoost on the 390-dim
       `spec` block of the spectral bank, no demographics/metadata.  Small
@@ -357,3 +362,17 @@ Official Phase:
       feature_cache: baked D1 features.csv, on-the-fly fallback for misses
       metadata: none (include_meta=False)
     hash: f85d78f
+  submission 6:
+    submission ID: 2750
+    submission time: 8/18/2026 20:38:34 ET
+    challenge_scores:
+      status: pending — processing
+    hash: 0b86346
+    notes: |
+      Phi primary + tabular fallback: frozen Philosopher's Stone 1024-d
+      latents (cache-first data/phi_cache, on-the-fly chunked extraction for
+      misses) → PCA-64 → XGBoost (seed=0, include_scores=False), with the
+      sub5 390-dim spectral XGB as the per-record fallback for records without
+      a usable C4-M1.  I0006-holdout: lr 0.6825, xgb 0.6807±0.0247; S0001
+      0.5873±0.0172; I0002 0.7846±0.0140.  Checkpoint baked at build
+      (HF → hf-mirror → MEGA), size+SHA pinned.
