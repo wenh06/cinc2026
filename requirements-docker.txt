@@ -4,7 +4,7 @@ joblib>=1.5.3
 pandas>=2.2.0,<3
 scikit-learn>=1.8.0
 wfdb>=4.3.1
-transformers>=4.48.0
+transformers>=5.15.0
 opencv-python
 torchsummary
 tensorboardX
