@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Phi component: frozen Philosopher's Stone latents -> PCA -> tabular ranker.
 
-This is the sub6 primary model.  Latents are cache-first: records present in
+This is the sub6/sub7 primary model.  Latents are cache-first: records present in
 the mounted data folder read their 1024-dim latent from ``TrainCfg.phi.cache``
 (vendored at ``data/phi_cache`` in the image); cache misses are computed on the
 fly from the raw EDF using the baked checkpoint.  A record without a usable
@@ -194,7 +194,7 @@ def train_phi_model(train_config: Any, model_folder: Path, verbose: bool) -> Non
         with open(model_folder / ARTIFACT_NAMES["phi"]["pca"], "wb") as fh:
             pickle.dump(pca, fh, protocol=4)
 
-        if model_name == "xgboost":
+        if model_name in ("xgboost", "ensemble"):
             import xgboost as xgb
 
             params = dict(phi.get("xgb_params") or {})
@@ -203,12 +203,12 @@ def train_phi_model(train_config: Any, model_folder: Path, verbose: bool) -> Non
             clf = xgb.XGBClassifier(random_state=seed, n_jobs=_xgb_n_jobs(), **params)
             clf.fit(Z, y)
             clf.get_booster().save_model(str(model_folder / ARTIFACT_NAMES["phi"]["xgboost"]))
-        elif model_name == "logistic":
+        if model_name in ("logistic", "ensemble"):
             pipeline = make_pipeline(StandardScaler(), LogisticRegression(**dict(phi.get("lr_params") or {})))
             pipeline.fit(Z, y)
             with open(model_folder / ARTIFACT_NAMES["phi"]["logistic"], "wb") as fh:
                 pickle.dump(pipeline, fh, protocol=4)
-        else:
+        if model_name not in ("xgboost", "logistic", "ensemble"):
             raise ValueError(f"phi: unknown model {model_name!r}")
 
     (model_folder / ARTIFACT_NAMES["phi"]["config"]).write_text(json.dumps(config, indent=2))
@@ -234,15 +234,20 @@ def load_phi_model(model_folder: Path, train_config: Any, verbose: bool) -> Dict
     if config.get("constant") is None:
         with open(model_folder / ARTIFACT_NAMES["phi"]["pca"], "rb") as fh:
             payload["pca"] = pickle.load(fh)
-        if config.get("model") == "xgboost":
+        model_name = config.get("model")
+        if model_name in ("xgboost", "ensemble"):
             import xgboost as xgb
 
             booster = xgb.Booster()
             booster.load_model(str(model_folder / ARTIFACT_NAMES["phi"]["xgboost"]))
-            payload["ranker"] = booster
-        else:
+            payload["ranker"] = {"xgb": booster} if model_name == "ensemble" else booster
+        if model_name in ("logistic", "ensemble"):
             with open(model_folder / ARTIFACT_NAMES["phi"]["logistic"], "rb") as fh:
-                payload["ranker"] = pickle.load(fh)
+                lr_pipeline = pickle.load(fh)
+            if model_name == "ensemble":
+                payload["ranker"]["lr"] = lr_pipeline
+            else:
+                payload["ranker"] = lr_pipeline
     if verbose:
         print(
             f"[CinC2026] phi model loaded ({config.get('model')}, "
@@ -269,7 +274,14 @@ def run_phi_model(payload: Dict[str, Any], record: Dict[str, str], data_folder: 
     if config.get("include_scores"):
         z = np.hstack([z, scores.reshape(1, -1)]).astype(np.float32)
 
-    if config.get("model") == "xgboost":
+    if config.get("model") == "ensemble":
+        import xgboost as xgb
+
+        p_lr = float(payload["ranker"]["lr"].predict_proba(z)[0, 1])
+        margin = payload["ranker"]["xgb"].predict(xgb.DMatrix(z))
+        p_xgb = float(1.0 / (1.0 + np.exp(-margin[0])))
+        p = 0.5 * (p_lr + p_xgb)
+    elif config.get("model") == "xgboost":
         import xgboost as xgb
 
         margin = payload["ranker"].predict(xgb.DMatrix(z))
