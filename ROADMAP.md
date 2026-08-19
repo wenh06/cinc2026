@@ -102,7 +102,7 @@
 
 | Item | State |
 |------|-------|
-| Official submissions | sub5 retry **#2693 success on the status page: age-cond 0.627 / Reward −0.299** (full breakdown pending email) — best official age-cond so far (+0.010 vs sub1).  **sub6 #2750 submitted 08-18 20:38 ET** (master `0b86346`), processing.  Successful entries 5/10 |
+| Official submissions | sub5 retry **#2693 success on the status page: age-cond 0.627 / Reward −0.299** (full breakdown pending email) — best official age-cond so far (+0.010 vs sub1).  **sub6 #2750 submitted 08-18 20:38 ET** (master `0b86346`), processing.  **sub7 #2788 submitted 08-19 14:12 ET** (master `c00b435`, LR+XGB ensemble), processing.  Successful entries 5/10 |
 | Branch state | dev = docker-test = `e936e24`, master = `0b86346` (merge); all pushed to GitHub + Gitee; docker-test CI green for the exact master build (`32199727819`) |
 | Runtime Phi fallback | `compute_phi_on_the_fly` now uses the same chunked wavelet path as cache extraction (shared `infer_brain_health_chunked`); GPU smoke on `sub-I0006179004190__1` reproduces the cached latent **bit-for-bit** (max\|Δ\|=0, corr=1.0) |
 | MEGA checkpoint | uploaded; baked as the `PHI_MEGA_URL` ARG default in the Dockerfile — third build-time source after huggingface.co / hf-mirror.com |
