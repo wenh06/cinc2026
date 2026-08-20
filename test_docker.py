@@ -643,6 +643,9 @@ def test_model_components() -> None:
         assert (comp_dir / MANIFEST_NAME).is_file(), "component manifest not written by train_model"
         model_dict = load_model(str(comp_dir), True)
         assert set(model_dict["components"]) == {"phi_pca64", "sub5_tabular_xgb"}
+        phi_config = model_dict["components"]["phi_pca64"]["config"]
+        assert phi_config.get("features") == "fusion"
+        assert len(phi_config.get("spec_feature_list") or []) > 0
         binary, prob = run_model(model_dict, rec, str(tmp_data_dir), True)
         assert binary in (0, 1) and 0.0 <= prob <= 1.0
         print(f"  component e2e output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")

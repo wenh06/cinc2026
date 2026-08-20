@@ -253,15 +253,18 @@ TrainCfg.tabular = CFG(
 )
 
 # Phi component — frozen Philosopher's Stone latents -> PCA -> tabular ranker
-# (the sub6/sub8/sub9 primary).  Latents are cache-first from `cache` (vendored at
+# (the sub6/sub8/sub9/sub10 primary).  Latents are cache-first from `cache` (vendored at
 # `data/phi_cache` in the image; resolves automatically when unset); misses are
 # computed on the fly from the raw EDF using the baked checkpoint.  Records
 # without a usable C4-M1 raise at inference and fall through to the next
 # component.  I0006 proxy: lr_pca 0.6825, xgb_pca 0.6807 ± 0.0247 (PCA-64,
 # latents only) — see scripts/phi_pca_ranker.py and tmp/phi_cache/results_pca.json.
-#   model      (str, "ensemble") — {"xgboost", "logistic", "ensemble"};
+#   features   (str, "fusion") — "latent" (sub6-9: PCA-64 latents only) or
+#              "fusion" (sub10: [PCA-64 latent || 390-dim spec], single XGB;
+#              I0006 0.6689 / S0001 0.6270 / I0002 0.7538 — the site-robust hedge)
+#   model      (str, "xgboost") — {"xgboost", "logistic", "ensemble"};
 #              "ensemble" averages the LR and XGB probability estimates
-#              (sub7/sub9); "xgboost" was the sub6/sub8 config
+#              (sub7/sub9); LR fusion 0.5533 / LR+XGB fusion 0.6111 — XGB only
 #   pca_dim    (int, 64)
 #   include_scores (bool, False) — append the 4 brain-health scores to the PCA features
 #   cache      (str, "") — latent cache dir; resolved to data/phi_cache when unset
@@ -270,9 +273,10 @@ TrainCfg.tabular = CFG(
 #   threshold  (float, 0.5) — binary cutoff (Reward side only; age-cond is rank-based)
 TrainCfg.phi = CFG(
     enable=True,
-    model="ensemble",
+    model="xgboost",
     pca_dim=64,
     include_scores=False,
+    features="fusion",
     cache="",
     checkpoint="",
     xgb_params=CFG(

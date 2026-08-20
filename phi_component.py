@@ -26,6 +26,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -35,7 +36,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from component_registry import ARTIFACT_NAMES
-from helper_code import DEMOGRAPHICS_FILE, HEADERS, load_demographics
+from helper_code import DEMOGRAPHICS_FILE, HEADERS, load_demographics, load_rename_rules
+from tabular_pipeline import (
+    _import_process_record,
+    _load_feature_cache,
+    _record_key,
+    assemble_record_features,
+)
 from utils.phi_cache import (
     PHI_LATENT_DIM,
     PHI_SCORE_KEYS,
@@ -105,6 +112,43 @@ def _phi_patient_data(demo_file: Path, record: Dict[str, Any]) -> Dict[str, Any]
     )
 
 
+def _spec_sources(train_config: Any) -> Dict[str, Any]:
+    """Spectral-block sources shared with the tabular path (cache-first)."""
+    tab = train_config.get("tabular") or {}
+    frame, lookup = _load_feature_cache(str(tab.get("feature_cache", "") or ""))
+    return {
+        "frame": frame,
+        "lookup": lookup,
+        "rename_rules": load_rename_rules(str(PROJECT_ROOT / "channel_table.csv")),
+        "feature_groups": list(tab.get("feature_groups") or ["spec"]),
+    }
+
+
+def _spectral_row(
+    record: Dict[str, str],
+    patient_data: Dict[str, Any],
+    data_folder: str,
+    sources: Dict[str, Any],
+) -> pd.Series:
+    """One record's full spectral feature row (cache-first; on-the-fly fallback)."""
+    bids = str(record[HEADERS["bids_folder"]])
+    session = str(record[HEADERS["session_id"]])
+    site = str(record[HEADERS["site_id"]])
+    idx = sources["lookup"].get(_record_key(bids, session))
+    if idx is None:
+        idx = sources["lookup"].get(bids)
+    if idx is not None and sources["frame"] is not None:
+        return sources["frame"].iloc[idx]
+    base = f"{bids}_ses-{session}"
+    raw_path = Path(data_folder) / "physiological_data" / site / f"{base}.edf"
+    ann_path = Path(data_folder) / "algorithmic_annotations" / site / f"{base}_caisr_annotations.edf"
+    if not raw_path.is_file():
+        raise ValueError(f"fusion: no raw EDF for {bids} and spectral cache miss")
+    process_record = _import_process_record()
+    _rec, feat_dict, _meta = process_record((dict(patient_data), str(raw_path), str(ann_path), sources["rename_rules"]))
+    return pd.Series(feat_dict)
+
+
 def _compute_record_on_the_fly(
     record: Dict[str, str],
     data_folder: str,
@@ -150,6 +194,9 @@ def train_phi_model(train_config: Any, model_folder: Path, verbose: bool) -> Non
     demo = pd.read_csv(data_root / DEMOGRAPHICS_FILE)
     cache_dir = Path(phi.get("cache")) if str(phi.get("cache", "") or "").strip() else None
     checkpoint = resolve_phi_checkpoint(train_config)
+    fusion = str(phi.get("features", "latent")).lower() == "fusion"
+    spec_sources = _spec_sources(train_config) if fusion else None
+    spec_series: list = []
 
     latent_list: list = []
     score_list: list = []
@@ -161,8 +208,11 @@ def train_phi_model(train_config: Any, model_folder: Path, verbose: bool) -> Non
             latent, scores = _compute_record_on_the_fly(record, str(data_root), checkpoint, cache_dir)
             if not np.isfinite(latent).all():
                 raise ValueError("non-finite latent")
+            spec = _spectral_row(record, record, str(data_root), spec_sources) if fusion else None
             latent_list.append(latent)
             score_list.append(scores)
+            if spec is not None:
+                spec_series.append(spec)
             labels.append(int(bool(row.get(HEADERS["label"], False))))
             if cache_dir is not None and cache_path_for_row(str(cache_dir), row).is_file():
                 n_cache += 1
@@ -189,6 +239,7 @@ def train_phi_model(train_config: Any, model_folder: Path, verbose: bool) -> Non
         "model": model_name,
         "pca_dim": pca_dim,
         "include_scores": include_scores,
+        "features": "fusion" if fusion else "latent",
         "threshold": threshold,
         "constant": None,
         "n_train": int(len(y)),
@@ -204,6 +255,14 @@ def train_phi_model(train_config: Any, model_folder: Path, verbose: bool) -> Non
         config["pca_dim"] = pca_dim
         pca = PCA(n_components=pca_dim, random_state=0)
         Z = pca.fit_transform(X).astype(np.float32)
+        if fusion:
+            spec_frame = pd.DataFrame(spec_series)
+            spec_list = [c for c in spec_frame.columns if not c.startswith("meta_")]
+            groups = spec_sources["feature_groups"]
+            if groups:
+                spec_list = [c for c in spec_list if c.split("_")[0] in groups]
+            Z = np.hstack([Z, spec_frame[spec_list].to_numpy(dtype=np.float32)]).astype(np.float32)
+            config["spec_feature_list"] = spec_list
         if include_scores:
             Z = np.hstack([Z, S]).astype(np.float32)
         config["n_features"] = int(Z.shape[1])
@@ -220,7 +279,11 @@ def train_phi_model(train_config: Any, model_folder: Path, verbose: bool) -> Non
             clf.fit(Z, y)
             clf.get_booster().save_model(str(model_folder / ARTIFACT_NAMES["phi"]["xgboost"]))
         if model_name in ("logistic", "ensemble"):
-            pipeline = make_pipeline(StandardScaler(), LogisticRegression(**dict(phi.get("lr_params") or {})))
+            steps = ([SimpleImputer(strategy="median")] if fusion else []) + [
+                StandardScaler(),
+                LogisticRegression(**dict(phi.get("lr_params") or {})),
+            ]
+            pipeline = make_pipeline(*steps)
             pipeline.fit(Z, y)
             with open(model_folder / ARTIFACT_NAMES["phi"]["logistic"], "wb") as fh:
                 pickle.dump(pipeline, fh, protocol=4)
@@ -247,6 +310,8 @@ def load_phi_model(model_folder: Path, train_config: Any, verbose: bool) -> Dict
         "pca": None,
         "ranker": None,
     }
+    if config.get("features") == "fusion":
+        payload["spec_sources"] = _spec_sources(train_config)
     if config.get("constant") is None:
         with open(model_folder / ARTIFACT_NAMES["phi"]["pca"], "rb") as fh:
             payload["pca"] = pickle.load(fh)
@@ -292,6 +357,16 @@ def run_phi_model(payload: Dict[str, Any], record: Dict[str, str], data_folder: 
         # Raising routes the record to the next component in the chain.
         raise ValueError(f"phi: non-finite latent for {record[HEADERS['bids_folder']]}")
     z = payload["pca"].transform(latent.reshape(1, -1)).astype(np.float32)
+    if config.get("features") == "fusion":
+        demo_file = Path(data_folder) / DEMOGRAPHICS_FILE
+        patient_data = _phi_patient_data(demo_file, record)
+        feat = _spectral_row(record, patient_data, data_folder, payload["spec_sources"])
+        spec_row = assemble_record_features(
+            feat,
+            patient_data,
+            {"feature_list": config["spec_feature_list"], "include_meta": False},
+        )
+        z = np.hstack([z, spec_row.to_numpy(dtype=np.float32).reshape(1, -1)]).astype(np.float32)
     if config.get("include_scores"):
         z = np.hstack([z, scores.reshape(1, -1)]).astype(np.float32)
 
