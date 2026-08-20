@@ -6,118 +6,18 @@
 
 ---
 
-## Current Status (2026-08-12)
+## Timeline (08-12 → 08-19, condensed)
 
-| Item | State |
-|------|-------|
-| Official submissions | 3/10 used: sub1 0.617, sub2 0.592, sub3 **0.611 (confirmed)** — within noise of sub1 (Δ0.006) and +0.019 above sub2; proxy 0.638 discounted −0.027 (same order as the old-config proxy error 0.562 vs 0.59–0.62).  Reward −0.130 is not monotonic in age-cond (sub1 0.617→+0.027, sub2 0.592→−0.013) and is not the primary metric |
-| Official val / test | Unseen sources **I0004** (val) / **I0007** (test); metric = age-conditioned AUROC; leaderboard top ≈ 0.773 |
-| Local proxy | **I0006-holdout** (monopolar + CAISR-OOD ≈ I0004 profile); A1 baseline **0.6375** under the sub3 config; run-to-run noise ±0.02–0.04 → pass line Δ > 0.04 |
-| B-wave | ❌ all refuted: small pool (−0.092), z-score flat (−0.004), n_train not the S0001 driver |
-| C-wave probes | ✅ real I0004 features: arousal ×5–6, **limb ÷100**; I0007 = opposite extreme → per-site empirical harmonisation is the only feature-side fix.  ✅ raw spectra overlap across all 5 sites → no spectral site confound.  ❌ model-side TTA refuted (entropy-min −0.069) |
-| C-wave ComBat | ❌ all 3 variants refuted on the proxy: empirical n=10 recs −0.023 / −0.026, two-pass transductive −0.005.  Distributional repair on real I0004/I0007 is perfect (both land back in training range) yet the proxy score never gains — feature harmonisation cannot recover the drop.  **ComBat out of sub4** |
-| Decision gates | **sub4 = sub3 config unchanged** — O7c λ=0.05 rerun refuted (0.6664 → 0.6199, Δ0.047 ≈ 2× noise floor; seed 1 even below baseline −0.018).  sub4 re-submits sub3's config to (1) measure official-side evaluation noise, (2) give the proxy→official discount a second anchor.  No new method adopted since D1's rerun lesson.  **Next experiment: P3 delta power** (only untried new-information channel; large-raw download is the gate) |
-| D-wave (08-11→12) | O-wave re-tests on the proxy: D1 no-age 0.6616 → rerun 0.6392 (noise, not adopted); D2 night +0.002 ≈ 0; D3 drop −0.050 ❌; D4 aug +0.016 ~.  **O7c** (tanh pairwise + age-stratified sampler): λ=0.05 **+0.029**, λ=0.1 −0.031, λ=0.3 −0.022, λ=0.1×no-age −0.004 — pairwise helps only at minimal weight (consistent with O7a's λ=1 failure).  **warmup-cosine scheduler** +0.009 (0.6469, noise-adjacent).  O7c λ=0.05 **rerun refuted** (0.6664 → 0.6199, Δ0.047; seed 1 below baseline) — pairwise helps only at minimal weight but even that is seed noise; λ=0.05 **not adopted** |
+| Date | Key facts / decisions |
+|------|-----------------------|
+| 08-12 | sub1–3 = 0.617/0.592/0.611. Official val/test = unseen **I0004/I0007**; proxy = **I0006-holdout**, A1 baseline 0.6375, run noise ±0.02–0.04 → pass line Δ>0.04. B/C/D waves all refuted (TTA −0.069, ComBat −0.005…−0.026, O7c rerun 0.6664→0.6199); C1: real I0004 arousal ×5–6 / limb ÷100 → per-site feature harmonisation cannot recover the drop. **sub4 = sub3 config unchanged** (noise anchor + second proxy→official discount anchor) |
+| 08-15 | Leaderboard top 0.847. P3 641-dim spectral extractor done; univariate N1 θ/α 0.63–0.64. D2 tabular I0006-holdout: LGBM 0.655±0.019 / XGB 0.653±0.012, spec-390 block 0.659 — **+0.109 over small-pool CRNN 0.546**. P4 checkpoint baked (SHA-verified), GPU smoke 3/3 ~78 s/record |
+| 08-16 | **sub5 locked** = small-set tabular XGB + 390 spec, no meta (I0006 0.6446±0.0144; meta hurts). D2-large rejected: edge is a **rec_year follow-up-window artifact** (2019+ records almost all positive; official val is 2004–2016) → **rule: never ship rec_year**. P4 full-signal CWT OOM (60–70 GB) → hybrid chunked wavelet stage (max\|Δ\|≈1e-4, 66 s/record, 14.2 GB) |
+| 08-16 night | Component registry + per-record fallback chain (`model_manifest.json`); `resolve_feature_cache` wires the baked spectral cache at runtime; official runtime constraints verified (only `/challenge/model` writable, no network). Records without C4 are dropped (no C3-M2 fallback) |
+| 08-18 | **sub4/2620 = 0.602** (Δ −0.009 vs sub3 — second official-noise anchor). sub5/2656 build-failed (no `.git` in the official build) → philosophers-stone/src + data caches vendored/tracked, CI mirrors via `git archive`. **sub5 retry #2693** submitted. **sub6 locked** = Phi PCA-64 XGB primary + tabular fallback (I0006: lr 0.6825 / xgb 0.6807±0.0247) |
+| 08-19 | **sub5 retry #2693 = 0.627** (best official; Reward −0.299). **sub6 #2750** (master `0b86346`) + **sub7 #2788** (master `c00b435`, LR+XGB on PCA-64, I0006 0.6800±0.0125) submitted. PCA-dim sweep 32/64/128/256 → 64 sweet spot; raw/fusion/scores no gain on I0006. Checkpoint uploaded to MEGA as third build source |
 
 ---
-
-## Current Status (2026-08-15)
-
-| Item | State |
-|------|-------|
-| Official submissions | **4/10 used**: sub1 0.617, sub2 0.592, sub3 0.611, **sub4 ID 2620 (08-14, sub3 config unchanged) — processing, score pending**; sub4 anchors official-side evaluation noise |
-| Leaderboard (08-15) | top age-cond **0.847 (Matcha, small)**; ReCognition 0.795, Leicester Fox 0.774, bashlab_wpi 0.751; Revenger 0.617 |
-| Docker / CI | docker-test **green** (run 31875296556, 20m53s); opt-in Phi inference test on a 30-min segment passes in ~86 s — the full-night wavelet stage (~9–18 GB intermediates) would OOM the 7 GB runner, so CI truncates the signal but pads the spectrogram back to the canonical 11 h |
-| P3 spectral (D1) | 641-dim Ye-2023-style extractor done + deterministic; full 1,103-record `tmp/spectral_features/features.csv`; univariate age-cond AUC: **N1 θ/α 0.63–0.64** (3 sites consistent), N3 delta / edge95 / REM coherence weak positives |
-| D2 tabular (08-15) | small-set I0006-holdout (911 train / 192 eval): **LightGBM on 641-dim 0.655 ± 0.019** (15 seeds, min 0.626), XGB 0.653 ± 0.012, RF 0.576; the 390-dim `spec` block alone 0.659 ± 0.007, CAISR `arch` block 0.576, meta-only LR 0.601 — **+0.109 over the small-pool CRNN (0.546)**; large-pool comparable validation pending |
-| P4 Philosopher's Stone | submodule pinned `0b1b49a`; 2.4 GB checkpoint (SHA `b2a9…5af87`) baked into the image + sha-verified; cache-extract script smoke 3/3 on GPU (~78 s/record); full 1,103-record cache pending AutoDL 5090 (~4–8 h) |
-| Decision gates | sub4 already in; D2-small passed (0.655 ± 0.019 vs 0.546) → next gate = **tabular on the large set** (A1-comparable, 0.6375) before touching the CRNN training loop |
-
-## Next Steps (2026-08-15, deadline 08-20)
-
-1. Read sub4/2620 score (~08-18): Δ(sub4, sub3) = official-side noise, the second anchor for the proxy→official discount (only −0.027 so far).
-2. ~~D2 tabular baseline (small)~~ ✅ **done** (0.655 ± 0.019 vs small-pool CRNN 0.546).  Next: (a) tabular on the LARGE CAISR features — locally computable, directly comparable to A1 0.6375; (b) decide whether to wire the spectral+GBDT pipeline into `team_code.py` (organisers extract from raw on their side) for sub5.
-3. AutoDL 5090: run the full Phi cache; wire cache read + on-the-fly fallback into `team_code.py`.
-4. Candidate methods (single-factor + seed rerun, Δ > 0.04): age-gated ranking loss, CORAL/SAM, survival, CreationTime metadata, raw spectral bank — detail in `tmp/agecond-improvement-research-2026-08-15.md` (uncommitted).
-5. sub5 by 08-17/18 to stay inside the 72 h feedback window; confirm whether final ranking uses the last or the best submission.
-6. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
-
----
-
-## Current Status (2026-08-16)
-
-| Item | State |
-|------|-------|
-| Official submissions | **4/10 used**; sub4/2620 (sub3 config unchanged) still pending (≤72 h → ~08-17); best = sub1 0.617 |
-| Docker / CI | **green** for `53a27ce` (run 31933319823): sub5 tabular default entry, Dockerfile MEGA feature-cache bake + `post_docker_build.py` SHA verification, `test_tabular` all pass |
-| **sub5 locked** | small-pool tabular: **XGB + 390-dim `spec`, `include_meta=False`** (`cfg.py` default now `enable=True`). 15-seed validation: I0006-holdout 0.6446±0.0144, S0001-holdout 0.6473±0.0076, I0002-holdout 0.7486±0.0318 (small-pool CRNN = 0.546); adding age/sex/bmi meta *hurts* (~−0.01).  Submission plan: train set = **small**, submit 08-17/18 |
-| D2-large gate | **FAILED / rejected**. Large-pool CAISR-only `arch`+meta XGB = 0.6452±0.0084 vs A1 0.6375 on the full I0006 eval — but the edge is a **rec_year follow-up-window artifact** (see below), not signal |
-| rec_year trap | negative requires ≥6 y follow-up ⇒ records from ~2019+ are almost all positive (2019: 89%, 2020+: 100%) and every local holdout carries this tail. Official val **I0004 = 2004–2016**, test **I0007 = 2011–2017** have no such tail (supplementary demographics), and the official test prevalence 5–15% confirms it. Year-restricted eval (≤2017) collapses arch+meta to 0.5931 and rec_year-only to 0.6410.  **Rule: never ship rec_year; year-restrict any eval of models that use it** |
-| P4 Philosopher's Stone (08-16) | full-signal CWT peaks ~60–70 GB → OOM-killed the 62 GB shared box (bare `Killed`).  Built the **hybrid low-memory wavelet stage** (`utils/phi_preprocess.py`): ≤2 Hz rows computed on the full signal with the upstream non-vectorised `cwt` (bit-identical); >2 Hz rows computed on overlapping 40-min chunks (10-min overlap) and stitched.  Fixed a stitching time-axis bug (`right = t1 - t_end`).  Validation vs the full-signal reference on 3 full nights: latent max|Δ| ≈ 1e-4–5e-4, correlation 1.000000.  **66 s/record, 14.2 GB peak** (vs 2–4 min / 60–70 GB) → full 1,103-record cache running locally, 2 workers, ~10 h |
-| Next gates | Phi PCA-64 + ranker on the I0006 proxy (Δ>0.04 over 0.546) once the cache completes; sub5 submission |
-
-## Current Status (2026-08-16, night)
-
-| Item | State |
-|------|-------|
-| **Component registry** | submissions can now bundle several independently trained models with a per-record fallback chain.  `TrainCfg.components` (default = the single `sub5_tabular_xgb`) trains each component into `model_folder/components/<name>/` and writes `model_manifest.json`; `load_model` routes from the on-disk manifest (not the current `TrainCfg`), and `run_model` walks components in priority order — a failing primary (e.g. a Phi ranker on a no-C4 montage) falls through to the next, with sub5's tabular XGB as the montage-agnostic terminal fallback.  `TrainCfg.tabular.enable` stays as the legacy master switch; old layouts load unchanged.  `test_docker.test_model_components` covers manifest round-trip, e2e train/load/run and the fallback chain |
-| Feature-cache gap fixed | the Dockerfile-baked MEGA spectral cache was **never wired at runtime** (`feature_cache` default empty).  `component_registry.resolve_feature_cache` now auto-resolves `data/spectral_features/features.csv` when no explicit path is set; official mounts land on `training_data` / `holdout_data`, so `/challenge/data` is not shadowed — train hits the cache, misses (organiser-added records) extract on the fly |
-| Official runtime constraints | verified against `official_baseline` README: data at `/challenge/training_data` + `/challenge/holdout_data`, only `/challenge/model` writable, no network — the registry only writes under `model_folder` and performs no network I/O |
-| Phi full cache | chunked 2 workers running; 5 records failed = **montage without any C4** (5/54 I0002 + 1 S0001, ≈0.5% of 1,103); `_resolve_c4m1` has no fallback for those.  Decision: drop them (NaN rows), no C3-M2 fallback (distribution shift risk).  Data-folder-only rule for training: cache is looked up per mounted row — organisers' add/remove perturbations change the trained model as they expect |
-| Local e2e | full 1,103-record tabular training (on-the-fly) running in tmux `e2e` (~23:15); run_model + evaluate to follow on the produced model |
-
-## Next Steps (2026-08-16, night)
-
-1. Merge dev → master once the component-registry docker-test CI is green (official evaluation pulls master); sub5 submit 08-17/18, training set = small.
-2. Phi cache completes (~08-17 morning) → PCA-64 + XGB ranker on the I0006 holdout, adopt only on Δ>0.04; then add as a `phi` component with the sub5 tabular fallback.
-3. Read sub4/2620 (~08-17): second anchor for the proxy→official discount.
-4. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
-
-## Next Steps (2026-08-16, deadline 08-20)
-
-1. sub5 submit **08-17/18**, training set = small (config already default; CI green; full 1,103-record end-to-end training running locally for a final dry-run).
-2. Phi cache completes (~08-17 morning) → PCA-64 + XGB ranker on the I0006 holdout (`scripts/phi_pca_ranker.py`), adopt only on Δ>0.04; candidate stream for a later submission, not sub5.
-3. Read sub4/2620 (~08-17): second anchor for the proxy→official discount.
-4. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
-
-## Current Status (2026-08-18)
-
-| Item | State |
-|------|-------|
-| Official submissions | **4 successful / 10** (failed builds do not consume a slot): sub1 0.617, sub2 0.592, sub3 0.611, **sub4/2620 = 0.602** (Reward −0.086, age-weighted 0.624, AUROC 0.802, AUPRC 0.241).  Δ(sub4, sub3) = **−0.009** — second official-noise anchor for the proxy→official discount.  **sub5/2656 build-failed**: official build context has no `.git`, so the submodule update failed.  **sub5 retry #2693** (commit `d97c502`, tabular-only) submitted 08-17, score pending |
-| Build independence | philosophers-stone is no longer a submodule — `src/` + `LICENSE` vendored and tracked (pinned `0b1b49a8`, CC BY-NC 4.0); `data/spectral_features` and `data/phi_cache` are tracked build inputs (no MEGA/HF guarantee at official build time).  docker-test CI builds from a `git archive` context **without `.git`** to mirror the official harness |
-| Phi checkpoint | baked at build time (`PHI_MODEL_DOWNLOAD=1`): huggingface.co → hf-mirror.com → optional `PHI_MEGA_URL` via megadl; every attempt pinned by size 2,393,981,880 B + SHA-256 |
-| Phi cache | full 1,103-record extraction (chunked path) done: **1,086 ok + 4 resume-skips = 1,090 cached**, **13 failed** = no usable C4-M1 (5 I0002 + 8 S0001).  Those 13 fall through to the tabular XGB at train/run time |
-| **sub6 locked** | Phi PCA-64 ranker (XGBoost, seed 0, include_scores=False) **primary** + sub5 tabular XGB fallback.  I0006-holdout evidence: `lr_pca` **0.6825**, `xgb_pca` **0.6807 ± 0.0247** vs small-pool CRNN 0.546 (Δ > 0.04 gate).  Caveat: only the I0006 proxy was validated; S0001/I0002-holdout directions not yet run.  Runtime cache-miss extraction now uses the **same chunked wavelet path** as cache extraction (equivalent to the full-signal reference: latent max|Δ| ≈ 1e-4–5e-4), keeping the official-perturbation fallback low-memory and consistent |
-
-## Next Steps (2026-08-18, deadline 08-20)
-
-1. Push dev `e2e1caa` to docker-test → green → merge dev into master → submit **sub6** (Phi primary + tabular fallback).
-2. (Optional robustness) S0001-holdout / I0002-holdout Phi ranker directions before the final entries.
-3. Read sub5 retry #2693 and sub6 scores; refresh the proxy→official discount anchors.
-4. Upload the Phi checkpoint to MEGA and wire the link into `PHI_MEGA_URL` as the third build-time source.
-5. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
-
-## Current Status (2026-08-19)
-
-| Item | State |
-|------|-------|
-| Official submissions | sub5 retry **#2693 success on the status page: age-cond 0.627 / Reward −0.299** (full breakdown pending email) — best official age-cond so far (+0.010 vs sub1).  **sub6 #2750 submitted 08-18 20:38 ET** (master `0b86346`), processing.  **sub7 #2788 submitted 08-19 14:12 ET** (master `c00b435`, LR+XGB ensemble), processing.  Successful entries 5/10 |
-| Branch state | dev = docker-test = `e936e24`, master = `0b86346` (merge); all pushed to GitHub + Gitee; docker-test CI green for the exact master build (`32199727819`) |
-| Runtime Phi fallback | `compute_phi_on_the_fly` now uses the same chunked wavelet path as cache extraction (shared `infer_brain_health_chunked`); GPU smoke on `sub-I0006179004190__1` reproduces the cached latent **bit-for-bit** (max\|Δ\|=0, corr=1.0) |
-| MEGA checkpoint | uploaded; baked as the `PHI_MEGA_URL` ARG default in the Dockerfile — third build-time source after huggingface.co / hf-mirror.com |
-| Holdout robustness | S0001-holdout: lr 0.5231, **xgb 0.5873 ± 0.0172**; I0002-holdout: lr 0.8205, **xgb 0.7846 ± 0.0140** (eval n=49/7 pos — noisy).  I0006-holdout remains the official-like anchor (0.6807) |
-| PCA ablation | raw-1024 vs PCA-64 (XGB/LR, 5 seeds): I0006 raw 0.6336 vs **pca64 0.6776** (PCA helps); S0001 **raw 0.6069** vs pca64 0.5873; I0002 **raw 0.8051** vs pca64 0.7795.  PCA-64 is not uniformly better; the 55 BDSP `heads` add little.  sub6 keeps PCA-64; sub7 candidate = raw-XGB or per-site choice |
-| sub7 exploration | PCA-dim sweep (I0006): 32/64/128/256 = 0.5946/0.6776/0.6218/0.6277 → 64 is the sweet spot; +4 scores 0.6680; spectral-only 0.6608; fusion [PCA-64\|\|spec390] 0.6689 — no gain over PCA-64 alone.  Ensembles: LR+XGB **0.6800 ± 0.0125** (half XGB's seed variance), +spec 0.6692/0.6736.  Best single model varies by site (S0001 fusion 0.6270, I0002 LR 0.8205) → per-site betting is risky |
-| **sub7 locked** | Phi ranker = LR+XGB probability average on PCA-64 (`TrainCfg.phi.model="ensemble"`, commit `ae6c38f`), tabular fallback unchanged.  I0006 anchor 0.6800±0.0125 (lr 0.6825 / xgb 0.6776); the ensemble hedges the site-dependent best-model problem and halves seed variance.  raw not adopted: the only comparison past Δ>0.04 favours PCA on the I0006 anchor |
-| Next | read #2693 full breakdown + sub6 #2750 score; sub7 decision (raw vs PCA-64, MLP probe); paper 09-01 |
-
-## Next Steps (2026-08-19, deadline 08-20)
-
-1. Read sub6 #2750 and #2693 full scores; backfill `submissions` / ROADMAP anchors.
-2. ~~sub7 decision~~ ✅ LR+XGB ensemble adopted (`ae6c38f`); MLP/FT-Transformer probe deferred (low expected gain, deadline pressure).
-3. One final entry remains possible before 08-20; otherwise lock the best of sub1–sub6.
-4. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
 
 ## Current Status (2026-08-20)
 
@@ -297,34 +197,18 @@ Usage plan: full 1,103-record cache on AutoDL 5090 (~4–8 h) → 1024-D latent 
 
 ## Completed Phases — Archive
 
-> History of what was built; canonical results live in the [Experiment Log](#experiment-log).  Key lessons kept inline.
+> Canonical results live in the [Experiment Log](#experiment-log).  One-line verdicts:
 
-**Phase 1 — Data exploration & pipeline** ✅: raw data explored; site heterogeneity documented in `data_reader.py`; **`caisr_prob_*` EDF scale bug found & fixed** (physical-range header 9 instead of 1 → ÷9 + re-normalise); `const.py` / `cfg.py` / `dataset.py` (`build_epoch_features`, stratified split, `collate_fn` with `padding_mask`).
-
-**Phase 2 — Model implementation** ✅: `EpochTransformer` (Pre-LN, sinusoidal PE, masked mean pooling, FiLM; S/M/L = 116K/826K/4.8M).
-
-**Phase 3 — Training loop** ✅: AdamW-AMSGrad lr=3e-4, OneCycleLR, grad_clip 1.0, LS 0.05, early stop patience 20, best-checkpoint saving (hyperparams canonical in the `submissions` file).
-
-**Phase 4 — CAISR-missing fallback** ⏳: 14/780 (unofficial) & 13/1,103 (small) records lack CAISR (no EEG/EOG/EMG).  Current: `(0, 0.5)` fallback in `run_model`; ECG-HRV MLP branch planned, **deferred** (cost ≫ expected gain).
-
-**Phase 5 — Validation & analysis** 🔄: per-site AUROC tracked (gap ~0.05); age-dependence diagnosis → P0; calibration → P2.
-
-**Phase 6 — Alternative models & raw pathway** 🔄: `EpochCRNN` (ResNet-N + BiLSTM, FiLM; S/M/L + backbone variants, all verified).  Foundation models (TimesFM/Chronos/Moirai/MOMENT) **not recommended** (scale mismatch); exceptions: Philosopher's Stone (→ P4), MOMENT-Small.  **Raw pathway reality check**: ~214 GiB for 1,103 records, ~91 M samples/night → recommended path = 30-s epoch spectral augmentation (P3), not raw e2e.
-
-**Phase 7 — Submission pipeline** ✅: config-driven `team_code.py`, official API + `test_docker.py` + `sync_official.py`, data-layout support, mini/reduced subsets, O0 baseline run.
-
-**Phase 8 — Spectral augmentation** 🔴 (→ P3, current priority 08-13): relative delta power, NREM-only, bipolar C3-M2 (derive for I0006); **why relative**: absolute power is hardware-dependent.  Raw-signal access at official inference **confirmed** (the official baseline computes physiological stats in `run_model`).
-
-**Phase 9 — Night-level features** 🔜 (→ P1, closed): `build_night_features` (15 dims) implemented `2658f57`, **O2 failed** → closed.
-
-**Phase 10 — Calibration & robustness**:
-- **10.1** Age diagnosis → P0 (done; age-adv failed O1).
-- **10.2** Calibration → P2 (closed).
-- **10.3** LO-site experiment: held-out age-cond S0001 0.552 / I0006 0.562 / I0002 0.742 (O6, BCE); under sub3 config **A1: 0.594 / 0.638 / 0.703±0.02**.  **"I0002 is the sub1 drop source" refuted** (held-out I0002 ≥ in-distribution OOF).  Caveats: n_train differs across holdouts (N1 control 08-09: S0001's deficit is domain, not volume); models best at ep 2–5 under BCE (floor in sub3 config fixes).  Canonical numbers: log rows **O6/A1/B1/B2/N1**.
-- **10.4** 5-fold ensemble: multi-factor stratified split (label × site × sex × age); `load_model` auto-detects and equal-weight averages; sliding-window inference for long nights (768/384, +0.013); OOF age-cond 0.7169 (conservative).  Log row **O5**.
-- **10.5** sub1 + SessionID bug: `run_model` demographics silently fell back to defaults (int/str type mismatch) — measured +0.08 local; fix `7c1187a`.  **⚠️ Correction 08-06: local-eval artefact** — the official scorer reads ages from its own labels file; sub2 (fixed) 0.592 ≈ sub1 within noise; the real driver is the unseen val source.  *Lesson: pure-numeric IDs are a classic int-vs-str trap — pandas strict-type masks fail silently.*
-- **10.6** O7 loss experiments: O7a pairwise failed; **O7b focal γ=2 + LS 0.05 = new default** (+0.049); sub3 config = 5-fold × focal+LS + early-stop floor (O8, 0.8045 full-train); merged via PR #15, submitted 08-08.  **Empty-batch crash found & fixed** (`4f267fb`): CAISR-missing records → empty epoch matrix → CNN conv-5 crash at small batch sizes; `_filter_missing_caisr()` drops them from train/val.
-- **10.7** Research queue (deprioritised by the cross-site pivot): bs 16→32; `_M`→`_L` capacity.  Only re-test if capacity gains remain after the pivot.
+1. **Data & pipeline**: raw data explored; `caisr_prob_*` EDF scale bug (÷9) found & fixed; site heterogeneity documented.
+2. **Models**: `EpochTransformer` → `EpochCRNN` (ResNet-N + BiLSTM + FiLM) — small models win in this data regime (unofficial: 437K → 0.555 vs 4.8M → 0.491).
+3. **Training loop**: AdamW-AMSGrad, OneCycleLR, grad-clip 1.0, LS 0.05, early-stop floor — canonical in the `submissions` file.
+4. **CAISR-missing fallback**: ~1% records lack CAISR → `(0, 0.5)` fallback; ECG-HRV branch deferred (cost ≫ gain).
+5. **Night-level features** (P1): 15-dim implemented, **O2 failed** → closed.
+6. **Calibration** (P2): pos_weight sweep / temperature / Platt are rank-invariant for age-cond → closed (O3).
+7. **Raw pathway**: ~214 GiB / ~91 M samples per night → epoch-spectral (P3) chosen over raw e2e; official inference has raw-signal access.
+8. **Submission pipeline**: config-driven `team_code.py` + `test_docker.py` + `sync_official.py`.
+9. **Cross-site robustness** (P5): LO-site, ComBat, TTA, z-score, small-pool, feature deletion all refuted (log rows C1–C4, D1–D4, N1); **SessionID int/str trap** (10.5) and empty-batch crash (`4f267fb`) fixed.  *Pure-numeric IDs fail silently under pandas strict-type masks.*
+10. **Ensemble & inference**: 5-fold stratified ensemble (O5), sliding-window 768/384 (+0.013), focal γ=2 + LS (O7b, +0.049 → sub3 config).
 
 ---
 
