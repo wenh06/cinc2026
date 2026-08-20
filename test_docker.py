@@ -415,6 +415,28 @@ def test_phi_cache() -> None:
     print("test_phi_cache passed ✓")
 
 
+@func_indicator("testing Phi demographics lookup")
+def test_phi_demographics_lookup() -> None:
+    """Regression: SessionID must reach ``load_demographics`` with its raw type.
+
+    ``phi_component`` used to cast SessionID to str before the lookup, which
+    never matches the int64 CSV column and silently yields an empty
+    demographics dict -> NaN age -> NaN latent -> constant XGB output on
+    cache-miss records (the official hidden set).  Guard the fix at the
+    helper seam without touching the GPU path.
+    """
+    from phi_component import _phi_patient_data
+
+    demo_file = tmp_data_dir / DEMOGRAPHICS_FILE
+    records = find_patients(str(demo_file))
+    assert records, "no records in the CI data subset"
+    patient_data = _phi_patient_data(demo_file, records[0])
+    assert patient_data, "empty demographics — SessionID type mismatch"
+    age = patient_data.get(HEADERS["age"])
+    assert age is not None and float(age) == float(age), f"invalid age {age!r}"
+    print("test_phi_demographics_lookup passed ✓")
+
+
 @func_indicator("testing Philosopher's Stone inference")
 def test_phi_inference() -> None:
     """Run Phi latent extraction on ONE raw record (CPU; opt-in).
@@ -688,6 +710,7 @@ if __name__ == "__main__":
     test_challenge_metrics()
     test_spectral_features()
     test_phi_cache()
+    test_phi_demographics_lookup()
     test_phi_inference()
     test_tabular()
     test_model_components()
