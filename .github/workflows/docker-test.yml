@@ -28,12 +28,18 @@ env:
   # runner).  It adds a few minutes on the 2-core runner (CPU-only inference).
   CINC2026_TEST_PHI: 1
   download_data_dir: ${{ github.workspace }}/download_data
-  mount_data_dir: /challenge/data
+  # Mount the downloaded datasets exactly where the official harness puts them
+  # (per the official baseline README: /challenge/training_data and
+  # /challenge/holdout_data).  Mounting at /challenge/data would shadow the
+  # vendored caches baked at /challenge/data/{spectral_features,phi_cache} and
+  # silently degrade the cache-first path to on-the-fly extraction.
+  mount_data_dir: /challenge/training_data
+  mount_holdout_data_dir: /challenge/holdout_data
   revenger_data_dir: /challenge/cache/revenger_data_dir
   revenger_model_cache_dir: /challenge/cache/revenger_model_dir
   revenger_model_dir: /challenge/model
   revenger_test_dir: /challenge/test
-  revenger_output_dir: /challenge/output
+  revenger_output_dir: /challenge/holdout_outputs
   docker_main_filename: Dockerfile
   TORCH_ECG_SOURCE: github  # set to "pypi" once the dev features are published
   DOCKER_HUB_USERNAME: wenh06
@@ -191,6 +197,7 @@ jobs:
           -e revenger_output_dir=${{ env.revenger_output_dir }} \
           -e mount_data_dir=${{ env.mount_data_dir }} \
           -v ${{ env.download_data_dir }}:${{ env.mount_data_dir }}:ro \
+          -v ${{ env.download_data_dir }}:${{ env.mount_holdout_data_dir }}:ro \
           -v ${{ env.host_model_dir }}:${{ env.revenger_model_dir }} \
           -v ${{ env.host_output_dir }}:${{ env.revenger_output_dir }} \
           --network none \

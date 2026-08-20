@@ -224,6 +224,11 @@ def train_phi_model(train_config: Any, model_folder: Path, verbose: bool) -> Non
 
     if not latent_list:
         raise RuntimeError("phi: no usable latents for any training record")
+    if fusion and not spec_series:
+        raise RuntimeError(
+            "phi: fusion mode but no spectral features for any training record "
+            "(cache empty and no raw EDFs) — the vendored spectral cache is shadowed?"
+        )
     if verbose:
         print(f"[CinC2026] phi: {len(latent_list)} training rows (cache {n_cache}, on-the-fly {n_miss})")
 

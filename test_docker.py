@@ -637,8 +637,10 @@ def test_model_components() -> None:
 
     comp_dir = tmp_model_dir / "components_e2e"
     old_n = TrainCfg.tabular.xgb_params.n_estimators
+    old_phi_n = TrainCfg.phi.xgb_params.n_estimators
     try:
         TrainCfg.tabular.xgb_params.n_estimators = 30
+        TrainCfg.phi.xgb_params.n_estimators = 200
         train_model(str(tmp_data_dir), str(comp_dir), True)
         assert (comp_dir / MANIFEST_NAME).is_file(), "component manifest not written by train_model"
         model_dict = load_model(str(comp_dir), True)
@@ -651,6 +653,7 @@ def test_model_components() -> None:
         print(f"  component e2e output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")
     finally:
         TrainCfg.tabular.xgb_params.n_estimators = old_n
+        TrainCfg.phi.xgb_params.n_estimators = old_phi_n
 
     # 3. per-record fallback chain: a failing primary falls through to the next
     good_payload = load_tabular_model(comp_dir / "components" / "sub5_tabular_xgb", TrainCfg, False)
