@@ -33,9 +33,11 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 
 - [README.md](README.md): this file, serves as the documentation of the project.
 - [cfg.py](cfg.py): the configuration file for the whole project, including the D2 tabular entry
-  (`TrainCfg.tabular`) and the model-component registry (`TrainCfg.components`; the sub6 default is the
-  `phi_pca64` Phi-latent ensemble ranker (LR+XGBoost, default `TrainCfg.phi.model="ensemble"`) with
-  `sub5_tabular_xgb` as the per-record fallback — see `TrainCfg.phi`).
+  (`TrainCfg.tabular`) and the model-component registry (`TrainCfg.components`; the default is the
+  `phi_pca64` Phi ranker with `sub5_tabular_xgb` as the per-record fallback — see `TrainCfg.phi`).
+  `TrainCfg.phi.features` selects the ranker input: `"fusion"` (default — PCA-64 latent concatenated
+  with the 390-dim spectral block, single XGBoost) or `"latent"` (PCA-64 only, `model` =
+  xgboost/logistic/ensemble).
 - [const.py](const.py): constant definitions.
 - [Dockerfile](Dockerfile): docker file for building the docker image for submissions.  The image bakes the
   vendored Philosopher's Stone source (`third_party/philosophers-stone/src`) and the D1 spectral feature cache
@@ -57,10 +59,11 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 - [component_registry.py](component_registry.py): model-component registry — manifest format, per-type artifact names,
   component enumeration (priority-ordered) and the baked spectral-feature-cache resolution
   (`data/spectral_features`, vendored in the repository, no network at runtime).
-- [phi_component.py](phi_component.py): the sub6 primary component — frozen Philosopher's Stone 1024-d
-  latents (cache-first from the vendored `data/phi_cache`, on-the-fly extraction for misses) → PCA-64 →
-  an LR+XGBoost probability-averaged ensemble.  Records without a usable C4-M1 fall through to the next
-  component at run time.
+- [phi_component.py](phi_component.py): the Phi primary component — frozen Philosopher's Stone 1024-d
+  latents (cache-first from the vendored `data/phi_cache`, on-the-fly extraction for misses) → PCA-64,
+  optionally fused with the 390-dim spectral block (`TrainCfg.phi.features="fusion"`), ranked by
+  XGBoost / logistic regression / their probability-averaged ensemble.  Records without a usable C4-M1
+  fall through to the next component at run time.
 - [tabular_pipeline.py](tabular_pipeline.py): the D2 tabular submission path — 641-dim spectral/physiological feature bank
   (cache-first, on-the-fly extraction from raw PSG + CAISR on misses) + XGBoost/LightGBM.  The fitted feature-column list is
   serialised with the model so training and inference always see identical columns.
