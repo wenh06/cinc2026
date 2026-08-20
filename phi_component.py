@@ -89,6 +89,22 @@ def _load_latent_npz(path: Path) -> Tuple[np.ndarray, np.ndarray]:
     return latent, scores
 
 
+def _phi_patient_data(demo_file: Path, record: Dict[str, Any]) -> Dict[str, Any]:
+    """Demographics for one record; SessionID must stay raw (int64 in the CSV).
+
+    ``load_demographics`` compares the SessionID column strictly, so a str
+    never matches the int64 values and silently yields an empty dict, which
+    propagates a NaN age into the brain-health model and produces an all-NaN
+    latent on cache-miss records (the official hidden set).  Only the raw
+    SessionID is valid here.
+    """
+    return load_demographics(
+        str(demo_file),
+        record[HEADERS["bids_folder"]],
+        record[HEADERS["session_id"]],
+    )
+
+
 def _compute_record_on_the_fly(
     record: Dict[str, str],
     data_folder: str,
@@ -108,7 +124,7 @@ def _compute_record_on_the_fly(
     if not raw_path.is_file():
         raise ValueError(f"phi: no raw EDF for {bids} and cache miss")
     demo_file = Path(data_folder) / DEMOGRAPHICS_FILE
-    patient_data = load_demographics(str(demo_file), bids, session)
+    patient_data = _phi_patient_data(demo_file, record)
     try:
         age = float(patient_data.get(HEADERS["age"], np.nan))
     except (TypeError, ValueError):
@@ -270,6 +286,11 @@ def run_phi_model(payload: Dict[str, Any], record: Dict[str, str], data_folder: 
         Path(payload["checkpoint"]),
         payload.get("cache_dir"),
     )
+    if not np.isfinite(latent).all():
+        # Never feed NaN into the ranker: XGBoost turns an all-NaN row into a
+        # constant probability, which silently collapses age-cond to ~0.5.
+        # Raising routes the record to the next component in the chain.
+        raise ValueError(f"phi: non-finite latent for {record[HEADERS['bids_folder']]}")
     z = payload["pca"].transform(latent.reshape(1, -1)).astype(np.float32)
     if config.get("include_scores"):
         z = np.hstack([z, scores.reshape(1, -1)]).astype(np.float32)

@@ -102,7 +102,7 @@
 
 | Item | State |
 |------|-------|
-| Official submissions | sub5 retry **#2693 success on the status page: age-cond 0.627 / Reward −0.299** (full breakdown pending email) — best official age-cond so far (+0.010 vs sub1).  **sub6 #2750 submitted 08-18 20:38 ET** (master `0b86346`), processing.  Successful entries 5/10 |
+| Official submissions | sub5 retry **#2693 success on the status page: age-cond 0.627 / Reward −0.299** (full breakdown pending email) — best official age-cond so far (+0.010 vs sub1).  **sub6 #2750 submitted 08-18 20:38 ET** (master `0b86346`), processing.  **sub7 #2788 submitted 08-19 14:12 ET** (master `c00b435`, LR+XGB ensemble), processing.  Successful entries 5/10 |
 | Branch state | dev = docker-test = `e936e24`, master = `0b86346` (merge); all pushed to GitHub + Gitee; docker-test CI green for the exact master build (`32199727819`) |
 | Runtime Phi fallback | `compute_phi_on_the_fly` now uses the same chunked wavelet path as cache extraction (shared `infer_brain_health_chunked`); GPU smoke on `sub-I0006179004190__1` reproduces the cached latent **bit-for-bit** (max\|Δ\|=0, corr=1.0) |
 | MEGA checkpoint | uploaded; baked as the `PHI_MEGA_URL` ARG default in the Dockerfile — third build-time source after huggingface.co / hf-mirror.com |
@@ -117,6 +117,22 @@
 1. Read sub6 #2750 and #2693 full scores; backfill `submissions` / ROADMAP anchors.
 2. ~~sub7 decision~~ ✅ LR+XGB ensemble adopted (`ae6c38f`); MLP/FT-Transformer probe deferred (low expected gain, deadline pressure).
 3. One final entry remains possible before 08-20; otherwise lock the best of sub1–sub6.
+4. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
+
+## Current Status (2026-08-20)
+
+| Item | State |
+|------|-------|
+| **Critical bug (fixed `63c2838`)** | `phi_component` cast SessionID to str before `load_demographics`; the int64 CSV column never matches → empty demographics → NaN age → NaN latent on every cache-miss record. Training was unaffected (cache-first), but the official hidden set is all cache-miss → the ranker silently output a constant probability → age-cond ≈ 0.5. **sub6 #2750 / sub7 #2788 are likely sitting at ~0.5 for this reason** (emails pending). Fix: raw SessionID + inference-time `isfinite` guard (NaN latent now falls through to the tabular XGB) + `test_phi_demographics_lookup` regression test |
+| **sub8 = sub6 + fix** | Phi PCA-64 XGB (`model="xgboost"`) primary + sub5 tabular fallback; dev `63c2838` pushed to GitHub + Gitee, docker-test CI running. Local GPU e2e: cache-miss on-the-fly output == cache-hit output (prob 0.5002 == 0.5002). Green → merge master → submit |
+| **sub9 = sub7 + fix** | flip `TrainCfg.phi.model` back to `"ensemble"` after sub8 is submitted; same CI → master → submit flow |
+| fusion | [PCA-64 latent \|\| 390 spec] single XGB (I0006 0.6689 / S0001 0.6270 / I0002 0.7538) deferred to sub10 if slots remain; LR fusion 0.5533 / LR+XGB fusion 0.6111 — XGB only |
+
+## Next Steps (2026-08-20, deadline 08-21 11:59 Beijing)
+
+1. Wait for docker-test CI green → submit **sub8** (sub6 config + fix).
+2. Flip `TrainCfg.phi.model = "ensemble"` → CI → merge master → submit **sub9** (sub7 config + fix).
+3. Read sub6/sub7 scores when they land; confirm the ~0.5 diagnosis and the sub8/sub9 fix attribution.
 4. Paper 09-01 (4-page preprint); keep the cross-site robustness narrative.
 
 ---

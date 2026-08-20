@@ -65,6 +65,17 @@ def main() -> None:
     parser.add_argument("--seeds", type=str, default="0,1,2,3,4")
     parser.add_argument("--pca-dim", type=int, default=64)
     parser.add_argument(
+        "--holdout-site",
+        choices=["I0006", "S0001", "I0002"],
+        default="I0006",
+        help="site left out for evaluation; the other two sites train",
+    )
+    parser.add_argument(
+        "--out-json",
+        default=None,
+        help="output JSON path (default: tmp/phi_cache/results_pca_<site>.json)",
+    )
+    parser.add_argument(
         "--scores",
         action="store_true",
         help="append the four brain-health scores to the PCA features",
@@ -88,10 +99,11 @@ def main() -> None:
     y = demo["Cognitive_Impairment"].astype(int).to_numpy()
     ages = demo["Age"].astype(float).to_numpy()
     sites = demo["SiteID"].astype(str).to_numpy()
-    train_mask = np.isin(sites, ["S0001", "I0002"])
-    eval_mask = sites == "I0006"
+    holdout = args.holdout_site
+    eval_mask = sites == holdout
+    train_mask = ~eval_mask
     if int(eval_mask.sum()) == 0:
-        print("  no cached I0006 records yet — nothing to score; exiting (cache still filling).")
+        print(f"  no cached {holdout} records yet — nothing to score; exiting (cache still filling).")
         return
     print(
         f"train {int(train_mask.sum())} (pos {int(y[train_mask].sum())}), "
@@ -138,11 +150,12 @@ def main() -> None:
             f"{name:12s} mean {vals.mean():.4f} ± {summary[name]['std']:.4f}  Δ vs small-CRNN: {vals.mean() - SMALL_CRNN_REF:+.4f}"
         )
 
-    OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
-    with open(OUT_JSON, "w") as f:
+    out_json = Path(args.out_json) if args.out_json else PROJECT_ROOT / "tmp" / "phi_cache" / f"results_pca_{holdout}.json"
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_json, "w") as f:
         json.dump(
             {
-                "split": {"train": "S0001+I0002", "eval": "I0006"},
+                "split": {"train": "+".join(sorted(set(sites[train_mask]))), "eval": holdout},
                 "n_cached": n_cached,
                 "pca_dim": int(z_train.shape[1] - (len(score_cols) if args.scores else 0)),
                 "include_scores": bool(args.scores),
@@ -153,7 +166,7 @@ def main() -> None:
             f,
             indent=2,
         )
-    print(f"\nresults saved to {OUT_JSON}")
+    print(f"\nresults saved to {out_json}")
 
 
 if __name__ == "__main__":
