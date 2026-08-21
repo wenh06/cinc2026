@@ -14,6 +14,7 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 <!-- toc -->
 
 - [The Conference](#the-conference)
+- [Submission Status](#submission-status)
 - [Description of the files/folders(modules)](#description-of-the-filesfoldersmodules)
 
 <!-- tocstop -->
@@ -23,6 +24,18 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 [Conference Website](https://cinc2026.org/) |
 [Unofficial Phase Leaderboard](https://docs.google.com/spreadsheets/d/e/2PACX-1vSseLxrUufQX34SPCjF1rN_0Zaew6Jvvree2KYxZ17AF0BqPpEGAtvEPcdmCpLhn3j3neDFhRrhCXWE/pubhtml) |
 [Official Phase Leaderboard](https://docs.google.com/spreadsheets/d/e/2PACX-1vQPPM17Qj6d1JCzn3fPhGE1CE0QI45z-KYkNVs5mainy7nQNEQV2FAfYNsvGq0y2P5aMVZ_Y7rNs070/pubhtml)
+
+## Submission Status
+
+The official phase is **closed** (final submission deadline 2026-08-20 23:59 GMT).  Our final entry is the
+**fusion ranker** — the PCA-64 Philosopher's Stone latent concatenated with the 390-dim spectral block,
+ranked by a single XGBoost, with the sub5 tabular XGB as the per-record fallback — submitted as
+**#2877** (2026-08-20 19:22 ET, inside the deadline); its score is pending.  The remaining official-phase
+submissions (#2750, #2788, #2806, #2854) are also still being processed.
+
+Next milestones: choose the test-set algorithm and submit the challenge 4-page preprint by
+**2026-08-27**; the final 4-page paper is due in early October.  The full submission history — configs,
+scores and commit hashes — lives in [submissions](submissions).
 
 ## Description of the files/folders(modules)
 

@@ -2,11 +2,11 @@
 
 > **Task**: Predict future cognitive impairment (MCI / Alzheimer's / dementia) from a single polysomnography night using the George B. Moody PhysioNet Challenge 2026 dataset.
 >
-> **Team**: Revenger  |  **Key Deadlines**: Official phase final 2026-08-20  |  CinC 2026 Madrid 2026-09-20–23
+> **Team**: Revenger  |  **Official phase: closed** (2026-08-20 23:59 GMT; final entry #2877)  |  **Next**: test-set algorithm + 4-page preprint by 2026-08-27  |  CinC 2026 Madrid 2026-09-20–23
 
 ---
 
-## Timeline (08-12 → 08-19, condensed)
+## Timeline (08-12 → 08-20, condensed)
 
 | Date | Key facts / decisions |
 |------|-----------------------|
@@ -16,25 +16,30 @@
 | 08-16 night | Component registry + per-record fallback chain (`model_manifest.json`); `resolve_feature_cache` wires the baked spectral cache at runtime; official runtime constraints verified (only `/challenge/model` writable, no network). Records without C4 are dropped (no C3-M2 fallback) |
 | 08-18 | **sub4/2620 = 0.602** (Δ −0.009 vs sub3 — second official-noise anchor). sub5/2656 build-failed (no `.git` in the official build) → philosophers-stone/src + data caches vendored/tracked, CI mirrors via `git archive`. **sub5 retry #2693** submitted. **sub6 locked** = Phi PCA-64 XGB primary + tabular fallback (I0006: lr 0.6825 / xgb 0.6807±0.0247) |
 | 08-19 | **sub5 retry #2693 = 0.627** (best official; Reward −0.299). **sub6 #2750** (master `0b86346`) + **sub7 #2788** (master `c00b435`, LR+XGB on PCA-64, I0006 0.6800±0.0125) submitted. PCA-dim sweep 32/64/128/256 → 64 sweet spot; raw/fusion/scores no gain on I0006. Checkpoint uploaded to MEGA as third build source |
+| 08-20 | **Official phase closed.** Fusion CI green (`32404281560`; mounts aligned with the official `/challenge/training_data` + `/challenge/holdout_data` layout). **Final entry #2877 submitted 08-20 19:22 ET** (23:22 GMT, inside the 23:59 GMT deadline) = fusion [PCA-64 latent \|\| 390 spec] single XGB + sub5 tabular fallback. sub8 #2806 (08-19 23:49 ET) / sub9 #2854 (08-20 13:02 ET) received earlier; sub6/sub7 scores still pending |
 
 ---
 
-## Current Status (2026-08-20)
+## Current Status (2026-08-21)
 
 | Item | State |
 |------|-------|
+| **Official phase** | **Closed** — the 2026-08-20 23:59 GMT deadline has passed.  Final entry **#2877** (08-20 19:22 ET) = fusion config, submitted inside the deadline; scores pending |
 | **Critical bug (fixed `63c2838`)** | `phi_component` cast SessionID to str before `load_demographics`; the int64 CSV column never matches → empty demographics → NaN age → NaN latent on every cache-miss record. Training was unaffected (cache-first), but the official hidden set is all cache-miss → the ranker silently output a constant probability → age-cond ≈ 0.5. **sub6 #2750 / sub7 #2788 are likely sitting at ~0.5 for this reason** (emails pending). Fix: raw SessionID + inference-time `isfinite` guard (NaN latent now falls through to the tabular XGB) + `test_phi_demographics_lookup` regression test |
 | **sub8 = sub6 + fix** | Phi PCA-64 XGB (`model="xgboost"`) primary + sub5 tabular fallback; master `8d2e03d`, **submitted as #2806 (08-19 23:49 ET)**. Local GPU e2e: cache-miss on-the-fly output == cache-hit output (prob 0.5002 == 0.5002) |
 | **sub9 = sub7 + fix** | Phi PCA-64 LR+XGB ensemble + the SessionID fix; master `84e42c1`, **submitted as #2854 (08-20 13:02 ET)** |
-| **fusion** | [PCA-64 latent \|\| 390 spec] single XGB (`7e0e00f`, `TrainCfg.phi.features="fusion"`) — the site-robust hedge; real-component holdout I0006 0.6961 / S0001 0.6371 / I0002 0.7692 (LR fusion 0.5533 / LR+XGB fusion 0.6111 — XGB only); CI running |
+| **fusion** | [PCA-64 latent \|\| 390 spec] single XGB (`7e0e00f`, `TrainCfg.phi.features="fusion"`) — the site-robust hedge; real-component holdout I0006 0.6961 / S0001 0.6371 / I0002 0.7692 (LR fusion 0.5533 / LR+XGB fusion 0.6111 — XGB only). First CI failed on a CI-only mount bug (datasets were mounted at `/challenge/data`, shadowing the vendored caches); fixed in `15831f5` — the workflow now mounts at the official `/challenge/training_data` + `/challenge/holdout_data`, and fusion training raises loudly if no spectral rows exist. **CI `32404281560` green.** `dev`/`docker-test` at `15831f5`; `master` held at `f44d5a8` (the CI-mount alignment touches only the workflow, so the official build does not need it) |
 
-## Next Steps (2026-08-20, deadline 08-20 23:59 GMT = 08-21 07:59 Beijing)
+## Next Steps (2026-08-21 — official phase closed)
 
 1. ~~sub8 (sub6 config + fix)~~ ✅ submitted as **#2806**.
 2. ~~sub9 (sub7 config + fix)~~ ✅ submitted as **#2854**.
-3. Wait for the fusion docker-test CI → green → merge master → submit the final entry.
-4. Read sub6/sub7 scores when they land; confirm the ~0.5 diagnosis and the fix attribution.
-5. Paper 08-27 (challenge 4-page preprint); keep the cross-site robustness narrative.
+3. ~~Submit the final fusion entry~~ ✅ submitted as **#2877** (08-20 19:22 ET, before the 23:59 GMT deadline).
+4. Read the pending scores — sub6 #2750 / sub7 #2788 / sub8 #2806 / sub9 #2854 / #2877 — confirm the SessionID ~0.5 diagnosis for sub6/sub7 and where the final fusion entry lands.
+5. Sync `master` with `dev` (`15831f5`) once the post-phase picture is stable (repo hygiene only; the workflow fix does not affect the official build).
+6. Choose the test-set algorithm by **08-27**.
+7. Challenge 4-page preprint by **08-27**; keep the cross-site robustness narrative.
+8. Final paper early Oct; CinC 2026 Madrid 09-20→23.
 
 ---
 
@@ -146,11 +151,12 @@ Usage plan: full 1,103-record cache on AutoDL 5090 (~4–8 h) → 1024-D latent 
 | 2 | 2407 | 08-05 | sub1 training + SessionID fix + sliding-window inference | 0.592 | −0.013 | ≈ sub1 within noise — official scorer uses its own ages |
 | 3 | 2471 | 08-08 | 5-fold focal+LS ensemble, early-stop floor (O8) | 0.611 | −0.130 | within noise of sub1 (Δ0.006), +0.019 vs sub2; proxy 0.638 discounted −0.027 |
 | 4 | 2620 | 08-14 | sub3 config unchanged (noise anchor) | 0.602 | −0.086 | Δ(sub4, sub3) = −0.009 — second official-noise anchor |
-| 5 | 2693 | 08-17 | small-set tabular XGB, 390-dim `spec`, no meta (2656 build-failed first) | 0.627 | −0.299 | status page; best official age-cond so far (full breakdown pending) |
+| 5 | 2693 | 08-17 | small-set tabular XGB, 390-dim `spec`, no meta (2656 build-failed first) | 0.627 | −0.299 | scored 08-21 — AUROC 0.670 / AUPRC 0.157 / Acc 0.065 / F1 0.122; best official age-cond so far |
 | 6 | 2750 | 08-18 | Phi PCA-64 XGB primary + tabular fallback | — | — | processing; pre-SessionID-fix |
 | 7 | 2788 | 08-19 | Phi PCA-64 LR+XGB ensemble + tabular fallback | — | — | processing; pre-SessionID-fix |
 | 8 | 2806 | 08-19 | sub6 config + SessionID fix | — | — | processing |
 | 9 | 2854 | 08-20 | sub7 config + SessionID fix | — | — | processing |
+| 10 | 2877 | 08-20 | fusion [PCA-64 latent \|\| 390 spec] single XGB + sub5 tabular fallback | — | — | **final official entry** (19:22 ET, pre-deadline); processing |
 
 > Official val = unseen **I0004**; leaderboard top ≈ 0.847 (08-15).  Full detail in `submissions`.
 
@@ -330,7 +336,7 @@ Usage plan: full 1,103-record cache on AutoDL 5090 (~4–8 h) → 1024-D latent 
 | Date | Event |
 |------|-------|
 | 2026-06-03 | Official phase begins |
-| 2026-08-20 23:59 GMT (08-21 07:59 Beijing) | **Official phase final submission deadline** |
+| 2026-08-20 23:59 GMT (08-21 07:59 Beijing) | **Official phase final submission deadline — phase closed** (final entry #2877 at 08-20 19:22 ET) |
 | 2026-08-27 | Deadline to choose the test-set algorithm; **challenge 4-page preprint deadline** (CinC's own preprint date is 09-01) |
 | 2026-09-20–23 | **CinC 2026, Madrid** |
 | Early Oct 2026 | Challenge final 4-page paper (earlier than CinC's 10-10 proceedings deadline) |
