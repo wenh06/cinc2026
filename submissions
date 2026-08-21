@@ -287,7 +287,13 @@ Official Phase:
     submission ID: 2620
     submission time: 8/14/2026 22:33:30 ET
     challenge_scores:
-      status: pending — score not yet received (expect ~08-17/18)
+      Reward: -0.086
+      age_cond_AUROC: 0.602
+      age_weighted_AUROC: 0.624
+      AUROC: 0.802
+      AUPRC: 0.241
+      Accuracy: 0.500
+      F-measure: 0.176
     notes: |
       sub3 config unchanged re-submission (noise anchor).  Training config is
       byte-identical to submission 3 (5-fold focal+LS ensemble, O8 early-stop
@@ -296,6 +302,8 @@ Official Phase:
       the proxy→official discount (currently −0.027 only).  Expected age-cond
       ≈ 0.611 if the official scorer is stable; a large swing would mean
       official-side noise is comparable to the local proxy's ±0.02–0.04.
+      OFFICIAL RESULT: age-cond 0.602, Δ(sub4, sub3) = −0.009 — official-side
+      noise is small; the proxy→official discount stays ≈ −0.027.
     model: EpochCRNN_M ×5 (folds [0..4])
     loss: FocalBCEWithLogitsLoss (γ=2.0) + label_smoothing 0.05
     train:
@@ -330,7 +338,15 @@ Official Phase:
     retry:
       submission ID: 2693
       submission time: 8/17/2026 20:32:36 ET
-      status: success (status page) — age-cond AUROC 0.627, Reward −0.299; full breakdown pending email
+      status: scored — age-cond AUROC 0.627, Reward −0.299
+      challenge_scores:
+        age_conditioned_AUROC: 0.627
+        reward: -0.299
+        age_weighted_AUROC: 0.618
+        AUROC: 0.670
+        AUPRC: 0.157
+        accuracy: 0.065
+        f_measure: 0.122
       hash: d97c502
     notes: |
       First tabular submission: single-component XGBoost on the 390-dim
@@ -376,3 +392,77 @@ Official Phase:
       a usable C4-M1.  I0006-holdout: lr 0.6825, xgb 0.6807±0.0247; S0001
       0.5873±0.0172; I0002 0.7846±0.0140.  Checkpoint baked at build
       (HF → hf-mirror → MEGA), size+SHA pinned.
+  submission 7:
+    submission ID: 2788
+    submission time: 8/19/2026 14:12:25 ET
+    challenge_scores:
+      status: pending — processing
+    hash: c00b435
+    notes: |
+      Phi primary + tabular fallback, with the ranker upgraded from
+      XGBoost-only to an LR+XGBoost probability average on PCA-64
+      (TrainCfg.phi.model="ensemble", default).  Ablation basis: I0006-holdout
+      ens 0.6800±0.0125 vs xgb 0.6776±0.0251 and lr 0.6825 — near-best mean
+      with half the seed variance, hedging the site-dependent best-model
+      problem.  raw-1024 rejected: the only comparison past Δ>0.04 favours
+      PCA-64 on the I0006 anchor (+0.044).
+  submission 8:
+    submission ID: 2806
+    submission time: 8/19/2026 23:49:41 ET
+    challenge_scores:
+      status: pending — processing
+    hash: 8d2e03d
+    notes: |
+      sub6 config (Phi PCA-64 XGB primary + sub5 tabular fallback) re-submitted
+      with the SessionID fix.  The phi on-the-fly path used to cast SessionID
+      to str, which never matches the int64 demographics column -> empty
+      demographics -> NaN age -> all-NaN latent on every cache-miss record
+      (the official hidden set), silently collapsing age-cond to ~0.5.  Fix:
+      raw SessionID + inference-time isfinite guard (NaN latent falls through
+      to the tabular XGB) + test_phi_demographics_lookup regression test.
+  submission 9:
+    submission ID: 2854
+    submission time: 8/20/2026 13:02:28 ET
+    challenge_scores:
+      status: pending — processing
+    hash: 84e42c1
+    notes: |
+      sub7 config (Phi PCA-64 LR+XGB probability ensemble) + the SessionID
+      fix.  Local verification: cache-miss on-the-fly output == cache-hit
+      (0.2569 == 0.2569); full 1,103-record sanity in-sample age-cond 0.970;
+      three-site holdout through the shipped component — I0006 0.6825 /
+      S0001 0.5444 / I0002 0.8205 (13 no-C4 records correctly fall through
+      to the tabular XGB).
+  submission 10:
+    submission ID: 2877
+    submission time: 8/20/2026 19:22:18 ET
+    challenge_scores:
+      status: pending — processing
+    hash: TBD — fill in from the processed-entry email
+    notes: |
+      Final official entry (inside the 23:59 GMT deadline).  Fusion ranker:
+      PCA-64 Philosopher's Stone latent concatenated with the 390-dim
+      spectral block (TrainCfg.phi.features="fusion", model="xgboost") →
+      single XGBoost, with the sub5 tabular XGB as the per-record fallback.
+      Holdout through the shipped component — I0006 0.6961 / S0001 0.6371 /
+      I0002 0.7692 (LR fusion 0.5533 / LR+XGB fusion 0.6111 — XGB only).
+      First CI failed on a CI-only mount bug (datasets mounted at
+      /challenge/data, shadowing the vendored caches); fixed in 15831f5 —
+      workflow mounts aligned with the official /challenge/training_data +
+      /challenge/holdout_data layout, fusion training raises loudly if no
+      spectral rows exist; CI 32404281560 green.
+    model: XGBoost on [PCA-64 latent || 390-dim spec] + sub5 tabular fallback
+    train:
+      n_estimators: 500
+      learning_rate: 0.05
+      max_depth: 6
+      subsample: 0.8
+      colsample_bytree: 0.8
+      tree_method: hist
+      seed: 0
+      data: official-phase-small (1,103 records; caches first, on-the-fly for misses)
+    features:
+      version: phi_fusion_v1
+      dim: 454 (64 PCA latent + 390 spec)
+      layout: PCA-64 frozen Phi latent || 390-dim spectral block
+      feature_cache: baked data/phi_cache + data/spectral_features, on-the-fly fallback
