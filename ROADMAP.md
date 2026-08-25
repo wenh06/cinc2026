@@ -6,7 +6,7 @@
 
 ---
 
-## Timeline (08-12 → 08-20, condensed)
+## Timeline (08-12 → 08-25, condensed)
 
 | Date | Key facts / decisions |
 |------|-----------------------|
@@ -14,32 +14,29 @@
 | 08-15 | Leaderboard top 0.847. P3 641-dim spectral extractor done; univariate N1 θ/α 0.63–0.64. D2 tabular I0006-holdout: LGBM 0.655±0.019 / XGB 0.653±0.012, spec-390 block 0.659 — **+0.109 over small-pool CRNN 0.546**. P4 checkpoint baked (SHA-verified), GPU smoke 3/3 ~78 s/record |
 | 08-16 | **sub5 locked** = small-set tabular XGB + 390 spec, no meta (I0006 0.6446±0.0144; meta hurts). D2-large rejected: edge is a **rec_year follow-up-window artifact** (2019+ records almost all positive; official val is 2004–2016) → **rule: never ship rec_year**. P4 full-signal CWT OOM (60–70 GB) → hybrid chunked wavelet stage (max\|Δ\|≈1e-4, 66 s/record, 14.2 GB) |
 | 08-16 night | Component registry + per-record fallback chain (`model_manifest.json`); `resolve_feature_cache` wires the baked spectral cache at runtime; official runtime constraints verified (only `/challenge/model` writable, no network). Records without C4 are dropped (no C3-M2 fallback) |
-| 08-18 | **sub4/2620 = 0.602** (Δ −0.009 vs sub3 — second official-noise anchor). sub5/2656 build-failed (no `.git` in the official build) → philosophers-stone/src + data caches vendored/tracked, CI mirrors via `git archive`. **sub5 retry #2693** submitted. **sub6 locked** = Phi PCA-64 XGB primary + tabular fallback (I0006: lr 0.6825 / xgb 0.6807±0.0247) |
-| 08-19 | **sub5 retry #2693 = 0.627** (best official; Reward −0.299). **sub6 #2750** (master `0b86346`) + **sub7 #2788** (master `c00b435`, LR+XGB on PCA-64, I0006 0.6800±0.0125) submitted. PCA-dim sweep 32/64/128/256 → 64 sweet spot; raw/fusion/scores no gain on I0006. Checkpoint uploaded to MEGA as third build source |
-| 08-20 | **Official phase closed.** Fusion CI green (`32404281560`; mounts aligned with the official `/challenge/training_data` + `/challenge/holdout_data` layout). **Final entry #2877 submitted 08-20 19:22 ET** (23:22 GMT, inside the 23:59 GMT deadline) = fusion [PCA-64 latent \|\| 390 spec] single XGB + sub5 tabular fallback. sub8 #2806 (08-19 23:49 ET) / sub9 #2854 (08-20 13:02 ET) received earlier; sub6/sub7 scores still pending |
+| 08-18 | **sub4/2620 = 0.602** (Δ −0.009 vs sub3 — second official-noise anchor). sub5/2656 build-failed (no `.git` in the official build) → philosophers-stone/src + data caches vendored/tracked, CI mirrors via `git archive`. **sub5 retry #2693** submitted. **Phi-XGB entry locked** (#2750, later failed to evaluate; config re-shipped fixed as #2806/sub7) = Phi PCA-64 XGB primary + tabular fallback (I0006: lr 0.6825 / xgb 0.6807±0.0247) |
+| 08-19 | **sub5 retry #2693 = 0.627** (best official; Reward −0.299). **#2750** (master `0b86346`, Phi XGB — failed to evaluate later) + **sub6 #2788** (master `c00b435`, LR+XGB on PCA-64, I0006 0.6800±0.0125) submitted. PCA-dim sweep 32/64/128/256 → 64 sweet spot; raw/fusion/scores no gain on I0006. Checkpoint uploaded to MEGA as third build source |
+| 08-20 | **Official phase closed.** Fusion CI green (`32404281560`; mounts aligned with the official `/challenge/training_data` + `/challenge/holdout_data` layout). **Final entry #2877 submitted 08-20 19:22 ET** (23:22 GMT, inside the 23:59 GMT deadline) = fusion [PCA-64 latent \|\| 390 spec] single XGB + sub5 tabular fallback. sub7 #2806 (08-19 23:49 ET) / sub8 #2854 (08-20 13:02 ET) received earlier; sub6 #2788 score still pending |
+| 08-25 | **All official scores in.** #2750 failed to evaluate (no error detail after deadline; does not count → **9/10 slots used**). #2788 == #2693 exactly (0.627) — the pre-fix Phi path fell through to tabular on every hidden record, confirming the SessionID diagnosis. Fixed Phi entries all **below** pure tabular: #2806 0.583 / #2854 0.557 / fusion #2877 0.600 vs sub5 **0.627** (best). Best Reward = #2854 (0.043). **test-set algorithm choice due 08-27** — default = highest validation age-cond = #2693 (sub5) |
 
 ---
 
-## Current Status (2026-08-21)
+## Current Status (2026-08-25)
 
 | Item | State |
 |------|-------|
-| **Official phase** | **Closed** — the 2026-08-20 23:59 GMT deadline has passed.  Final entry **#2877** (08-20 19:22 ET) = fusion config, submitted inside the deadline; scores pending |
-| **Critical bug (fixed `63c2838`)** | `phi_component` cast SessionID to str before `load_demographics`; the int64 CSV column never matches → empty demographics → NaN age → NaN latent on every cache-miss record. Training was unaffected (cache-first), but the official hidden set is all cache-miss → the ranker silently output a constant probability → age-cond ≈ 0.5. **sub6 #2750 / sub7 #2788 are likely sitting at ~0.5 for this reason** (emails pending). Fix: raw SessionID + inference-time `isfinite` guard (NaN latent now falls through to the tabular XGB) + `test_phi_demographics_lookup` regression test |
-| **sub8 = sub6 + fix** | Phi PCA-64 XGB (`model="xgboost"`) primary + sub5 tabular fallback; master `8d2e03d`, **submitted as #2806 (08-19 23:49 ET)**. Local GPU e2e: cache-miss on-the-fly output == cache-hit output (prob 0.5002 == 0.5002) |
-| **sub9 = sub7 + fix** | Phi PCA-64 LR+XGB ensemble + the SessionID fix; master `84e42c1`, **submitted as #2854 (08-20 13:02 ET)** |
-| **fusion** | [PCA-64 latent \|\| 390 spec] single XGB (`7e0e00f`, `TrainCfg.phi.features="fusion"`) — the site-robust hedge; real-component holdout I0006 0.6961 / S0001 0.6371 / I0002 0.7692 (LR fusion 0.5533 / LR+XGB fusion 0.6111 — XGB only). First CI failed on a CI-only mount bug (datasets were mounted at `/challenge/data`, shadowing the vendored caches); fixed in `15831f5` — the workflow now mounts at the official `/challenge/training_data` + `/challenge/holdout_data`, and fusion training raises loudly if no spectral rows exist. **CI `32404281560` green.** `dev`/`docker-test` at `15831f5`; `master` held at `f44d5a8` (the CI-mount alignment touches only the workflow, so the official build does not need it) |
+| **Official phase** | **Closed.** All scores in; **9/10 entries consumed** (#2750 failed and did not count). Best age-cond = **sub5 #2693 = 0.627**; the test-set algorithm choice is due **08-27** |
+| **Critical bug (fixed `63c2838`)** | `phi_component` cast SessionID to str before `load_demographics`; the int64 CSV column never matches → empty demographics → NaN age → NaN latent on every cache-miss record. Training was unaffected (cache-first), but the official hidden set is all cache-miss → the ranker silently output a constant probability. **Confirmed by the official scores**: #2750 failed to evaluate (no detail after deadline, slot not consumed); **#2788 scored exactly #2693's numbers** (0.627/−0.299/0.618/0.670/0.157/0.065/0.122) — pre-fix Phi fell through to the tabular XGB on every record. Fix: raw SessionID + inference-time `isfinite` guard (NaN latent falls through to the tabular XGB) + `test_phi_demographics_lookup` regression test |
+| **sub7 = Phi-XGB + fix** | Phi PCA-64 XGB (`model="xgboost"`) primary + sub5 tabular fallback; master `8d2e03d`, submitted as #2806. Local GPU e2e: cache-miss on-the-fly output == cache-hit output. **Official age-cond 0.583 — −0.044 vs sub5; the frozen embedding did not transfer** |
+| **sub8 = sub6 + fix** | Phi PCA-64 LR+XGB ensemble + the SessionID fix; master `84e42c1`, submitted as #2854. **Official age-cond 0.557 (lowest Phi entry) but the only positive Reward 0.043 and best threshold side (Acc 0.927 / F1 0.288)** |
+| **sub9 = fusion** | [PCA-64 latent \|\| 390 spec] single XGB (`7e0e00f`, `TrainCfg.phi.features="fusion"`) — submitted as #2877 from master `f44d5a8`. **Official age-cond 0.600 — above the fixed Phi-only entries but −0.027 below sub5.** Real-component holdout I0006 0.6961 / S0001 0.6371 / I0002 0.7692 over-estimated the official transfer (proxy optimism). CI `32404281560` green; `dev`/`docker-test` at `15831f5` |
 
-## Next Steps (2026-08-21 — official phase closed)
+## Next Steps (2026-08-25 — official phase closed)
 
-1. ~~sub8 (sub6 config + fix)~~ ✅ submitted as **#2806**.
-2. ~~sub9 (sub7 config + fix)~~ ✅ submitted as **#2854**.
-3. ~~Submit the final fusion entry~~ ✅ submitted as **#2877** (08-20 19:22 ET, before the 23:59 GMT deadline).
-4. Read the pending scores — sub6 #2750 / sub7 #2788 / sub8 #2806 / sub9 #2854 / #2877 — confirm the SessionID ~0.5 diagnosis for sub6/sub7 and where the final fusion entry lands.
-5. Sync `master` with `dev` (`15831f5`) once the post-phase picture is stable (repo hygiene only; the workflow fix does not affect the official build).
-6. Choose the test-set algorithm by **08-27**.
-7. Challenge 4-page preprint by **08-27**; keep the cross-site robustness narrative.
-8. Final paper early Oct; CinC 2026 Madrid 09-20→23.
+1. ~~Read the pending scores~~ ✅ all in — see the submission history table.  SessionID diagnosis confirmed (#2788 == #2693); fixed Phi entries all underperform pure tabular.
+2. **Choose the test-set algorithm by 08-27** — default is the highest validation age-cond = **sub5 #2693 (0.627)**; sub6 #2788 ties at 0.627 (same numbers, bug fallback).  Recommend selecting #2693 explicitly.
+3. Challenge 4-page preprint by **08-27** — reframe the paper now that the official numbers refute "frozen embedding > tabular": the honest story is the **proxy protocol + rec_year artifact + SessionID trap**; the embedding result becomes a **negative/cross-site non-transfer finding**.
+4. Final paper early Oct; CinC 2026 Madrid 09-20→23.
 
 ---
 
@@ -152,13 +149,12 @@ Usage plan: full 1,103-record cache on AutoDL 5090 (~4–8 h) → 1024-D latent 
 | 3 | 2471 | 08-08 | 5-fold focal+LS ensemble, early-stop floor (O8) | 0.611 | −0.130 | within noise of sub1 (Δ0.006), +0.019 vs sub2; proxy 0.638 discounted −0.027 |
 | 4 | 2620 | 08-14 | sub3 config unchanged (noise anchor) | 0.602 | −0.086 | Δ(sub4, sub3) = −0.009 — second official-noise anchor |
 | 5 | 2693 | 08-17 | small-set tabular XGB, 390-dim `spec`, no meta (2656 build-failed first) | 0.627 | −0.299 | scored 08-21 — AUROC 0.670 / AUPRC 0.157 / Acc 0.065 / F1 0.122; best official age-cond so far |
-| 6 | 2750 | 08-18 | Phi PCA-64 XGB primary + tabular fallback | — | — | processing; pre-SessionID-fix |
-| 7 | 2788 | 08-19 | Phi PCA-64 LR+XGB ensemble + tabular fallback | — | — | processing; pre-SessionID-fix |
-| 8 | 2806 | 08-19 | sub6 config + SessionID fix | — | — | processing |
-| 9 | 2854 | 08-20 | sub7 config + SessionID fix | — | — | processing |
-| 10 | 2877 | 08-20 | fusion [PCA-64 latent \|\| 390 spec] single XGB + sub5 tabular fallback | — | — | **final official entry** (19:22 ET, pre-deadline); processing |
+| 6 | 2788 | 08-19 | Phi PCA-64 LR+XGB ensemble + tabular fallback (pre-fix) | 0.627 | −0.299 | 6th of 10 — **every score == #2693**: pre-fix Phi fell through to tabular on all cache-miss records; confirms the SessionID diagnosis |
+| 7 | 2806 | 08-19 | #2750 config + SessionID fix | 0.583 | −0.299 | 7th of 10 — fixed Phi XGB −0.044 vs sub5; embedding did not transfer |
+| 8 | 2854 | 08-20 | sub6 config + SessionID fix | 0.557 | 0.043 | 8th of 10 — lowest age-cond but only positive Reward; best threshold side (Acc 0.927 / F1 0.288) |
+| 9 | 2877 | 08-20 | fusion [PCA-64 latent \|\| 390 spec] single XGB + sub5 tabular fallback | 0.600 | −0.299 | 9th of 10 — above fixed Phi-only, −0.027 below sub5; final entry, master `f44d5a8` |
 
-> Official val = unseen **I0004**; leaderboard top ≈ 0.847 (08-15).  Full detail in `submissions`.
+> #2750 (Phi PCA-64 XGB, pre-fix) failed to evaluate and did not count toward the 10 entries — excluded from the numbered history; its config was re-shipped fixed as #2806 (row 7).  Official val = unseen **I0004**; leaderboard top ≈ 0.847 (08-15).  Full detail in `submissions`.
 
 ---
 

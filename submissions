@@ -379,24 +379,17 @@ Official Phase:
       metadata: none (include_meta=False)
     hash: f85d78f
   submission 6:
-    submission ID: 2750
-    submission time: 8/18/2026 20:38:34 ET
-    challenge_scores:
-      status: pending — processing
-    hash: 0b86346
-    notes: |
-      Phi primary + tabular fallback: frozen Philosopher's Stone 1024-d
-      latents (cache-first data/phi_cache, on-the-fly chunked extraction for
-      misses) → PCA-64 → XGBoost (seed=0, include_scores=False), with the
-      sub5 390-dim spectral XGB as the per-record fallback for records without
-      a usable C4-M1.  I0006-holdout: lr 0.6825, xgb 0.6807±0.0247; S0001
-      0.5873±0.0172; I0002 0.7846±0.0140.  Checkpoint baked at build
-      (HF → hf-mirror → MEGA), size+SHA pinned.
-  submission 7:
     submission ID: 2788
     submission time: 8/19/2026 14:12:25 ET
     challenge_scores:
-      status: pending — processing
+      Reward: -0.299
+      age_cond_AUROC: 0.627
+      age_weighted_AUROC: 0.618
+      AUROC: 0.670
+      AUPRC: 0.157
+      Accuracy: 0.065
+      F-measure: 0.122
+      entry_count: 6th of 10
     hash: c00b435
     notes: |
       Phi primary + tabular fallback, with the ranker upgraded from
@@ -405,40 +398,74 @@ Official Phase:
       ens 0.6800±0.0125 vs xgb 0.6776±0.0251 and lr 0.6825 — near-best mean
       with half the seed variance, hedging the site-dependent best-model
       problem.  raw-1024 rejected: the only comparison past Δ>0.04 favours
-      PCA-64 on the I0006 anchor (+0.044).
-  submission 8:
+      PCA-64 on the I0006 anchor (+0.044).  OFFICIAL RESULT: every score
+      identical to sub5 #2693 (0.627 / −0.299 / 0.618 / 0.670 / 0.157 /
+      0.065 / 0.122) — the pre-fix Phi path produced all-NaN latents on the
+      cache-miss hidden set and fell through to the tabular XGB on every
+      record, so the entry behaved exactly like the tabular-only sub5.
+      Confirms the SessionID diagnosis end-to-end.
+  submission 7:
     submission ID: 2806
     submission time: 8/19/2026 23:49:41 ET
     challenge_scores:
-      status: pending — processing
+      Reward: -0.299
+      age_cond_AUROC: 0.583
+      age_weighted_AUROC: 0.499
+      AUROC: 0.750
+      AUPRC: 0.236
+      Accuracy: 0.065
+      F-measure: 0.122
+      entry_count: 7th of 10
     hash: 8d2e03d
     notes: |
-      sub6 config (Phi PCA-64 XGB primary + sub5 tabular fallback) re-submitted
+      #2750 config (Phi PCA-64 XGB primary + sub5 tabular fallback; 0b86346,
+      failed to evaluate, not counted) re-submitted
       with the SessionID fix.  The phi on-the-fly path used to cast SessionID
       to str, which never matches the int64 demographics column -> empty
       demographics -> NaN age -> all-NaN latent on every cache-miss record
       (the official hidden set), silently collapsing age-cond to ~0.5.  Fix:
       raw SessionID + inference-time isfinite guard (NaN latent falls through
       to the tabular XGB) + test_phi_demographics_lookup regression test.
-  submission 9:
+      OFFICIAL RESULT: age-cond 0.583 — the fixed Phi XGB underperforms the
+      pure tabular sub5 (0.627) by −0.044.  The frozen embedding did not
+      transfer as expected on the official validation.
+  submission 8:
     submission ID: 2854
     submission time: 8/20/2026 13:02:28 ET
     challenge_scores:
-      status: pending — processing
+      Reward: 0.043
+      age_cond_AUROC: 0.557
+      age_weighted_AUROC: 0.516
+      AUROC: 0.768
+      AUPRC: 0.259
+      Accuracy: 0.927
+      F-measure: 0.288
+      entry_count: 8th of 10
     hash: 84e42c1
     notes: |
-      sub7 config (Phi PCA-64 LR+XGB probability ensemble) + the SessionID
+      sub6 config (#2788: Phi PCA-64 LR+XGB probability ensemble) + the SessionID
       fix.  Local verification: cache-miss on-the-fly output == cache-hit
       (0.2569 == 0.2569); full 1,103-record sanity in-sample age-cond 0.970;
       three-site holdout through the shipped component — I0006 0.6825 /
       S0001 0.5444 / I0002 0.8205 (13 no-C4 records correctly fall through
-      to the tabular XGB).
-  submission 10:
+      to the tabular XGB).  OFFICIAL RESULT: age-cond 0.557 — lowest of the
+      scored Phi entries, but the only positive Reward (0.043) and the
+      best threshold side (Accuracy 0.927 / F1 0.288): the LR+XGB ensemble
+      ranks worse cross-site while its probabilities are far better
+      calibrated.  Primary metric is age-cond, so this is not the winner.
+  submission 9:
     submission ID: 2877
     submission time: 8/20/2026 19:22:18 ET
     challenge_scores:
-      status: pending — processing
-    hash: TBD — fill in from the processed-entry email
+      Reward: -0.299
+      age_cond_AUROC: 0.600
+      age_weighted_AUROC: 0.566
+      AUROC: 0.722
+      AUPRC: 0.207
+      Accuracy: 0.065
+      F-measure: 0.122
+      entry_count: 9th of 10
+    hash: f44d5a85
     notes: |
       Final official entry (inside the 23:59 GMT deadline).  Fusion ranker:
       PCA-64 Philosopher's Stone latent concatenated with the 390-dim
@@ -450,7 +477,11 @@ Official Phase:
       /challenge/data, shadowing the vendored caches); fixed in 15831f5 —
       workflow mounts aligned with the official /challenge/training_data +
       /challenge/holdout_data layout, fusion training raises loudly if no
-      spectral rows exist; CI 32404281560 green.
+      spectral rows exist; CI 32404281560 green.  OFFICIAL RESULT: age-cond
+      0.600 — above the fixed Phi-only entries (0.583 / 0.557) but still
+      −0.027 below the pure tabular sub5 (0.627).  Best age-cond remains
+      sub5 #2693.  Submitted from master f44d5a8 (the CI-mount alignment
+      15831f5 landed after this entry was already submitted).
     model: XGBoost on [PCA-64 latent || 390-dim spec] + sub5 tabular fallback
     train:
       n_estimators: 500

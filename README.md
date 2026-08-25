@@ -27,15 +27,17 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 
 ## Submission Status
 
-The official phase is **closed** (final submission deadline 2026-08-20 23:59 GMT).  Our final entry is the
-**fusion ranker** — the PCA-64 Philosopher's Stone latent concatenated with the 390-dim spectral block,
-ranked by a single XGBoost, with the sub5 tabular XGB as the per-record fallback — submitted as
-**#2877** (2026-08-20 19:22 ET, inside the deadline); its score is pending.  The remaining official-phase
-submissions (#2750, #2788, #2806, #2854) are also still being processed.
+The official phase is **closed** (final submission deadline 2026-08-20 23:59 GMT).  Nine of the ten
+entries were evaluated successfully; the best age-conditioned AUROC on the official validation set is
+**0.627**, achieved by the sub5 tabular XGBoost entry (**#2693**) on the 390-dim spectral block.  Our
+final entry, the fusion ranker (**#2877** — PCA-64 Philosopher's Stone latent concatenated with the
+390-dim spectral block, single XGBoost, with the sub5 tabular XGB as the per-record fallback), scored
+0.600; the frozen-embedding variants all scored below the pure tabular baseline (0.583 / 0.557 / 0.600
+vs 0.627).  One entry (#2750) failed to evaluate and did not count toward the ten.
 
-Next milestones: choose the test-set algorithm and submit the challenge 4-page preprint by
-**2026-08-27**; the final 4-page paper is due in early October.  The full submission history — configs,
-scores and commit hashes — lives in [submissions](submissions).
+Next milestones: choose the test-set algorithm (recommended: **#2693**) and submit the challenge 4-page
+preprint by **2026-08-27**; the final 4-page paper is due in early October.  The full submission
+history — configs, scores and commit hashes — lives in [submissions](submissions).
 
 ## Description of the files/folders(modules)
 

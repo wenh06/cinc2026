@@ -253,18 +253,18 @@ TrainCfg.tabular = CFG(
 )
 
 # Phi component — frozen Philosopher's Stone latents -> PCA -> tabular ranker
-# (the sub6/sub8/sub9/sub10 primary).  Latents are cache-first from `cache` (vendored at
+# (the sub6/sub7/sub8/sub9 primary).  Latents are cache-first from `cache` (vendored at
 # `data/phi_cache` in the image; resolves automatically when unset); misses are
 # computed on the fly from the raw EDF using the baked checkpoint.  Records
 # without a usable C4-M1 raise at inference and fall through to the next
 # component.  I0006 proxy: lr_pca 0.6825, xgb_pca 0.6807 ± 0.0247 (PCA-64,
 # latents only) — see scripts/phi_pca_ranker.py and tmp/phi_cache/results_pca.json.
-#   features   (str, "fusion") — "latent" (sub6-9: PCA-64 latents only) or
-#              "fusion" (sub10: [PCA-64 latent || 390-dim spec], single XGB;
+#   features   (str, "fusion") — "latent" (sub6-8: PCA-64 latents only) or
+#              "fusion" (sub9: [PCA-64 latent || 390-dim spec], single XGB;
 #              I0006 0.6689 / S0001 0.6270 / I0002 0.7538 — the site-robust hedge)
 #   model      (str, "xgboost") — {"xgboost", "logistic", "ensemble"};
 #              "ensemble" averages the LR and XGB probability estimates
-#              (sub7/sub9); LR fusion 0.5533 / LR+XGB fusion 0.6111 — XGB only
+#              (sub6/sub8); LR fusion 0.5533 / LR+XGB fusion 0.6111 — XGB only
 #   pca_dim    (int, 64)
 #   include_scores (bool, False) — append the 4 brain-health scores to the PCA features
 #   cache      (str, "") — latent cache dir; resolved to data/phi_cache when unset
@@ -306,7 +306,7 @@ TrainCfg.phi = CFG(
 #   type     (str) — {"tabular", "crnn", "phi"}
 #   enable   (bool, True) — train/load this component
 #   priority (int, 0) — fallback order; lower runs first
-# The sub6 default is phi_pca64 (priority 0) with sub5_tabular_xgb as the
+# The default registry is phi_pca64 (priority 0) with sub5_tabular_xgb as the
 # montage-agnostic fallback (priority 1).  `TrainCfg.tabular.enable` /
 # `TrainCfg.phi.enable` are kept for the legacy no-components layout (see
 # team_code.train_model / load_model).
