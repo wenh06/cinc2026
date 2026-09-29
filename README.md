@@ -16,6 +16,7 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 - [The Conference](#the-conference)
 - [Submission Status](#submission-status)
 - [Description of the files/folders(modules)](#description-of-the-filesfoldersmodules)
+- [Post-Conference Thoughts](#post-conference-thoughts)
 
 <!-- tocstop -->
 
@@ -23,7 +24,35 @@ Screening for Cognitive Impairment During Sleep Studies: The George B. Moody Phy
 
 [Conference Website](https://cinc2026.org/) |
 [Unofficial Phase Leaderboard](https://docs.google.com/spreadsheets/d/e/2PACX-1vSseLxrUufQX34SPCjF1rN_0Zaew6Jvvree2KYxZ17AF0BqPpEGAtvEPcdmCpLhn3j3neDFhRrhCXWE/pubhtml) |
-[Official Phase Leaderboard](https://docs.google.com/spreadsheets/d/e/2PACX-1vQPPM17Qj6d1JCzn3fPhGE1CE0QI45z-KYkNVs5mainy7nQNEQV2FAfYNsvGq0y2P5aMVZ_Y7rNs070/pubhtml)
+[Official Phase Leaderboard](https://docs.google.com/spreadsheets/d/e/2PACX-1vQPPM17Qj6d1JCzn3fPhGE1CE0QI45z-KYkNVs5mainy7nQNEQV2FAfYNsvGq0y2P5aMVZ_Y7rNs070/pubhtml) |
+[Final Test Results (official)](https://moody-challenge.physionet.org/2026/results/challenge_2026_results.tsv) |
+[Final Test Results (repo copy)](results/challenge_2026_results.tsv)
+
+<p align="middle">
+  <img src="images/AttendanceBadge1.png" width="40%" />
+  &nbsp; &nbsp; &nbsp;
+  <img src="images/AttendanceBadge2.png" width="40%" />
+</p>
+
+### The Conference Poster
+
+<details>
+<summary>Click to view the details</summary>
+
+<div style="text-align:center; margin:20px 0; position:relative;">
+  <img src="images/cinc2026-poster.svg"
+       alt="The Conference Poster"
+       style="width:80%; max-width:800px; border:1px solid #eee; box-shadow:0 2px 8px rgba(0,0,0,0.1);"
+       onerror="this.style.display='none';">
+  <div style="display:none; width:80%; max-width:800px; margin:0 auto; padding:40px; border:1px solid #eee; background:#f9f9f9; text-align:center;"
+       id="fallback-text">
+    The Conference Poster
+  </div>
+</div>
+
+</details>
+
+:point_right: [Back to TOC](#cinc2026)
 
 ## Submission Status
 
@@ -35,9 +64,20 @@ final entry, the fusion ranker (**#2877** — PCA-64 Philosopher's Stone latent 
 0.600; the frozen-embedding variants all scored below the pure tabular baseline (0.583 / 0.557 / 0.600
 vs 0.627).  One entry (#2750) failed to evaluate and did not count toward the ten.
 
-Next milestones: choose the test-set algorithm (recommended: **#2693**) and submit the challenge 4-page
-preprint by **2026-08-27**; the final 4-page paper is due in early October.  The full submission
-history — configs, scores and commit hashes — lives in [submissions](submissions).
+The **final results on the hidden test set** are now available
+([results page](https://moody-challenge.physionet.org/2026/results/)): our selected entry
+(**#2693**, the sub5 tabular XGBoost on the 390-dim spectral block) scored an
+age-conditioned AUROC of **0.632** and ranks **19th of the 41 teams** eligible for rankings and prizes
+(129 entries were scored in total, of which 88 are listed unranked; the official ranking excludes the
+Python and MATLAB example entries and any entry that did not satisfy all of the Challenge rules).  The
+validation score of the same entry was 0.627, so our validation and test scores differed by only 0.005,
+while across the ranked teams the test score was on average 0.021 lower than the validation score.
+
+CinC 2026 took place in Madrid on 20-23 September 2026, where we presented this work as a poster; the
+challenge 4-page preprint (test-set algorithm: **#2693**) has been submitted as the final preprint
+submission, and the final 4-page paper, now including the official test-set score and ranking, is due in
+early October 2026.  The full submission history — configs, scores and commit hashes — lives in
+[submissions](submissions).
 
 ## Description of the files/folders(modules)
 
@@ -133,6 +173,35 @@ history — configs, scores and commit hashes — lives in [submissions](submiss
   with `--network none`.
 
 </details>
+
+:point_right: [Back to TOC](#cinc2026)
+
+## Post-Conference Thoughts
+
+After CinC 2026 we read the four-page papers of the 20 highest-ranked teams in the final
+test-set results and compared their feature families, architectures and training-set choices
+with the experiments logged in [ROADMAP.md](ROADMAP.md).  The full study, including a
+team-by-team comparison and the hypotheses for the score differences, is in
+[POST_CHALLENGE_STUDY.md](POST_CHALLENGE_STUDY.md).
+
+Headline findings:
+
+- **Representation and the time axis explain most of the spread.**  Aggregated features with tree
+  models (our 390-dim spectral XGBoost, bashlab, REMedy, Koalalition, MeDSP, Biosignal Pilots)
+  cluster at 0.63-0.68 on the test set, while entries that keep a per-epoch time axis over rich EEG
+  representations reach 0.70+ (CLECLINIC 0.708, Matcha 0.727, SIREN 0.749).  Our CRNN did keep the
+  time axis, but consumed only CAISR event rates, the feature family that drifts most across sites.
+- **Our richest features were never given a time axis.**  The 641-dim spectral bank exists only for
+  the 1,103-record small set (the large raw set is 1.2 TB), and our own ablation shows the small
+  pool costs 0.092 on the I0006 holdout.
+- **Optimistic proxies are the norm.**  Matcha 0.804 → 0.727, NeuroAI 0.823 → 0.704, Better Call
+  Sandman 0.870 → 0.703, ours 0.645-0.749 → 0.632; cross-site validation substantially overstates
+  test performance for every family.
+- **Frozen foundation models did not transfer.**  UPV (SleepFM) and our Philosopher's Stone entry
+  both sit far below non-frozen approaches, and the one self-supervised success, SIREN, pretrained
+  on this year's data before rank-averaging rather than freezing an external checkpoint.
+- **Date leakage cost one team 0.22 AUROC** when the organizers removed sleep-study dates
+  (bashlab, 0.751 → 0.528 on validation).  We never used date-like features.
 
 :point_right: [Back to TOC](#cinc2026)
 
