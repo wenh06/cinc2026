@@ -486,3 +486,33 @@ Official Phase:
       dim: 454 (64 PCA latent + 390 spec)
       layout: PCA-64 frozen Phi latent || 390-dim spectral block
       feature_cache: baked data/phi_cache + data/spectral_features, on-the-fly fallback
+
+Test Set (hidden; official results published 2026-09-25):
+  selected entry: submission 5 (#2693), picked at the 8/27 test-set algorithm deadline
+  ranking: 19 of 41 ranked entries (129 entries were scored in total)
+  challenge_scores:
+    Reward: -0.176
+    age_cond_AUROC: 0.632
+    AUROC: 0.664
+    AUPRC: 0.194
+    Accuracy: 0.096
+    F-measure: 0.175
+  validation_scores:
+    Reward: -0.299
+    age_cond_AUROC: 0.627
+    AUROC: 0.670
+    AUPRC: 0.157
+    Accuracy: 0.065
+    F-measure: 0.122
+  notes: |
+    The selected entry reproduced on the hidden test set what the validation
+    phase promised: age-cond AUROC 0.627 -> 0.632 (+0.005, well inside our
+    measured run-to-run noise of +-0.02-0.04), Reward -0.299 -> -0.176,
+    AUROC 0.670 -> 0.664, AUPRC 0.157 -> 0.194.  The fixed Phi entries
+    (0.583 / 0.557) and the fusion entry (0.600) did not reproduce, i.e. their
+    local holdouts over-estimated the official transfer.  These are the numbers
+    reported in the four-page CinC paper and in the repository README.
+    Source: results/challenge_2026_results.tsv (mirror of
+    https://moody-challenge.physionet.org/2026/results/), row `Revenger`;
+    it was still byte-identical to the official file on 2026-10-01, i.e. the
+    post-correction update of the table had not landed yet.
