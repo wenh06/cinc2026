@@ -67,11 +67,13 @@ vs 0.627).  One entry (#2750) failed to evaluate and did not count toward the te
 The **final results on the hidden test set** are now available
 ([results page](https://moody-challenge.physionet.org/2026/results/)): our selected entry
 (**#2693**, the sub5 tabular XGBoost on the 390-dim spectral block) scored an
-age-conditioned AUROC of **0.632** and ranks **19th of the 41 teams** eligible for rankings and prizes
-(129 entries were scored in total, of which 88 are listed unranked; the official ranking excludes the
+age-conditioned AUROC of **0.632** and ranks **20th of the 42 teams** eligible for rankings and prizes
+(129 entries were scored in total, of which 87 are listed unranked; the official ranking excludes the
 Python and MATLAB example entries and any entry that did not satisfy all of the Challenge rules).  The
 validation score of the same entry was 0.627, so our validation and test scores differed by only 0.005,
-while across the ranked teams the test score was on average 0.021 lower than the validation score.
+while across the ranked teams the test score was on average 0.021 lower than the validation score.  The
+table was corrected on 1 October 2026: one team (OUS_IVS, test 0.664) was promoted from unranked to 16th,
+which moved every entry below 15th down by one and took us from 19th of 41 to 20th of 42.
 
 CinC 2026 took place in Madrid on 20-23 September 2026, where we presented this work as a poster; the
 challenge 4-page preprint (test-set algorithm: **#2693**) has been submitted as the final preprint

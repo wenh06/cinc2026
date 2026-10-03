@@ -489,7 +489,12 @@ Official Phase:
 
 Test Set (hidden; official results published 2026-09-25):
   selected entry: submission 5 (#2693), picked at the 8/27 test-set algorithm deadline
-  ranking: 19 of 41 ranked entries (129 entries were scored in total)
+  ranking: 20 of 42 ranked entries (129 entries were scored in total)
+  ranking_history: |
+    19 of 41 in the preliminary table (2026-09-25).  The correction window closed on
+    2026-10-01 and the organizers promoted OUS_IVS (test age-cond 0.664) from unranked
+    to 16th, which shifted every entry below 15th down by one place; the ranked list
+    now has 42 entries.  Our score did not change (test age-cond 0.632).
   challenge_scores:
     Reward: -0.176
     age_cond_AUROC: 0.632

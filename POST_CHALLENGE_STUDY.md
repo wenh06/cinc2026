@@ -2,14 +2,18 @@
 
 This document studies the 20 highest-ranked teams of the
 [George B. Moody PhysioNet Challenge 2026](https://moody-challenge.physionet.org/2026/)
-and compares their designs with the experiments recorded in [ROADMAP.md](ROADMAP.md).
+**as listed in the preliminary results table of 25 September 2026**, and compares their designs
+with the experiments recorded in [ROADMAP.md](ROADMAP.md).  The corrected table of 1 October 2026
+promoted one team (OUS_IVS) into the ranking at 16th place, which shifted every entry below 15th
+down by one — including us, 19th → 20th of 42; the affected numbers are updated below, and the
+newcomer is covered in section 3.20.
 It was written after [Computing in Cardiology 2026](https://cinc2026.org/)
 (Madrid, 20-23 September 2026) to inform a possible future attempt, and it is the reference
 for the post-conference discussion in [README.md](README.md).
 
 **Sources.** The official test-set results in [_results/challenge_2026_results.tsv_](results/challenge_2026_results.tsv)
 (mirror of <https://moody-challenge.physionet.org/2026/results/challenge_2026_results.tsv>;
-preliminary, subject to a small update after the correction deadline of 1 October 2026), and the
+the post-correction version of 1 October 2026), and the
 4-page conference papers linked from the
 [preliminary program](https://cinc.org/prelim_program_2026/) at
 `https://cinc.org/2026/Program/accepted/<CinC Submission ID>_Preprint.pdf`.
@@ -35,13 +39,17 @@ the tables below quote only published numbers.
 | 12 | MeDSP | 0.708 | 0.671 | −0.037 | Multi-domain features (architecture, EEG spectra, SpO₂, respiration, limb movements, hypnogram complexity), top-20 → 300-tree Random Forest | large |
 | 14 | BAPORLab | 0.706 | 0.670 | −0.036 | Stage-aware hierarchical ensemble: 5-s staging CNN + 128 selected epochs per stage + per-modality Set Transformer experts | large (+ external HSP pretraining) |
 | 15 | OCA-CENTINEL | 0.658 | 0.666 | +0.008 | Frozen CBraMod EEG embeddings + YASA/EMG features, mutual-information removal of site-dominated dimensions, LightGBM with age-matched pairwise ranking | large |
-| 16 | PhysioWinn | 0.748 | 0.658 | −0.090 | Lightweight CNN (79,457 parameters) on six EEG channels; F3/F4 and N3 windows dominate | large |
-| 17 | Med_YNNU | 0.646 | 0.636 | −0.010 | DFHANet: dense multi-scale time- and frequency-domain CNNs over five modalities with hierarchical attention | large |
-| 18 | UPV Maths | 0.681 | 0.635 | −0.046 | Frozen SleepFM backbone with a lightweight head, studying input combinations and temporal pooling | large |
-| 19 | **Revenger (us)** | 0.627 | **0.632** | **+0.005** | CAISR CRNN / XGBoost on a 390-d spectral block / frozen brain-health embeddings, selected with a leave-one-site proxy | small |
-| 20 | FuneLab | 0.729 | 0.630 | −0.099 | Multi-rate channel-wise 1-D CNN over raw EEG/EOG/EMG/ECG/respiration/SpO₂ + demographics and annotations | small |
+| 16 | OUS_IVS | 0.708 | 0.664 | −0.044 | Frozen multimodal SleepFM embeddings (512-d) + clinically derived sleep/respiratory/oxygenation/age-relative features for ranking, with a separate restricted ExtraTrees head for the binary decision | large |
+| 17 | PhysioWinn | 0.748 | 0.658 | −0.090 | Lightweight CNN (79,457 parameters) on six EEG channels; F3/F4 and N3 windows dominate | large |
+| 18 | Med_YNNU | 0.646 | 0.636 | −0.010 | DFHANet: dense multi-scale time- and frequency-domain CNNs over five modalities with hierarchical attention | large |
+| 19 | UPV Maths | 0.681 | 0.635 | −0.046 | Frozen SleepFM backbone with a lightweight head, studying input combinations and temporal pooling | large |
+| 20 | **Revenger (us)** | 0.627 | **0.632** | **+0.005** | CAISR CRNN / XGBoost on a 390-d spectral block / frozen brain-health embeddings, selected with a leave-one-site proxy | small |
+| 21 | FuneLab | 0.729 | 0.630 | −0.099 | Multi-rate channel-wise 1-D CNN over raw EEG/EOG/EMG/ECG/respiration/SpO₂ + demographics and annotations | small |
 
-`val` and `test` are the official `Age-conditioned AUROC` values; Δ is our own arithmetic.
+`val` and `test` are the official `Age-conditioned AUROC` values from the corrected table
+(42 ranked entries); Δ is our own arithmetic.  Ranks 16–21 are the post-correction ones: OUS_IVS
+was unranked in the preliminary table and entered at 16th on 1 October 2026.  The team sections
+below keep the preliminary order, with OUS_IVS appended as section 3.20.
 
 ## 2. Where we stood
 
@@ -423,7 +431,7 @@ combinations and temporal pooling; official validation 0.681, test 0.635; large 
 XGBoost/LR and no input/pooling study.
 
 **Why they may score higher**: a more systematic input/pooling exploration and the large set —
-although both entries sit far below the non-frozen approaches (they rank 18th, we rank 19th),
+although both entries sit far below the non-frozen approaches (they rank 19th, we rank 20th),
 which jointly supports our negative-transfer finding.
 
 ### 3.19. FuneLab (test 0.630)
@@ -443,6 +451,43 @@ large validation-to-test drop shows how strongly this design can overfit the val
 **Implication**: end-to-end raw-signal pipelines were not uniformly rewarded, which supports our
 decision not to abandon feature engineering — but it does not contradict the value of
 information-rich per-epoch representations (see CLECLINIC and Matcha).
+
+### 3.20. OUS_IVS (test 0.664)
+
+*Added after the corrected results table of 1 October 2026 promoted this entry to 16th; it was
+unranked in the preliminary table used for sections 3.1–3.19.*
+
+**They did**: a hybrid representation combining frozen multimodal SleepFM embeddings (512-d from
+four modality groups encoded in three five-minute windows) with clinically derived features
+(160 CAISR descriptors, SpO₂, channel-availability indicators, and 10 age-relative physiological
+features, with the age reference estimated inside each leave-one-site fold). The ranking pathway
+(`Fusion730`) produced the continuous risk score used for Age-conditioned AUROC; because the
+thresholded decision side collapsed across sites (Reward −0.293), they deliberately **decoupled**
+ranking from classification and used a restricted ExtraTrees head over 182 clinical features
+without the embeddings for the binary decision (Reward 0.156). Validation 0.708, test 0.664
+(−0.044); Reward 0.156 → 0.069.
+
+**We did**: the same frozen-embedding ingredient (Philosopher's Stone) with PCA-64 and XGBoost/LR,
+but as a *ranking* model only, with no separate decision head, and we kept the embedding branch
+only when it beat the tabular baseline locally (it did not: 0.583 / 0.557 / 0.600 vs 0.627).
+
+**Differences**: they used the embeddings inside a much richer hybrid (their static block already
+contains 160 CAISR descriptors plus oxygen saturation and age-relative features), trained on the
+large pool, and — most importantly — treated ranking and thresholded decisions as two tasks with
+different failure modes.
+
+**Why they may score higher**: the embedding branch is not asked to do the work alone; the
+clinical feature block carries the cross-site signal, and the frozen encoder mostly contributes
+within-site structure. Their explicit ranking-vs-decision split is also the strongest external
+support for our paper's metric analysis: our own entry with the *worst* Age-conditioned AUROC
+(0.557) was the only one with a positive Reward, and the cohort-level pattern is the same — across
+the 42 ranked entries the Spearman correlation between test Age-conditioned AUROC and test Reward
+is only 0.64, i.e. the two official metrics disagree substantially.
+
+**Implication for us**: (i) a hybrid embedding + clinical block with the *decision* head separated
+from the ranking head is worth one experiment; (ii) our negative result on frozen embeddings
+should be stated as "no gain as the primary ranking pathway", not "frozen embeddings do not
+transfer", which is what their Reward column actually shows.
 
 ## 4. Cross-cutting patterns
 
