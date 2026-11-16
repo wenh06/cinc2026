@@ -102,6 +102,10 @@ early October 2026.  The full submission history — configs, scores and commit 
   HuggingFace access for the default entry. The 2.4 GB Phi checkpoint is downloaded only when
   `PHI_MODEL_DOWNLOAD=1`, from huggingface.co → hf-mirror.com → the baked MEGA link
   (`PHI_MEGA_URL`), with size + SHA-256 verification.
+- The official runtime may expose only the model and output directories as writable. Imports and
+  cache discovery therefore treat unavailable cache locations as non-fatal: they may attempt a
+  temporary or default cache path, but failure is absorbed and the entry continues. This is a
+  fail-soft contract rather than a guarantee of zero filesystem writes during import.
 - [requirements.txt](requirements.txt), [requirements-docker.txt](requirements-docker.txt), [requirements-no-torch.txt](requirements-no-torch.txt):
   requirements files for different purposes.
 - [create_labels.py](create_labels.py), [evaluate_model.py](evaluate_model.py), [helper_code.py](helper_code.py),
@@ -174,13 +178,15 @@ early October 2026.  The full submission history — configs, scores and commit 
   and [verifier](scripts/verify_loso_splits.py) (including CAISR-availability in the data digest),
   [entry preflight](scripts/preflight_entry.py) (the same config/resolver as the official entry;
   the 1,103-row / 390-feature contract applies only to release components, plus data/cache hashes),
-  [runtime-version audit](scripts/audit_runtime_versions.py),
+  [runtime-version audit](scripts/audit_runtime_versions.py) (records the torch-ecg and bib-lookup
+  versions, resolved torch-ecg commit, CUDA visibility and build provenance),
   [host/container replay comparison](scripts/compare_entry_replay.py) (explicit labelled or
   unlabeled-drift mode; submission scope requires n>=1,000 and paired runtime manifests; LOSO is
   report-only unless an explicit probability cap is supplied; submission calibration runs are
   non-release, while release runs require an explicit
-  calibration artifact and a measured max-probability cap (<=0.5); known manifest differences are
-  declared by leaf key or prefix; p99 and AUROC remain diagnostics),
+  calibration artifact, matching input hashes, a recomputed residual and a measured
+  max-probability cap (<=0.5); torch-ecg commit differences fail closed; known manifest differences
+  are declared by leaf key or prefix; p99 and AUROC remain diagnostics),
   [host replay producer](scripts/host_replay_predict.py) (direct model-entry path when host
   pandas 3.x cannot call the organiser's output-table helper),
   [spectral feature extraction](scripts/extract_spectral_features.py),

@@ -20,6 +20,8 @@ Two replay scopes are explicit:
     never release-eligible.  A release run requires an explicit
     ``--calibration-json`` and a ``--max-probability-delta`` at least the
     measured residual times ``--calibration-margin`` (absolute cap <= 0.5).
+    The calibration artifact is bound to the prediction, version-manifest,
+    label and record-key hashes, and its residual is recomputed at release.
 
 ``loso``
     A small held-out-site replay.  Metrics are report-only unless an explicit
@@ -37,6 +39,7 @@ differences with ``--known-version-diff``; unknown differences set
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Optional
@@ -152,13 +155,31 @@ def compare_runtime_versions(
     for key in sorted(set(host).union(container)):
         if host.get(key) != container.get(key):
             differences.append({"key": key, "host": host.get(key), "container": container.get(key)})
+
+    mandatory_unknown_keys = set()
+    host_commit = (host_payload.get("vcs_commits") or {}).get("torch-ecg")
+    container_commit = (container_payload.get("vcs_commits") or {}).get("torch-ecg")
+    torch_ecg_key = "vcs_commits.torch-ecg"
+    if not host_commit or not container_commit or host_commit != container_commit:
+        mandatory_unknown_keys.add(torch_ecg_key)
+        if not any(difference["key"] == torch_ecg_key for difference in differences):
+            differences.append({"key": torch_ecg_key, "host": host_commit, "container": container_commit})
+
     known_prefixes = [key.strip().rstrip(".") for key in (known_difference_keys or []) if key.strip()]
 
     def is_known(key: str) -> bool:
         return any(key == prefix or key.startswith(prefix + ".") for prefix in known_prefixes)
 
-    known_differences = [difference for difference in differences if is_known(difference["key"])]
-    unknown_differences = [difference for difference in differences if not is_known(difference["key"])]
+    known_differences = [
+        difference
+        for difference in differences
+        if is_known(difference["key"]) and difference["key"] not in mandatory_unknown_keys
+    ]
+    unknown_differences = [
+        difference
+        for difference in differences
+        if difference["key"] in mandatory_unknown_keys or not is_known(difference["key"])
+    ]
     return {
         "match": not differences,
         "difference_count": len(differences),
@@ -194,11 +215,28 @@ def _load_version_summary(args: argparse.Namespace) -> dict:
     return compare_runtime_versions(host_versions, container_versions, args.known_version_diff)
 
 
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _input_evidence(args: argparse.Namespace, record_keys: list[str]) -> dict:
+    return {
+        "host_predictions_sha256": _sha256_file(args.host),
+        "container_predictions_sha256": _sha256_file(args.container),
+        "host_versions_sha256": _sha256_file(args.host_versions) if args.host_versions is not None else None,
+        "container_versions_sha256": _sha256_file(args.container_versions) if args.container_versions is not None else None,
+        "labels_sha256": _sha256_file(args.label_source) if args.label_source is not None else None,
+        "record_keys_sha256": hashlib.sha256("\n".join(record_keys).encode()).hexdigest(),
+    }
+
+
 def _load_calibration_evidence(
     path: Path,
     records: int,
     selected_cap: float,
     margin: float,
+    input_evidence: dict,
+    recomputed_residual: float,
 ) -> dict:
     payload = json.loads(path.read_text())
     diagnostics = payload.get("numeric_diagnostics", {})
@@ -213,6 +251,16 @@ def _load_calibration_evidence(
     if residual is None:
         raise ValueError("calibration artifact has no max_abs_probability_delta")
     residual = float(residual)
+    if not np.isfinite(residual) or residual < 0.0:
+        raise ValueError("calibration artifact has an invalid max_abs_probability_delta")
+    calibration_inputs = payload.get("input_evidence")
+    if not isinstance(calibration_inputs, dict):
+        raise ValueError("calibration artifact has no bound input evidence")
+    mismatched_inputs = sorted(key for key, value in input_evidence.items() if calibration_inputs.get(key) != value)
+    if mismatched_inputs:
+        raise ValueError(f"calibration inputs do not match the release replay: {mismatched_inputs}")
+    if not np.isclose(residual, recomputed_residual, rtol=0.0, atol=1e-12):
+        raise ValueError(f"calibration residual {residual:.17g} does not match recomputed residual {recomputed_residual:.17g}")
     if selected_cap < residual * margin:
         raise ValueError(
             f"selected cap {selected_cap:.6f} is below calibration residual " f"{residual:.6f} x margin {margin:.2f}"
@@ -224,6 +272,10 @@ def _load_calibration_evidence(
         "selected_cap": float(selected_cap),
         "margin": float(margin),
         "cap_to_residual_ratio": float(selected_cap / residual) if residual else None,
+        "recomputed_residual_max_abs_probability_delta": float(recomputed_residual),
+        "input_evidence_sha256": hashlib.sha256(
+            json.dumps(input_evidence, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
     }
 
 
@@ -342,6 +394,11 @@ def main() -> None:
     cp = container["Cognitive_Impairment_Probability"].astype(float).to_numpy()
     if len(keys) == 0:
         _fail(summary, "prediction files contain no records", args.json_out)
+    try:
+        input_evidence = _input_evidence(args, keys)
+    except OSError as exc:
+        _fail(summary, f"failed to hash replay inputs: {exc}", args.json_out)
+    summary["input_evidence"] = input_evidence
     delta = cp - hp
     abs_delta = np.abs(delta)
     diagnostics = {
@@ -375,6 +432,8 @@ def main() -> None:
                 diagnostics["records"],
                 args.max_probability_delta,
                 args.calibration_margin,
+                input_evidence,
+                diagnostics["max_abs_probability_delta"],
             )
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             _fail(summary, str(exc), args.json_out)
