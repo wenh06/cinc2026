@@ -91,16 +91,17 @@ early October 2026.  The full submission history — configs, scores and commit 
 - [README.md](README.md): this file, serves as the documentation of the project.
 - [cfg.py](cfg.py): the configuration file for the whole project, including the D2 tabular entry
   (`TrainCfg.tabular`) and the model-component registry (`TrainCfg.components`; the default is the
-  `phi_pca64` Phi ranker with `sub5_tabular_xgb` as the per-record fallback — see `TrainCfg.phi`).
-  `TrainCfg.phi.features` selects the ranker input: `"fusion"` (default — PCA-64 latent concatenated
-  with the 390-dim spectral block, single XGBoost) or `"latent"` (PCA-64 only, `model` =
-  xgboost/logistic/ensemble).
+  `spec_xgb_10seed` probability ensemble with the original single-booster `sub5_tabular_xgb` as the
+  per-record fallback). Official tabular training is cache-only and restricted to the audited
+  1,103-row feature bank. The Phi configuration remains available for explicit experiments but is
+  not part of the default submission chain.
 - [const.py](const.py): constant definitions.
 - [Dockerfile](Dockerfile): docker file for building the docker image for submissions.  The image bakes the
   vendored Philosopher's Stone source (`third_party/philosophers-stone/src`) and the D1 spectral feature cache
   (`data/spectral_features`) directly from the repository — the build needs no `.git`, no MEGA and no
-  HuggingFace access.  The 2.4 GB Phi checkpoint is downloaded at build time (`PHI_MODEL_DOWNLOAD=1`)
-  from huggingface.co → hf-mirror.com → the baked MEGA link (`PHI_MEGA_URL`), size + SHA-256 verified.
+  HuggingFace access for the default entry. The 2.4 GB Phi checkpoint is downloaded only when
+  `PHI_MODEL_DOWNLOAD=1`, from huggingface.co → hf-mirror.com → the baked MEGA link
+  (`PHI_MEGA_URL`), with size + SHA-256 verification.
 - [requirements.txt](requirements.txt), [requirements-docker.txt](requirements-docker.txt), [requirements-no-torch.txt](requirements-no-torch.txt):
   requirements files for different purposes.
 - [create_labels.py](create_labels.py), [evaluate_model.py](evaluate_model.py), [helper_code.py](helper_code.py),
@@ -112,7 +113,8 @@ early October 2026.  The full submission history — configs, scores and commit 
   5-fold CV ensemble mode (`TrainCfg.folds = [0..4]`: one model per fold, equal-weight probability averaging at inference),
   and the routing to the D2 tabular path when `TrainCfg.tabular.enable` is set.  With `TrainCfg.components` configured,
   each component trains into `model_folder/components/<name>/`, a manifest (`model_manifest.json`) drives loading, and
-  `run_model` walks the components in priority order with per-record fallback (e.g. Phi → sub5 tabular XGB).
+  `run_model` walks the components in priority order with per-record fallback (default:
+  10-seed spectral XGB → single-booster sub5 tabular XGB).
 - [component_registry.py](component_registry.py): model-component registry — manifest format, per-type artifact names,
   component enumeration (priority-ordered) and the baked spectral-feature-cache resolution
   (`data/spectral_features`, vendored in the repository, no network at runtime).
@@ -121,17 +123,22 @@ early October 2026.  The full submission history — configs, scores and commit 
   optionally fused with the 390-dim spectral block (`TrainCfg.phi.features="fusion"`), ranked by
   XGBoost / logistic regression / their probability-averaged ensemble.  Records without a usable C4-M1
   fall through to the next component at run time.
-- [tabular_pipeline.py](tabular_pipeline.py): the D2 tabular submission path — 641-dim spectral/physiological feature bank
-  (cache-first, on-the-fly extraction from raw PSG + CAISR on misses) + XGBoost/LightGBM.  The fitted feature-column list is
-  serialised with the model so training and inference always see identical columns.
+- [tabular_pipeline.py](tabular_pipeline.py): the D2 tabular submission path — 641-dim
+  spectral/physiological feature bank, configurable multi-seed XGBoost/LightGBM artifacts and
+  probability averaging at inference. Official training is cache-only; on-the-fly extraction is
+  reserved for explicit experiments or inference cache misses. Training rows are canonically
+  sorted by `(BidsFolder, SessionID)`, because XGBoost row/column subsampling makes the fitted
+  model depend on input order. The preflight and saved model config record the exact training
+  record/label SHA-256, feature-cache SHA-256, selected feature count and mounted data root.
 - [trainer.py](trainer.py): training loop (`CINC2026Trainer`) with AUROC monitoring, per-site evaluation, and early stopping.
 - [dataset.py](dataset.py): dataset classes (`CINC2026Dataset`, `FastDataReader`) and CAISR epoch-feature construction
   (`build_epoch_features`).  Supports 5-fold CV via `train_config.fold`; train/val splits use multi-factor stratification
   (label × site × sex × age band) via torch_ecg's `stratified_train_test_split`.
 - [data_reader.py](data_reader.py): database reader (`CINC2026`) for loading PSG recordings, CAISR and human-expert annotations.
 - [outputs.py](outputs.py): model output dataclass (`CINC2026Outputs`) handling logits → probability → binary prediction conversion.
-- [test_docker.py](test_docker.py): tests for the Docker submission pipeline (dataset, models, trainer, entry),
-  including the tabular path and the component registry / per-record fallback chain.
+- [test_docker.py](test_docker.py): tests for the Docker submission pipeline (dataset, models,
+  trainer, entry), including the 10/1 booster component chain, multi-seed tabular artifacts and the
+  per-record fallback chain.
 - [post_docker_build.py](post_docker_build.py): post-Docker-build setup script — environment sanity check,
   Philosopher's Stone checkpoint download (default on; huggingface.co → hf-mirror.com → optional MEGA via
   megadl, every attempt size + SHA-256 pinned), and verification of the vendored Phi source and the D1
@@ -163,7 +170,20 @@ early October 2026.  The full submission history — configs, scores and commit 
   the [5-fold split generator](utils/make_5fold_split.py) + [5-fold split](utils/cinc2026-5fold-split.json),
   and [out-of-fold evaluation](utils/evaluate_oof.py) for the ensemble.
 - [results](results): experiment log files and analysis notes.
-- [scripts](scripts): local-validation scripts (not part of the submission pipeline) — [spectral feature extraction](scripts/extract_spectral_features.py),
+- [scripts](scripts): validation and submission-release scripts — the [LOSO split generator](scripts/make_loso_splits.py)
+  and [verifier](scripts/verify_loso_splits.py) (including CAISR-availability in the data digest),
+  [entry preflight](scripts/preflight_entry.py) (the same config/resolver as the official entry;
+  the 1,103-row / 390-feature contract applies only to release components, plus data/cache hashes),
+  [runtime-version audit](scripts/audit_runtime_versions.py),
+  [host/container replay comparison](scripts/compare_entry_replay.py) (explicit labelled or
+  unlabeled-drift mode; submission scope requires n>=1,000 and paired runtime manifests; LOSO is
+  report-only unless an explicit probability cap is supplied; submission calibration runs are
+  non-release, while release runs require an explicit
+  calibration artifact and a measured max-probability cap (<=0.5); known manifest differences are
+  declared by leaf key or prefix; p99 and AUROC remain diagnostics),
+  [host replay producer](scripts/host_replay_predict.py) (direct model-entry path when host
+  pandas 3.x cannot call the organiser's output-table helper),
+  [spectral feature extraction](scripts/extract_spectral_features.py),
   [Phi latent cache extraction](scripts/phi_cache_extract.py), [D2 tabular baselines](scripts/d2_tabular_baseline.py) /
   [robustness](scripts/d2_tabular_robustness.py) / [large-pool gate](scripts/d2_tabular_large.py), and the
   [Phi PCA-rankers](scripts/phi_pca_ranker.py) (per-site `--holdout-site`).

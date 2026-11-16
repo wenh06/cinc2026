@@ -309,7 +309,8 @@ def print_summary(df: pd.DataFrame):
         )
         s_corr = np.corrcoef(site_df["age"], site_df["prob"])[0, 1]
         print(
-            f"  {site}: AUROC={s_auroc:.4f}, age_AUROC={s_age_cond:.4f}, gap={s_auroc-s_age_cond:.4f}, r(age,prob)={s_corr:+.4f}"
+            f"  {site}: AUROC={s_auroc:.4f}, age_AUROC={s_age_cond:.4f}, "
+            f"gap={s_auroc - s_age_cond:.4f}, r(age,prob)={s_corr:+.4f}"
         )
 
     # Interpretation guide

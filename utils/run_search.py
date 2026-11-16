@@ -138,7 +138,7 @@ def run_experiment(exp: dict, data_dir: str, out_dir: str, dry_run: bool = False
         "-v",
     ]
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"[START] {name}")
     print(f"  cmd : {' '.join(cmd)}")
     print(f"  cfg : {json.dumps({k: v for k, v in exp.items()}, separators=(',', ':'))}")
@@ -158,7 +158,7 @@ def run_experiment(exp: dict, data_dir: str, out_dir: str, dry_run: bool = False
         )
         elapsed = time.time() - t0
         status = "OK" if result.returncode == 0 else f"FAILED (rc={result.returncode})"
-        print(f"[{status}] {name} — {elapsed/60:.1f} min")
+        print(f"[{status}] {name} — {elapsed / 60:.1f} min")
         return result.returncode == 0
     except subprocess.TimeoutExpired:
         print(f"[TIMEOUT] {name} exceeded 3 h — skipping")

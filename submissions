@@ -1,3 +1,10 @@
+# Inference correction (2026-11-13): the legacy XGB-only tabular/Phi inference
+# paths applied sigmoid twice.  Their probability ordering (and therefore AUROC)
+# is unchanged, but binary decisions are saturated; Reward/Accuracy/F-measure
+# must not be cited.  The Phi LR+XGB ensemble is different: only its XGB member
+# was transformed, so ranking also changed.  Entry #2854's AUROC and
+# age-conditioned AUROC are therefore not design-choice evidence either.
+
 Unofficial Phase:
   submission 1:
     submission ID: 1173
@@ -349,6 +356,10 @@ Official Phase:
       discount (−0.027) puts the official expectation around 0.61–0.63.
       The image build vendors philosophers-stone/src and data/spectral_features
       and drops git/MEGA/HF, so the official build needs no .git or network.
+      Inference note: the legacy double-sigmoid implementation made the binary
+      decision all-positive. The official AUROC/age-conditioned AUROC remain
+      valid, but Reward −0.299, Accuracy 0.065 and F-measure 0.122 are not
+      evidence about the tabular model.
     model: XGBoost (component sub5_tabular_xgb)
     train:
       n_estimators: 500
@@ -442,6 +453,10 @@ Official Phase:
       best threshold side (Accuracy 0.927 / F1 0.288): the LR+XGB ensemble
       ranks worse cross-site while its probabilities are far better
       calibrated.  Primary metric is age-cond, so this is not the winner.
+      Ensemble note: the historical ensemble applied a second sigmoid only
+      to the XGB member, so this was not an equal-weight LR+XGB ranking. The
+      official #2854 AUROC / age-cond AUROC values must not be used as evidence
+      for ensemble design choices; rerun the fixed path first.
   submission 9:
     submission ID: 2877
     submission time: 8/20/2026 19:22:18 ET

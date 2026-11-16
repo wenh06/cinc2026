@@ -484,6 +484,13 @@ support for our paper's metric analysis: our own entry with the *worst* Age-cond
 the 42 ranked entries the Spearman correlation between test Age-conditioned AUROC and test Reward
 is only 0.64, i.e. the two official metrics disagree substantially.
 
+**Inference correction:** our historical tabular/Phi Reward, Accuracy and F-measure values came
+from a double-sigmoid inference bug and are not evidence about the models. For XGB-only paths the
+transform was monotone, so AUROC remains usable; for the Phi LR+XGB ensemble it changed the
+ranking, so #2854's AUROC and age-conditioned AUROC require a rerun before any design-choice
+claim. The cross-team metric analysis uses official other-team values or the corrected inference
+path.
+
 **Implication for us**: (i) a hybrid embedding + clinical block with the *decision* head separated
 from the ranking head is worth one experiment; (ii) our negative result on frozen embeddings
 should be stated as "no gain as the primary ranking pathway", not "frozen embeddings do not

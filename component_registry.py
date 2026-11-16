@@ -19,6 +19,7 @@ into the image at build time.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -33,6 +34,7 @@ ARTIFACT_NAMES: Dict[str, Any] = {
     "crnn": "final_model.pth.tar",
     "tabular": {
         "config": "tabular_config.json",
+        "model_pattern": "tabular_model_seed_*",
         "xgboost": "tabular_model.json",
         "lightgbm": "tabular_model.txt",
     },
@@ -73,6 +75,21 @@ def enabled_components(train_config: Any) -> List[Any]:
     return enabled
 
 
+def component_config(train_config: Any, comp: Any, ctype: str) -> Any:
+    """Return a deep-copied config with this component's nested overrides."""
+    config = deepcopy(train_config)
+    overrides = comp.get(ctype, None)
+    if overrides is None:
+        overrides = (comp.get("settings", None) or {}).get(ctype, None)
+    if overrides:
+        current = config.get(ctype, None)
+        if current is None:
+            current = {}
+        current.update(deepcopy(overrides))
+        config[ctype] = current
+    return config
+
+
 def component_dir(model_folder: Path, name: str) -> Path:
     """Artifact directory for one component."""
     return model_folder / "components" / name
@@ -88,6 +105,7 @@ def write_manifest(model_folder: Path, components: List[Any]) -> Path:
                 "type": str(c.get("type")),
                 "priority": int(c.get("priority", 0)),
                 "enable": bool(c.get("enable", True)),
+                "settings": {key: json.loads(json.dumps(c[key])) for key in ("tabular", "phi", "crnn") if key in c},
             }
             for c in components
         ],

@@ -22,13 +22,14 @@ from models.epoch_crnn import AgeMatchedPairwiseLossTanh
 
 
 def main():
-    SPLIT_FILE = Path(__file__).resolve().parent / "split_I0006.json"
+    SPLIT_FILE = Path(__file__).resolve().parent / "splits" / "loso" / "split_I0006.json"
     with open(SPLIT_FILE) as f:
         dataset_mod.FIXED_DATA_SPLIT_FILE = str(SPLIT_FILE)
 
     cfg = deepcopy(TrainCfg)
     cfg.db_dir = str(Path(__file__).resolve().parents[1] / "data" / "official-phase-large")
     cfg.folds = None
+    cfg.strict_data_split = True
     ds = CINC2026Dataset(cfg, training=True, lazy=True)
     df = ds.reader._df_records
     ages = df.loc[ds.records, "Age"].astype(float).values

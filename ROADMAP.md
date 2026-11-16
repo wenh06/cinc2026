@@ -151,10 +151,18 @@ Usage plan: full 1,103-record cache on AutoDL 5090 (~4–8 h) → 1024-D latent 
 | 5 | 2693 | 08-17 | small-set tabular XGB, 390-dim `spec`, no meta (2656 build-failed first) | 0.627 | −0.299 | scored 08-21 — AUROC 0.670 / AUPRC 0.157 / Acc 0.065 / F1 0.122; best official age-cond so far |
 | 6 | 2788 | 08-19 | Phi PCA-64 LR+XGB ensemble + tabular fallback (pre-fix) | 0.627 | −0.299 | 6th of 10 — **every score == #2693**: pre-fix Phi fell through to tabular on all cache-miss records; confirms the SessionID diagnosis |
 | 7 | 2806 | 08-19 | #2750 config + SessionID fix | 0.583 | −0.299 | 7th of 10 — fixed Phi XGB −0.044 vs sub5; embedding did not transfer |
-| 8 | 2854 | 08-20 | sub6 config + SessionID fix | 0.557 | 0.043 | 8th of 10 — lowest age-cond but only positive Reward; best threshold side (Acc 0.927 / F1 0.288) |
+| 8 | 2854 | 08-20 | sub6 config + SessionID fix | 0.557 | 0.043 | 8th of 10 — historical LR+XGB ensemble had one-member double sigmoid; AUROC and secondary metrics are not ensemble-design evidence until rerun |
 | 9 | 2877 | 08-20 | fusion [PCA-64 latent \|\| 390 spec] single XGB + sub5 tabular fallback | 0.600 | −0.299 | 9th of 10 — above fixed Phi-only, −0.027 below sub5; final entry, master `f44d5a8` |
 
 > #2750 (Phi PCA-64 XGB, pre-fix) failed to evaluate and did not count toward the 10 entries — excluded from the numbered history; its config was re-shipped fixed as #2806 (row 7).  Official val = unseen **I0004**; leaderboard top ≈ 0.847 (08-15).  Full detail in `submissions`.
+
+> **Inference correction (2026-11-13):** the historical XGB-only tabular/Phi inference
+> paths applied `sigmoid` twice. XGBoost `Booster.predict()` already returned probabilities, so the
+> old binary threshold at 0.5 saturated the selected tabular entry to all-positive. For XGB-only
+> paths the transform was monotone, so AUROC remains valid while Reward/Accuracy/F-measure are
+> pipeline artifacts. The Phi LR+XGB ensemble is different: only the XGB member was transformed,
+> so its ranking changed; #2854 (AUROC 0.768, age-cond 0.557) must not be used for ensemble-design
+> conclusions until rerun with direct probabilities. Do not cite the old secondary metrics.
 
 ---
 

@@ -731,7 +731,9 @@ def download_with_resume_using_pycurl(url: str, output_path: str, retries: int =
                         bar_len = 40
                         filled = int(bar_len * downloaded // total)
                         bar = "=" * filled + "-" * (bar_len - filled)
-                        sys.stdout.write(f"\r[{bar}] {percent:6.2f}% " f"{downloaded/1024/1024:.1f}/{total/1024/1024:.1f} MB")
+                        sys.stdout.write(
+                            f"\r[{bar}] {percent:6.2f}% " f"{downloaded / 1024 / 1024:.1f}/{total / 1024 / 1024:.1f} MB"
+                        )
                         sys.stdout.flush()
 
                 c.setopt(pycurl.XFERINFOFUNCTION, progress)
@@ -743,7 +745,7 @@ def download_with_resume_using_pycurl(url: str, output_path: str, retries: int =
             return
 
         except pycurl.error as e:
-            print(f"\nError: {e}, retrying ({attempt+1}/{retries})...")
+            print(f"\nError: {e}, retrying ({attempt + 1}/{retries})...")
             time.sleep(2)
 
     raise RuntimeError("Download failed after retries")

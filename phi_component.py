@@ -379,14 +379,13 @@ def run_phi_model(payload: Dict[str, Any], record: Dict[str, str], data_folder: 
         import xgboost as xgb
 
         p_lr = float(payload["ranker"]["lr"].predict_proba(z)[0, 1])
-        margin = payload["ranker"]["xgb"].predict(xgb.DMatrix(z))
-        p_xgb = float(1.0 / (1.0 + np.exp(-margin[0])))
+        # Booster.predict already applies binary:logistic; do not sigmoid again.
+        p_xgb = float(payload["ranker"]["xgb"].predict(xgb.DMatrix(z))[0])
         p = 0.5 * (p_lr + p_xgb)
     elif config.get("model") == "xgboost":
         import xgboost as xgb
 
-        margin = payload["ranker"].predict(xgb.DMatrix(z))
-        p = float(1.0 / (1.0 + np.exp(-margin[0])))
+        p = float(payload["ranker"].predict(xgb.DMatrix(z))[0])
     else:
         p = float(payload["ranker"].predict_proba(z)[0, 1])
     return int(p >= threshold), p

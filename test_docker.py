@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+import warnings
 from copy import deepcopy
 from pathlib import Path
 from typing import Union
@@ -90,6 +91,19 @@ def test_dataset() -> None:
     batch = collate_fn([train_ds[0], train_ds[1]])
     assert batch["epoch_features"].shape[0] == 2
     assert batch["padding_mask"].dtype == torch.bool
+
+    # A root with all three partition names must prefer the official large
+    # partition over the legacy 780-record training_set.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for name in ("training_set_large", "training_set_small", "training_set"):
+            part = root / name
+            part.mkdir()
+            (part / DEMOGRAPHICS_FILE).write_text("BidsFolder\nx\n")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            resolved = _resolve_db_dir(str(root))
+        assert resolved.name == "training_set_large", f"unexpected partition priority: {resolved}"
     print("  collate_fn OK")
 
 
@@ -549,14 +563,18 @@ def test_tabular() -> None:
     cfg.tabular.enable = True
     cfg.tabular.model = "xgboost"
     cfg.tabular.xgb_params.n_estimators = 30
+    cfg.tabular.seeds = [0, 1]
     cfg.tabular.feature_groups = ["spec"]
+    cfg.tabular.expected_training_rows = 0
     cfg.tabular.workers = 1
 
     # Part A — on-the-fly extraction branch
     cfg.tabular.feature_cache = ""
+    cfg.tabular.cache_only_training = False
     model_folder_a = tmp_model_dir / "tabular_test_onthefly"
     train_tabular(cfg, model_folder_a, verbose=True)
     model_dict_a = load_tabular_model(model_folder_a, cfg, verbose=True)
+    assert len(model_dict_a["boosters"]) == 2, "multi-seed tabular artifacts were not loaded"
     binary, prob = run_tabular_model(model_dict_a, rec, str(tmp_data_dir), verbose=True)
     assert binary in (0, 1) and 0.0 <= prob <= 1.0
     print(f"  on-the-fly output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")
@@ -564,10 +582,12 @@ def test_tabular() -> None:
     # Part B — cache-first branch + metadata regression guard
     cfg.tabular.include_meta = True  # sub5 default is False; re-enable for the meta-fill regression
     cfg.tabular.feature_cache = str(cache_csv)
+    cfg.tabular.cache_only_training = True
     model_folder_b = tmp_model_dir / "tabular_test_cache"
     train_tabular(cfg, model_folder_b, verbose=True)
     model_dict_b = load_tabular_model(model_folder_b, cfg, verbose=True)
     config = model_dict_b["config"]
+    assert len(model_dict_b["boosters"]) == 2, "cache-first multi-seed artifacts were not loaded"
     meta_cols = ["meta_age", "meta_sex_male", "meta_bmi", "meta_rec_year"]
     assert config["feature_list"][-len(meta_cols) :] == meta_cols, "metadata columns missing from the trained feature list"
     binary, prob = run_tabular_model(model_dict_b, rec, str(tmp_data_dir), verbose=True)
@@ -581,6 +601,13 @@ def test_tabular() -> None:
     assert pd.notna(assembled["meta_age"]) and pd.notna(
         assembled["meta_sex_male"]
     ), "metadata columns are NaN at inference — demographics were not filled"
+    import xgboost as xgb
+
+    dmat = xgb.DMatrix(assembled.to_numpy()[None, :], feature_names=config["feature_list"])
+    expected_prob = float(np.mean([booster.predict(dmat)[0] for booster in model_dict_b["boosters"]]))
+    assert np.isclose(prob, expected_prob), (
+        "tabular inference must average the boosters' probability outputs directly; " f"got {prob}, expected {expected_prob}"
+    )
     print(f"  cache-first output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")
     print("test_tabular passed ✓")
 
@@ -588,9 +615,15 @@ def test_tabular() -> None:
 @func_indicator("testing model components")
 def test_model_components() -> None:
     """Component registry: manifest round-trip, e2e train/load/run, fallback chain."""
-    from component_registry import MANIFEST_NAME, read_manifest, write_manifest
-    from phi_component import PHI_SCORE_KEYS
-    from tabular_pipeline import load_tabular_model, run_tabular_model
+    from component_registry import MANIFEST_NAME, component_config, read_manifest, write_manifest
+    from phi_component import (
+        PHI_SCORE_KEYS,
+        _compute_record_on_the_fly,
+        _phi_patient_data,
+        _spectral_row,
+        run_phi_model,
+    )
+    from tabular_pipeline import assemble_record_features, load_tabular_model, run_tabular_model
     from team_code import _run_components, load_model, run_model
 
     raw_dir = tmp_data_dir / "physiological_data"
@@ -616,6 +649,12 @@ def test_model_components() -> None:
     manifest = read_manifest(roundtrip_dir)
     assert [c["name"] for c in manifest["components"]] == ["first", "second"]
     assert [c["enable"] for c in manifest["components"]] == [True, False]
+    assert [c["name"] for c in TrainCfg.components] == ["spec_xgb_10seed", "sub5_tabular_xgb"]
+    assert TrainCfg.tabular.expected_training_rows == 0
+    assert TrainCfg.tabular.expected_feature_count == 0
+    release_cfg = component_config(TrainCfg, TrainCfg.components[0], "tabular")
+    assert release_cfg.tabular.expected_training_rows == 1103
+    assert release_cfg.tabular.expected_feature_count == 390
 
     # 2. end-to-end through team_code.train_model / load_model / run_model.
     # The CI raw subset has no Phi latents baked in (the mounted /challenge/data
@@ -638,22 +677,73 @@ def test_model_components() -> None:
     comp_dir = tmp_model_dir / "components_e2e"
     old_n = TrainCfg.tabular.xgb_params.n_estimators
     old_phi_n = TrainCfg.phi.xgb_params.n_estimators
+    old_tabular_seeds = TrainCfg.tabular.seeds
+    old_expected_rows = TrainCfg.tabular.expected_training_rows
+    old_components = deepcopy(TrainCfg.components)
     try:
         TrainCfg.tabular.xgb_params.n_estimators = 30
+        TrainCfg.tabular.seeds = [0, 1]
+        TrainCfg.tabular.expected_training_rows = 0
         TrainCfg.phi.xgb_params.n_estimators = 200
+        TrainCfg.components = [
+            CFG(name="phi_pca64", type="phi", enable=True, priority=0),
+            CFG(
+                name="spec_xgb_10seed",
+                type="tabular",
+                enable=True,
+                priority=1,
+                tabular=CFG(seeds=[0, 1]),
+            ),
+            CFG(
+                name="sub5_tabular_xgb",
+                type="tabular",
+                enable=True,
+                priority=2,
+                tabular=CFG(seeds=[0]),
+            ),
+        ]
         train_model(str(tmp_data_dir), str(comp_dir), True)
         assert (comp_dir / MANIFEST_NAME).is_file(), "component manifest not written by train_model"
         model_dict = load_model(str(comp_dir), True)
-        assert set(model_dict["components"]) == {"phi_pca64", "sub5_tabular_xgb"}
+        assert set(model_dict["components"]) == {"phi_pca64", "spec_xgb_10seed", "sub5_tabular_xgb"}
+        assert len(model_dict["components"]["spec_xgb_10seed"]["boosters"]) == 2
+        assert len(model_dict["components"]["sub5_tabular_xgb"]["boosters"]) == 1
         phi_config = model_dict["components"]["phi_pca64"]["config"]
         assert phi_config.get("features") == "fusion"
         assert len(phi_config.get("spec_feature_list") or []) > 0
+        phi_payload = model_dict["components"]["phi_pca64"]
+        latent, scores = _compute_record_on_the_fly(
+            rec,
+            str(tmp_data_dir),
+            Path(phi_payload["checkpoint"]),
+            phi_payload.get("cache_dir"),
+        )
+        z = phi_payload["pca"].transform(latent.reshape(1, -1)).astype(np.float32)
+        patient_data = _phi_patient_data(tmp_data_dir / DEMOGRAPHICS_FILE, rec)
+        spec_row = assemble_record_features(
+            _spectral_row(rec, patient_data, str(tmp_data_dir), phi_payload["spec_sources"]),
+            patient_data,
+            {"feature_list": phi_config["spec_feature_list"], "include_meta": False},
+        )
+        z = np.hstack([z, spec_row.to_numpy(dtype=np.float32).reshape(1, -1)]).astype(np.float32)
+        if phi_config.get("include_scores"):
+            z = np.hstack([z, scores.reshape(1, -1)]).astype(np.float32)
+        import xgboost as xgb
+
+        expected_phi_prob = float(phi_payload["ranker"].predict(xgb.DMatrix(z))[0])
+        _, phi_prob = run_phi_model(phi_payload, rec, str(tmp_data_dir), False)
+        assert np.isclose(phi_prob, expected_phi_prob), (
+            "Phi XGBoost probability was transformed twice; " f"got {phi_prob}, expected {expected_phi_prob}"
+        )
         binary, prob = run_model(model_dict, rec, str(tmp_data_dir), True)
         assert binary in (0, 1) and 0.0 <= prob <= 1.0
         print(f"  component e2e output for {rec[HEADERS['bids_folder']]}: binary={binary}, prob={prob:.4f}")
     finally:
         TrainCfg.tabular.xgb_params.n_estimators = old_n
         TrainCfg.phi.xgb_params.n_estimators = old_phi_n
+        TrainCfg.tabular.seeds = old_tabular_seeds
+        TrainCfg.tabular.expected_training_rows = old_expected_rows
+        TrainCfg.components = old_components
 
     # 3. per-record fallback chain: a failing primary falls through to the next
     good_payload = load_tabular_model(comp_dir / "components" / "sub5_tabular_xgb", TrainCfg, False)
@@ -661,6 +751,7 @@ def test_model_components() -> None:
     bad_payload["config"] = dict(good_payload["config"])
     bad_payload["config"]["constant"] = None  # force the booster predict path
     bad_payload["booster"] = None  # run_tabular_model raises on predict
+    bad_payload["boosters"] = [None]
     chain = {
         "components": {"primary_bad": bad_payload, "fallback_good": good_payload},
         "manifest": {

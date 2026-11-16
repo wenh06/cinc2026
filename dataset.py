@@ -110,6 +110,11 @@ class CINC2026Dataset(Dataset, ReprMixin):
         If ``True``, the historical dynamic flow is used: read
         ``LABEL_CACHE_DIR/cinc2026-data-split.json`` when it exists,
         otherwise generate a fresh stratified split and save it there.
+    strict_data_split : bool, optional
+        If ``True``, require ``FIXED_DATA_SPLIT_FILE`` to exist and contain a
+        non-empty assignment for the requested partition.  Missing splits
+        raise instead of silently falling back to a dynamic split.  LOSO
+        evaluation must enable this mode.
     reader_kwargs : dict, optional
         Extra keyword arguments forwarded to :class:`CINC2026`.
     """
@@ -122,6 +127,7 @@ class CINC2026Dataset(Dataset, ReprMixin):
         training: bool = True,
         lazy: bool = True,
         override_data_split: bool = False,
+        strict_data_split: Optional[bool] = None,
         **reader_kwargs,
     ) -> None:
         super().__init__()
@@ -132,6 +138,9 @@ class CINC2026Dataset(Dataset, ReprMixin):
         self.config["training"] = training  # propagate so FastDataReader.training works correctly
         self.lazy = lazy
         self.override_data_split = override_data_split
+        self.strict_data_split = (
+            bool(self.config.get("strict_data_split", False)) if strict_data_split is None else bool(strict_data_split)
+        )
 
         if self.config.get("db_dir", None) is None:
             self.config.db_dir = reader_kwargs.pop("db_dir", None)
@@ -223,17 +232,46 @@ class CINC2026Dataset(Dataset, ReprMixin):
             if fold_file.exists():
                 with open(fold_file) as f:
                     split = json.load(f)
-                records = [r for r in split.get(f"fold_{fold}", {}).get(part, []) if r in available]
+                expected = split.get(f"fold_{fold}", {}).get(part, [])
+                records = [r for r in expected if r in available]
+                missing = sorted(set(expected).difference(available))
+                if self.strict_data_split and missing:
+                    raise RuntimeError(
+                        f"5-fold split {fold_file} references {len(missing)} records "
+                        f"missing from {self.config.db_dir}: {missing[:5]}"
+                    )
                 if records:
+                    if missing:
+                        warnings.warn(
+                            f"5-fold split {fold_file} references {len(missing)} records "
+                            f"missing from {self.config.db_dir}; using the "
+                            f"{len(records)} available '{part}' records.",
+                            RuntimeWarning,
+                            stacklevel=3,
+                        )
                     if self.training:
                         DEFAULTS.RNG.shuffle(records)
                     return records
-            warnings.warn(
-                f"5-fold split file not found at {FIVE_FOLD_SPLIT_FILE}; "
-                f"fold={fold} ignored — falling back to the canonical split.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
+                if self.strict_data_split:
+                    raise RuntimeError(
+                        f"5-fold split {FIVE_FOLD_SPLIT_FILE} exists but fold_{fold} "
+                        f"has no available '{part}' records for {self.config.db_dir}"
+                    )
+                warnings.warn(
+                    f"5-fold split {FIVE_FOLD_SPLIT_FILE} has no available fold_{fold} "
+                    f"'{part}' records; falling back to the canonical split.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+            elif self.strict_data_split:
+                raise FileNotFoundError(f"fold={fold} was requested but 5-fold split is missing: {FIVE_FOLD_SPLIT_FILE}")
+            else:
+                warnings.warn(
+                    f"fold={fold} was requested but 5-fold split is missing at "
+                    f"{FIVE_FOLD_SPLIT_FILE}; falling back to the canonical split.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
 
         if not self.override_data_split:
             # ----------------------------------------------------------
@@ -243,16 +281,45 @@ class CINC2026Dataset(Dataset, ReprMixin):
             if fixed_file.exists():
                 with open(fixed_file) as f:
                     split = json.load(f)
-                records = [r for r in split.get(part, []) if r in available]
+                expected = split.get(part, [])
+                records = [r for r in expected if r in available]
+                missing = sorted(set(expected).difference(available))
+                if self.strict_data_split and missing:
+                    raise RuntimeError(
+                        f"Fixed data split {fixed_file} references {len(missing)} records "
+                        f"missing from {self.config.db_dir}: {missing[:5]}"
+                    )
                 if records:
+                    if missing:
+                        warnings.warn(
+                            f"Fixed data split {fixed_file} references {len(missing)} records "
+                            f"missing from {self.config.db_dir}; using the "
+                            f"{len(records)} available '{part}' records.",
+                            RuntimeWarning,
+                            stacklevel=3,
+                        )
                     if self.training:
                         DEFAULTS.RNG.shuffle(records)
                     return records
-            warnings.warn(
-                f"Fixed data-split file not found at {FIXED_DATA_SPLIT_FILE}. " "Falling back to dynamic split generation.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
+                if self.strict_data_split:
+                    raise RuntimeError(
+                        f"Fixed data split {fixed_file} exists but contains no available "
+                        f"'{part}' records for {self.config.db_dir}"
+                    )
+                warnings.warn(
+                    f"Fixed data split {fixed_file} contains no available '{part}' "
+                    f"records for {self.config.db_dir}; falling back to the dynamic split.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+            if self.strict_data_split:
+                raise FileNotFoundError(f"strict_data_split=True but fixed split is missing: {fixed_file}")
+            elif not fixed_file.exists():
+                warnings.warn(
+                    f"Fixed data-split file not found at {FIXED_DATA_SPLIT_FILE}. " "Falling back to dynamic split generation.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
 
         # ------------------------------------------------------------------
         # Dynamic path (override_data_split=True, or fallback from above)
@@ -290,6 +357,12 @@ class CINC2026Dataset(Dataset, ReprMixin):
                 "85-90",
             ],
         )
+        # Keep stratification columns as ordinary objects.  pandas categorical
+        # columns can retain levels that disappear in a recursive subset, which
+        # makes Categorical.map raise before torch_ecg can create the split.
+        df["AgeGroup"] = df["AgeGroup"].astype("string").fillna("unknown").astype(object)
+        for column in ("Cognitive_Impairment", "SiteID", "Sex"):
+            df[column] = df[column].astype(object).where(df[column].notna(), "__missing__")
         train_ratio = self.config.get("train_ratio", 0.8)
         train_df, val_df = stratified_train_test_split(
             df,
@@ -299,8 +372,17 @@ class CINC2026Dataset(Dataset, ReprMixin):
         train_records = train_df.index.tolist()
         val_records = val_df.index.tolist()
 
-        with open(split_file, "w") as f:
-            json.dump({"train": train_records, "val": val_records}, f, indent=2)
+        try:
+            split_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(split_file, "w") as f:
+                json.dump({"train": train_records, "val": val_records}, f, indent=2)
+        except OSError as exc:
+            warnings.warn(
+                f"Could not cache the dynamically generated data split at {split_file}: {exc}. "
+                "Continuing with the in-memory split.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
 
         records = train_records if self.training else val_records
         if self.training:

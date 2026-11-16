@@ -38,9 +38,9 @@ BaseCfg.project_dir = _BASE_DIR
 BaseCfg.log_dir = _BASE_DIR / "log"
 BaseCfg.model_dir = _BASE_DIR / "saved_models"
 BaseCfg.checkpoints = _BASE_DIR / "checkpoints"
-BaseCfg.log_dir.mkdir(exist_ok=True)
-BaseCfg.model_dir.mkdir(exist_ok=True)
-BaseCfg.checkpoints.mkdir(exist_ok=True)
+# These are fallback paths for standalone use.  Do not create them at import:
+# the official entry point is read-only outside its model/output folder, and
+# team_code/trainer resolve writable run directories before using them.
 
 BaseCfg.torch_dtype = torch.float32  # "double"
 BaseCfg.np_dtype = np.float32
@@ -219,6 +219,13 @@ TrainCfg.focal = CFG(
 #   feature_cache  (str, "") — precomputed features.csv (D1 layout, index =
 #                   BidsFolder or BidsFolder__SessionID); cache-first, on-the-fly
 #                   extraction from raw+CAISR for misses
+#   cache_only_training (bool, True) — train only from the audited cache; never
+#                   expand the pool on-the-fly during the official run
+#   expected_training_rows (int, 0) — optional row contract; release components
+#                   set this explicitly to 1103
+#   expected_feature_count (int, 0) — optional feature contract; release
+#                   components set this explicitly to 390
+#   seeds          (list[int]) — train one booster per seed and average probabilities
 #   workers        (int, 4) — on-the-fly extraction parallelism
 #   threshold      (float, 0.5) — binary cutoff (Reward side only; age-cond is rank-based)
 # D2-small reading (15 seeds, I0006-holdout): XGB spec-only 0.6446±0.0144,
@@ -237,6 +244,7 @@ TrainCfg.tabular = CFG(
         subsample=0.8,
         subsample_freq=1,
         seed=0,
+        num_threads=1,
     ),
     xgb_params=CFG(
         n_estimators=500,
@@ -247,7 +255,12 @@ TrainCfg.tabular = CFG(
         tree_method="hist",
         seed=0,
     ),
+    seeds=[0],
+    xgb_n_jobs=1,
     feature_cache="",
+    cache_only_training=True,
+    expected_training_rows=0,
+    expected_feature_count=0,
     workers=4,
     threshold=0.5,
 )
@@ -306,22 +319,40 @@ TrainCfg.phi = CFG(
 #   type     (str) — {"tabular", "crnn", "phi"}
 #   enable   (bool, True) — train/load this component
 #   priority (int, 0) — fallback order; lower runs first
-# The default registry is phi_pca64 (priority 0) with sub5_tabular_xgb as the
-# montage-agnostic fallback (priority 1).  `TrainCfg.tabular.enable` /
+# The default registry is a 10-seed spec-XGB primary with the original single
+# sub5 tabular XGB as fallback.  `TrainCfg.tabular.enable` /
 # `TrainCfg.phi.enable` are kept for the legacy no-components layout (see
 # team_code.train_model / load_model).
 TrainCfg.components = [
     CFG(
-        name="phi_pca64",
-        type="phi",
+        name="spec_xgb_10seed",
+        type="tabular",
         enable=True,
         priority=0,
+        tabular=CFG(
+            model="xgboost",
+            feature_groups=["spec"],
+            include_meta=False,
+            seeds=list(range(10)),
+            cache_only_training=True,
+            expected_training_rows=1103,
+            expected_feature_count=390,
+        ),
     ),
     CFG(
         name="sub5_tabular_xgb",
         type="tabular",
         enable=True,
         priority=1,
+        tabular=CFG(
+            model="xgboost",
+            feature_groups=["spec"],
+            include_meta=False,
+            seeds=[0],
+            cache_only_training=True,
+            expected_training_rows=1103,
+            expected_feature_count=390,
+        ),
     ),
 ]
 

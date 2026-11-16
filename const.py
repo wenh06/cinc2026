@@ -147,31 +147,22 @@ DEMOGRAPHIC_DIM = 3
 NIGHT_FEATURE_DIM = 15
 
 
-MODEL_CACHE_DIR = str(
-    Path(
-        # ~/.cache/revenger_model_dir_cinc2026
-        # /challenge/cache/revenger_model_dir
-        os.environ.get("MODEL_CACHE_DIR", "~/.cache/cinc2026/revenger_model_dir")
-    )
-    .expanduser()
-    .resolve()
-)
-Path(MODEL_CACHE_DIR).mkdir(parents=True, exist_ok=True)
+def _resolve_cache_path(value: str) -> str:
+    """Expand a cache path when possible, without creating it or failing import."""
+    try:
+        return str(Path(value).expanduser().resolve())
+    except (RuntimeError, OSError):
+        # HOME may be absent or unreadable in minimal container environments.
+        # Cache users can create/migrate the path only if they actually need it.
+        return value
 
 
-DATA_CACHE_DIR = str(
-    Path(
-        # ~/.cache/revenger_data_dir_cinc2026
-        # /challenge/cache/revenger_data_dir
-        os.environ.get("DATA_CACHE_DIR", "~/.cache/cinc2026/revenger_data_dir")
-    )
-    .expanduser()
-    .resolve()
-)
-Path(DATA_CACHE_DIR).mkdir(parents=True, exist_ok=True)
+# Resolve paths at import time, but do not create them.  The official runtime
+# may expose only the model/output directory as writable.
+MODEL_CACHE_DIR = _resolve_cache_path(os.environ.get("MODEL_CACHE_DIR", "~/.cache/cinc2026/revenger_model_dir"))
+DATA_CACHE_DIR = _resolve_cache_path(os.environ.get("DATA_CACHE_DIR", "~/.cache/cinc2026/revenger_data_dir"))
 
 LABEL_CACHE_DIR = str(Path(PROJECT_DIR) / "cache")
-Path(LABEL_CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
 # Canonical (fixed) train/val split shipped with the repo.  Used by default
 # so that training runs are reproducible without regenerating the split.
@@ -184,7 +175,6 @@ FIXED_DATA_SPLIT_FILE = str(Path(PROJECT_DIR) / "utils" / "cinc2026-data-split.j
 FIVE_FOLD_SPLIT_FILE = str(Path(PROJECT_DIR) / "utils" / "cinc2026-5fold-split.json")
 
 TEST_DATA_CACHE_DIR = str(Path(DATA_CACHE_DIR).parent / "revenger_action_test_data_dir")
-Path(TEST_DATA_CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
 
 REMOTE_MODELS = {}

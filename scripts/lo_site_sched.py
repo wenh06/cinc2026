@@ -10,6 +10,7 @@ Usage: python lo_site_sched.py I0006 warmup_cosine [--seed 0]
 """
 
 import argparse
+import hashlib
 import json
 import sys
 from copy import deepcopy
@@ -31,6 +32,45 @@ from utils.scoring_metrics import compute_challenge_metrics
 
 DATA = str(Path(__file__).resolve().parents[1] / "data" / "official-phase-large")
 OUT_ROOT = Path("/tmp/lo_site")
+SPLIT_ROOT = Path(__file__).resolve().parent / "splits" / "loso"
+TRAIN_PARTS = {"training_set", "training_set_small", "training_set_large"}
+
+
+def _record_digest(train, val) -> str:
+    payload = "train\n" + "\n".join(sorted(train)) + "\nval\n" + "\n".join(sorted(val))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _load_and_validate_split(path: Path, held_out_site: str, frame):
+    if not path.exists():
+        raise FileNotFoundError(f"committed LOSO split is missing: {path}; " "run scripts/make_loso_splits.py first")
+    with open(path) as f:
+        split = json.load(f)
+
+    manifest_path = path.parent / "manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"LOSO split manifest is missing: {manifest_path}")
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    manifest_entry = manifest.get("splits", {}).get(held_out_site, {})
+    if manifest_entry.get("sha256") != hashlib.sha256(path.read_bytes()).hexdigest():
+        raise ValueError(f"{path} does not match its manifest SHA-256")
+
+    if split.get("protocol") != "leave_one_site_out":
+        raise ValueError(f"{path} is not a LOSO split")
+    if split.get("held_out_site") != held_out_site:
+        raise ValueError(f"{path} holds out {split.get('held_out_site')}, expected {held_out_site}")
+
+    train, val = split["train"], split["val"]
+    expected_train = set(frame.index[frame.SiteID != held_out_site])
+    expected_val = set(frame.index[frame.SiteID == held_out_site])
+    if set(train) != expected_train or set(val) != expected_val:
+        raise ValueError(f"{path} does not match SiteID partitioning in {DATA}")
+    if set(train).intersection(val):
+        raise ValueError(f"{path} has train/validation overlap")
+    if split.get("record_sha256") != _record_digest(train, val):
+        raise ValueError(f"{path} record digest mismatch")
+    return split
 
 
 def main():
@@ -45,14 +85,14 @@ def main():
     np.random.seed(args.seed)
 
     reader = CINC2026(db_dir=DATA)
-    df = reader._df_records[reader._df_records["partition"].isin({"training_set"})].copy()
-    train_recs = df[df.SiteID != test_site].index.tolist()
-    split_file = OUT_ROOT / f"split_{test_site}.json"
-    with open(split_file) as f:
-        dataset_mod.FIXED_DATA_SPLIT_FILE = str(split_file)
+    df = reader._df_records[reader._df_records["partition"].isin(TRAIN_PARTS)].copy()
+    split_file = SPLIT_ROOT / f"split_{test_site}.json"
+    _load_and_validate_split(split_file, test_site, df)
+    dataset_mod.FIXED_DATA_SPLIT_FILE = str(split_file)
 
     cfg = deepcopy(TrainCfg)
     cfg.db_dir = DATA
+    cfg.strict_data_split = True
     cfg.folds = None
     cfg.n_epochs = args.epochs
     cfg.lr_scheduler = args.sched

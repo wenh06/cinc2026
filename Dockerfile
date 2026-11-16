@@ -19,8 +19,9 @@ FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
 #   docker build .                                          # use PyPI release
 #   docker build --build-arg TORCH_ECG_SOURCE=github .     # use dev branch
 ARG TORCH_ECG_SOURCE=github
-ARG PHI_MODEL_DOWNLOAD=1
+ARG PHI_MODEL_DOWNLOAD=0
 ARG PHI_MEGA_URL=https://mega.nz/file/RAoT1RxK#MdMRDO6sMJwdED3rwwrPGgaUb6zn4OGs_ZYndOfMZvg
+ARG CINC2026_BUILD_SHA=unknown
 
 # Avoid interactive prompts during apt installs
 ENV DEBIAN_FRONTEND=noninteractive
@@ -39,6 +40,8 @@ ENV GIT_CLONE_DIR=/challenge/cache/git_clone_dir
 ENV TF_CPP_MIN_LOG_LEVEL=2
 ENV PHI_MODEL_DOWNLOAD=$PHI_MODEL_DOWNLOAD
 ENV PHI_MEGA_URL=$PHI_MEGA_URL
+ENV CINC2026_BUILD_SHA=$CINC2026_BUILD_SHA
+ENV CINC2026_XGB_N_JOBS=1
 
 
 # ── Diagnostics ───────────────────────────────────────────────────────────────
@@ -133,6 +136,7 @@ COPY ./ /challenge
 
 
 # ── Post-build environment check ─────────────────────────────────────────────
+RUN python scripts/audit_runtime_versions.py --json-out /challenge/runtime_versions.json
 RUN python post_docker_build.py
 RUN du -sh $DATA_CACHE_DIR $TEST_DATA_CACHE_DIR $MODEL_CACHE_DIR
 RUN tree $MODEL_CACHE_DIR

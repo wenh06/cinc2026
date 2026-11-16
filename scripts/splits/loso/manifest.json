@@ -1,0 +1,77 @@
+{
+  "data_sha256": "9c19c52272cf334671339e46c80f48f116c811fa409cba748b9dccbd5be14e9b",
+  "protocol": "leave_one_site_out",
+  "schema_version": 1,
+  "splits": {
+    "I0002": {
+      "counts": {
+        "total": 6600,
+        "train": 6281,
+        "train_caisr_available": 6213,
+        "train_positive": 446,
+        "train_positive_caisr_available": 446,
+        "val": 319,
+        "val_caisr_available": 317,
+        "val_positive": 52,
+        "val_positive_caisr_available": 51
+      },
+      "path": "split_I0002.json",
+      "record_sha256": "78312fee806479026b68c941b94b86354c4a2cfe48038d825088377b70e68ad8",
+      "sha256": "b2dca5fd492c08bad9e55cfa27f25f8ef26112fc2cbb0cbb33ce04235c529967",
+      "train_sites": [
+        "I0006",
+        "S0001"
+      ],
+      "val_sites": [
+        "I0002"
+      ]
+    },
+    "I0006": {
+      "counts": {
+        "total": 6600,
+        "train": 5458,
+        "train_caisr_available": 5392,
+        "train_positive": 386,
+        "train_positive_caisr_available": 385,
+        "val": 1142,
+        "val_caisr_available": 1138,
+        "val_positive": 112,
+        "val_positive_caisr_available": 112
+      },
+      "path": "split_I0006.json",
+      "record_sha256": "0687ad34bd9adae1a2bd08bb18b7bcf7e23e8ee99c0fb6ba9bdd363f6cef0786",
+      "sha256": "e6b13f03433e662b8017ecad63503ed91ada1aea26dba61dd1cb5462d050a8e3",
+      "train_sites": [
+        "I0002",
+        "S0001"
+      ],
+      "val_sites": [
+        "I0006"
+      ]
+    },
+    "S0001": {
+      "counts": {
+        "total": 6600,
+        "train": 1461,
+        "train_caisr_available": 1455,
+        "train_positive": 164,
+        "train_positive_caisr_available": 163,
+        "val": 5139,
+        "val_caisr_available": 5075,
+        "val_positive": 334,
+        "val_positive_caisr_available": 334
+      },
+      "path": "split_S0001.json",
+      "record_sha256": "69c6eac41d0702a97780225470dd66f4d2706dcb383e7c7d71c5532be7ded348",
+      "sha256": "8b329810fff720c0632dfe492c5a5e0d753a597ff672dec95197af5217bf767e",
+      "train_sites": [
+        "I0002",
+        "I0006"
+      ],
+      "val_sites": [
+        "S0001"
+      ]
+    }
+  },
+  "total_records": 6600
+}

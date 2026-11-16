@@ -49,6 +49,7 @@ Typical usage per mode
 
 import json
 import os
+import warnings
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -61,6 +62,7 @@ from cfg import ModelCfg, TrainCfg, sync_feature_config
 from component_registry import (
     ARTIFACT_NAMES,
     COMPONENT_TYPES,
+    component_config,
     component_dir,
     enabled_components,
     read_manifest,
@@ -137,10 +139,59 @@ def _resolve_db_dir(data_folder: str) -> Path:
     * **Flat** — db_dir itself contains ``demographics.csv`` at its root
       (the layout used by the PhysioNet challenge evaluator).
 
-    This function therefore simply resolves the path without any parent-hopping;
-    the reader discovers the correct layout on its own.
+    If a parent contains recognised training partitions, resolve one using a
+    stable priority order so direct tabular/Phi readers can find
+    ``demographics.csv``.  The official train_model entry point cannot pass a
+    partition explicitly, so raising on multiple mounts would make an otherwise
+    valid image unusable.  Cache-only tabular training makes the choice of the
+    small or large partition immaterial to the fitted pool; preflight records
+    which root was selected and validates the actual matched record set.
     """
-    return Path(data_folder).resolve()
+    root = Path(data_folder).resolve()
+    if (root / DEMOGRAPHICS_FILE).is_file():
+        return root
+    partitions = [
+        root / name
+        for name in ("training_set_large", "training_set_small", "training_set")
+        if (root / name / DEMOGRAPHICS_FILE).is_file()
+    ]
+    if len(partitions) == 1:
+        return partitions[0]
+    if len(partitions) > 1:
+        selected = partitions[0]
+        warnings.warn(
+            f"multiple training partitions under {root}: "
+            f"{[path.name for path in partitions]}; using {selected.name!r} "
+            "as the stable entry-point default",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return selected
+    return root
+
+
+def prepare_train_config(data_folder: str) -> Any:
+    """Build the exact TrainCfg used by the official training entry point.
+
+    Both ``train_model`` and ``scripts/preflight_entry.py`` call this helper so
+    data-root selection, environment overrides and baked-cache resolution
+    cannot diverge between the gate and the real run.
+    """
+    train_config = deepcopy(TrainCfg)
+    train_config.db_dir = _resolve_db_dir(data_folder)
+
+    override_json = os.environ.get("CINC2026_OVERRIDE_JSON", "")
+    if override_json and Path(override_json).exists():
+        with open(override_json) as f:
+            overrides = json.load(f)
+        _skip = {"db_dir", "model_folder"}
+        for key, value in overrides.items():
+            if key not in _skip:
+                setattr(train_config, key, value)
+
+    resolve_feature_cache(train_config)
+    resolve_phi_cache(train_config)
+    return train_config
 
 
 def _load_caisr_ann(caisr_path: str) -> Dict[str, np.ndarray]:
@@ -218,23 +269,7 @@ def train_model(data_folder: str, model_folder: str, verbose: bool) -> None:
 
     os.makedirs(model_folder, exist_ok=True)
 
-    train_config = deepcopy(TrainCfg)
-    train_config.db_dir = _resolve_db_dir(data_folder)
-
-    # Apply config overrides from a JSON file (used by search script and CI).
-    # Key-value pairs override the corresponding TrainCfg attributes.
-    # Example: {"model_name": "epoch_crnn_M", "n_epochs": 3, "batch_size": 4}
-    override_json = os.environ.get("CINC2026_OVERRIDE_JSON", "")
-    if override_json and Path(override_json).exists():
-        with open(override_json) as f:
-            overrides = json.load(f)
-        _skip = {"db_dir", "model_folder"}
-        for k, v in overrides.items():
-            if k not in _skip:
-                setattr(train_config, k, v)
-
-    resolve_feature_cache(train_config)
-    resolve_phi_cache(train_config)
+    train_config = prepare_train_config(data_folder)
     components = enabled_components(train_config)
     if components:
         for comp in components:
@@ -271,25 +306,26 @@ def _train_component(comp: Any, train_config: Any, model_folder: Path, verbose: 
     ctype = str(comp.get("type"))
     out_dir = component_dir(model_folder, name)
     out_dir.mkdir(parents=True, exist_ok=True)
+    comp_config = component_config(train_config, comp, ctype)
     if verbose:
         print(f"[CinC2026] training component '{name}' ({ctype})")
     if ctype == "tabular":
-        train_tabular(train_config, out_dir, verbose)
+        train_tabular(comp_config, out_dir, verbose)
     elif ctype == "crnn":
-        folds = train_config.get("folds", None)
+        folds = comp_config.get("folds", None)
         if folds is None:
-            _train_single_fold(train_config, out_dir, verbose)
+            _train_single_fold(comp_config, out_dir, verbose)
             return
         if verbose:
             print(f"[CinC2026] 5-fold ensemble mode — folds: {list(folds)}")
         for k in folds:
-            fold_config = deepcopy(train_config)
+            fold_config = deepcopy(comp_config)
             fold_config.fold = k
             _train_single_fold(fold_config, out_dir / f"fold_{k}", verbose)
             if verbose:
                 print(f"[CinC2026] fold_{k} saved")
     elif ctype == "phi":
-        train_phi_model(train_config, out_dir, verbose)
+        train_phi_model(comp_config, out_dir, verbose)
     else:
         raise ValueError(f"unknown component type: {ctype!r} (expected one of {COMPONENT_TYPES})")
 
@@ -470,8 +506,9 @@ def _load_component(comp: Dict[str, Any], model_folder: Path, train_config: Any,
     name = str(comp.get("name"))
     ctype = str(comp.get("type"))
     out_dir = component_dir(model_folder, name)
+    comp_config = component_config(train_config, comp, ctype)
     if ctype == "tabular":
-        return load_tabular_model(out_dir, train_config, verbose)
+        return load_tabular_model(out_dir, comp_config, verbose)
     if ctype == "crnn":
         model_name = train_config.model_name
         model_cls = _MODEL_CLASS_MAP[model_name]
@@ -503,7 +540,7 @@ def _load_component(comp: Dict[str, Any], model_folder: Path, train_config: Any,
         model.eval()
         return {"model": model, "train_config": tc}
     if ctype == "phi":
-        return load_phi_model(out_dir, train_config, verbose)
+        return load_phi_model(out_dir, comp_config, verbose)
     raise ValueError(f"unknown component type: {ctype!r} (expected one of {COMPONENT_TYPES})")
 
 

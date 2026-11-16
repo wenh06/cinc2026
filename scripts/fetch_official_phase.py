@@ -132,7 +132,9 @@ def download_files(dataset: str, paths: List[str], data_dir: Path, max_retries: 
         if i % 200 == 0 or i == len(paths):
             elapsed = time.time() - t0
             eta = elapsed / i * (len(paths) - i) if i < len(paths) else 0
-            print(f"  Progress: {i}/{len(paths)}  " f"OK={ok}  FAIL={fail}  " f"elapsed={elapsed/60:.0f}m  ETA={eta/60:.0f}m")
+            print(
+                f"  Progress: {i}/{len(paths)}  " f"OK={ok}  FAIL={fail}  " f"elapsed={elapsed / 60:.0f}m  ETA={eta / 60:.0f}m"
+            )
 
     # Clean up kagglehub completion markers
     complete = data_dir / ".complete"
