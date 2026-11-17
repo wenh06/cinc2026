@@ -12,15 +12,15 @@ env:
   status: alpha
   # Dataset to download for the action test.  Two CAISR-annotations-only tarballs
   # (demographics.csv + algorithmic_annotations/, no raw PSG) and one raw-PSG
-  # subset tarball (3 records, one per site, physiological_data/ folder structure
-  # preserved) are hosted on MEGA:
+  # subset tarball (5 records across all three sites, including both CI classes,
+  # with the physiological_data/ folder structure preserved) are hosted on MEGA:
   #   small  → official-phase  (1,103 records, 178 MB)   [default]
   #   large  → official-phase-large (6,600 records, 1.1 GB)
   # The download URLs (which embed the decryption key) live in GitHub repository
   # secrets — never commit them:
   #   MEGA_CAISR_OFFICIAL_PHASE_SMALL_URL  → small dataset archive (1,103 records)
   #   MEGA_CAISR_OFFICIAL_PHASE_LARGE_URL  → large dataset archive (6,600 records)
-  #   MEGA_RAW_ACTION_TEST_URL             → raw PSG subset (3 records, ~400 MB)
+  #   MEGA_RAW_ACTION_TEST_URL             → raw PSG subset (5 records, ~600 MB)
   dataset_size: small
   CINC2026_REVENGER_TEST: 1
   # Set to "1" to also run the Philosopher's Stone inference test on one raw

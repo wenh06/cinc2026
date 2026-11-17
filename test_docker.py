@@ -371,7 +371,7 @@ test_team_code = test_entry
 
 @func_indicator("testing raw spectral features")
 def test_spectral_features() -> None:
-    """Run the spectral feature extractor on the raw PSG subset (3 records)."""
+    """Run the spectral feature extractor on the raw PSG subset (5 records)."""
     import subprocess
     import sys
 
