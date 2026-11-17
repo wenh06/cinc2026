@@ -14,5 +14,9 @@ updates:
   - package-ecosystem: "pip"
     # Python dependencies are defined in `pyproject.toml` and `requirements.txt` at the repository root.
     directory: "/" # Location of Python package manifests
+    # The submission dependency stack is frozen after the Challenge. Routine
+    # version-update PRs stay disabled; security updates follow GitHub's
+    # separate security-update flow.
+    open-pull-requests-limit: 0
     schedule:
       interval: "weekly"
